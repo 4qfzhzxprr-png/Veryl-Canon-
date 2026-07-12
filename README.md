@@ -39,6 +39,8 @@ Rules are set in one place and carried everywhere, so people can do powerful thi
 
 See [FEATURES.md](FEATURES.md) for the full feature breakdown: how the record is organized, how pages become canonical, how agents contribute, and what ships first.
 
+See [CORE-PLAN.md](CORE-PLAN.md) for the Core product plan: what the first version must prove, its scope, feature requirements, build order, and success measures.
+
 ## Naming
 
 Use the full name, Veryl Canon, on first mention, in headings, and anywhere the product shows up cold. Once the reader is clearly inside the product's context, the short form Canon is fine.
