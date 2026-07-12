@@ -35,6 +35,10 @@ Veryl makes advanced AI safe for any organization to put to work. Set the rules 
 
 Rules are set in one place and carried everywhere, so people can do powerful things safely without being able to do harmful ones.
 
+## Going deeper
+
+See [FEATURES.md](FEATURES.md) for the full feature breakdown: how the record is organized, how pages become canonical, how agents contribute, and what ships first.
+
 ## Naming
 
 Use the full name, Veryl Canon, on first mention, in headings, and anywhere the product shows up cold. Once the reader is clearly inside the product's context, the short form Canon is fine.
