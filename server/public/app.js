@@ -42,9 +42,15 @@ const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
 const state = {
   actor: readStoredActor(),
   actors: null, // cached GET /actors
-  features: { search: null, comments: null }, // null = not yet probed
+  features: { search: null, comments: null, ask: null, related: null }, // null = not yet probed
   afterIdentity: null, // hash to return to after picking an identity
+  ask: null, // last { question, collectionId, result } so back-navigation keeps it
 };
+
+function resetFeatures() {
+  state.features = { search: null, comments: null, ask: null, related: null };
+  askProbe = null;
+}
 
 function readStoredActor() {
   try {
@@ -335,13 +341,17 @@ function renderChrome() {
       <button class="btn subtle" id="switch-actor" title="Switch identity">Switch</button>`;
     chip.querySelector('#switch-actor').addEventListener('click', () => {
       storeActor(null);
-      state.features = { search: null, comments: null };
+      resetFeatures();
+      state.ask = null;
       document.getElementById('search-slot').hidden = true;
+      const askLink = document.getElementById('nav-ask');
+      if (askLink) askLink.hidden = true;
       renderChrome();
       location.hash = '#/identity';
       route();
     });
     detectSearch();
+    detectAsk();
   } else {
     nav.hidden = true;
     chip.innerHTML = '';
@@ -362,6 +372,39 @@ async function detectSearch() {
     state.features.search = err.status !== 404 && err.status !== 0;
   }
   document.getElementById('search-slot').hidden = state.features.search !== true;
+}
+
+// Grounded answers are feature-detected the same way search is: probe once,
+// treat 404 (and 405) as "not built yet" and any other answer as "it exists".
+let askProbe = null; // in-flight probe, shared by every caller
+
+async function detectAsk() {
+  if (state.features.ask === null) {
+    // The chrome, the view, and the per-page affordance all ask at once on a
+    // cold load; they share one probe rather than sending three.
+    askProbe ??= api('POST', '/ask', { question: '' })
+      .then(() => true)
+      // 400 for an empty question means the endpoint is there; 404/405 means
+      // it is not, and a network failure is not evidence either way.
+      .catch((err) => err.status !== 404 && err.status !== 405 && err.status !== 0);
+    const found = await askProbe;
+    askProbe = null;
+    if (state.features.ask === null) state.features.ask = found;
+  }
+  const link = document.getElementById('nav-ask');
+  if (link) link.hidden = state.features.ask !== true;
+  return state.features.ask === true;
+}
+
+// Called by the collection and page views: a small "ask within this
+// collection" affordance that simply is not there when /ask is not.
+async function renderAskAffordance(hostId, collectionId) {
+  const host = document.getElementById(hostId);
+  if (!host || !(await detectAsk())) return;
+  // The view may have re-rendered while the probe was in flight.
+  if (!host.isConnected) return;
+  host.innerHTML = `<a class="btn subtle ask-btn" href="#/ask/${esc(collectionId)}"
+    title="Ask a question answered only from this collection's Canonical pages">Ask this collection</a>`;
 }
 
 function wireSearch() {
@@ -424,15 +467,15 @@ async function route() {
     await render(viewIdentity);
     return;
   }
+  const section = parts[0] === 'audit' ? 'audit' : parts[0] === 'ask' ? 'ask' : 'home';
   document.querySelectorAll('#topnav a').forEach((a) => {
-    const key = a.dataset.nav;
-    const active = (key === 'audit' && parts[0] === 'audit') || (key === 'home' && parts[0] !== 'audit');
-    a.classList.toggle('active', active);
+    a.classList.toggle('active', a.dataset.nav === section);
   });
   try {
     if (parts.length === 0) return await render(viewHome);
     if (parts[0] === 'identity') return await render(viewIdentity);
     if (parts[0] === 'audit') return await render(viewAudit);
+    if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'collections' && parts[1]) return await render(() => viewCollection(parts[1]));
     if (parts[0] === 'pages' && parts[1]) {
       const id = parts[1];
@@ -703,7 +746,10 @@ async function viewCollection(id) {
               ${collection.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h1>
             <p class="muted">${esc(collection.description || 'No description.')}</p>
           </div>
-          <button class="btn primary" id="main-new-page">New page</button>
+          <div class="actions">
+            <span id="ask-affordance"></span>
+            <button class="btn primary" id="main-new-page">New page</button>
+          </div>
         </div>
 
         ${tree.length ? '' : `
@@ -745,6 +791,7 @@ async function viewCollection(id) {
 
   wireSidebar(collection, tree);
   app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
+  renderAskAffordance('ask-affordance', collection.id);
 
   app.querySelector('#add-member-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -797,7 +844,7 @@ async function viewPage(id) {
         : `This page is being edited by <strong>${esc(actorName(draft.editorId))}</strong>. Canon keeps drafts to one editor at a time.`}
     </div>` : '';
 
-  const actions = [];
+  const actions = ['<span id="ask-affordance"></span>'];
   if (!isArchived && !inReview) actions.push(`<a class="btn" href="#/pages/${esc(id)}/edit">Edit</a>`);
   actions.push(`<a class="btn" href="#/pages/${esc(id)}/history">History</a>`);
   if (reviewed && page.status === 'draft' && draft) actions.push('<button class="btn primary" id="act-submit">Submit for review</button>');
@@ -836,11 +883,13 @@ async function viewPage(id) {
             ${isArchived ? '' : `<p><a class="btn primary" href="#/pages/${esc(id)}/edit">Write the first draft</a></p>`}
           </div>`}
 
+        <div id="related-host"></div>
         <div id="comments-host"></div>
       </section>
     </div>`;
 
   wireSidebar(collection, tree);
+  renderAskAffordance('ask-affordance', page.collectionId);
 
   app.querySelector('#act-submit')?.addEventListener('click', async () => {
     try {
@@ -885,7 +934,38 @@ async function viewPage(id) {
     },
   }));
 
+  renderRelatedPanel(id);
   renderCommentsPanel(id);
+}
+
+// Related pages — the same graph the answer engine expands along, surfaced on
+// the page itself. Feature-detected separately from /ask and silent when the
+// endpoint is not there.
+async function renderRelatedPanel(pageId) {
+  const host = document.getElementById('related-host');
+  if (!host || state.features.related === false) return;
+  let items;
+  try {
+    const r = await api('GET', `/pages/${pageId}/related`);
+    state.features.related = true;
+    items = (Array.isArray(r) ? r : (r?.related ?? r?.pages ?? r?.results ?? [])).map(normalizeCitation);
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) state.features.related = false;
+    return; // a nice-to-have never becomes noise
+  }
+  if (!items.length || !host.isConnected) return;
+  host.innerHTML = `
+    <section class="panel">
+      <h2 class="h-small">Related in the record</h2>
+      <ul class="related-list">
+        ${items.map((it) => (it.pageId ? `
+          <li><a class="related-link" href="#/pages/${esc(it.pageId)}">
+            <span class="related-title">${esc(it.title)}</span>
+            ${it.status ? badge(it.status, 'sm') : ''}
+            ${it.version ? `<span class="citation-version">v${esc(it.version)}</span>` : ''}
+          </a></li>` : '')).join('')}
+      </ul>
+    </section>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1332,6 +1412,307 @@ async function viewAudit() {
   form.action.addEventListener('change', load);
   form.actor.addEventListener('change', load);
   await load();
+}
+
+// ---------------------------------------------------------------------------
+// Grounded answers
+//
+// The contract (DATA-BACKBONE.md §5):
+//   POST /ask { question, collectionId?, limit? }
+//     -> { answer: string|null, citations: [{ pageId, title, version, snippet }],
+//          refused: boolean, reason?: "no_canonical_match" }
+//
+// Two things the UI has to carry, because they are the product's promises:
+// every claim is verifiable by clicking through to the cited page and version,
+// and a refusal is a correct answer about a silent record — never an error.
+
+const ASK_EXAMPLES = [
+  'How long do we retain audit logs?',
+  'Who approves a change to a Policy?',
+  'What has to be true before a spec is Canonical?',
+];
+
+function normalizeCitation(c, i = 0) {
+  return {
+    n: i + 1,
+    pageId: c.pageId ?? c.id ?? c.page?.id ?? null,
+    title: c.title ?? c.pageTitle ?? c.page?.title ?? '(untitled page)',
+    version: c.version ?? c.versionNumber ?? c.currentVersion ?? null,
+    snippet: c.snippet ?? c.excerpt ?? '',
+    status: c.status ?? null,
+  };
+}
+
+// Turn "[1]" style markers in the answer into buttons that jump to the
+// citation. Operates on the HTML renderMarkdown() produced: the alternation
+// passes tags through untouched, so only escaped text is ever rewritten, and
+// the markup inserted is entirely our own.
+function linkifyCitationMarkers(html, count) {
+  if (!count) return html;
+  // The space before a marker is swallowed so it sits against the word it
+  // supports, the way a footnote mark does.
+  return html.replace(/(<[^>]*>)|[ \t]?\[(\d+)\]/g, (m, tag, num) => {
+    if (tag) return tag;
+    const n = Number(num);
+    if (n < 1 || n > count) return m;
+    return `<button type="button" class="cite-ref" data-cite="${n}"
+      title="Jump to source ${n}" aria-label="Source ${n}">${n}</button>`;
+  });
+}
+
+function askSkeletonHTML() {
+  return `
+    <div class="ask-skeleton" aria-hidden="true">
+      <p class="h-small">Reading the Canonical record&hellip;</p>
+      <div class="skel-line" style="width: 96%"></div>
+      <div class="skel-line" style="width: 88%"></div>
+      <div class="skel-line" style="width: 92%"></div>
+      <div class="skel-line" style="width: 54%"></div>
+      <div class="skel-cites">
+        <div class="skel-line skel-cite" style="width: 100%"></div>
+        <div class="skel-line skel-cite" style="width: 100%"></div>
+      </div>
+    </div>`;
+}
+
+function citationsHTML(citations) {
+  const items = citations.map((c) => {
+    const head = `
+      <span class="citation-num" aria-hidden="true">${c.n}</span>
+      <span class="citation-main">
+        <span class="citation-title-row">
+          <span class="citation-title">${esc(c.title)}</span>
+          ${badge(c.status ?? 'canonical', 'sm')}
+          ${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}
+        </span>
+        ${c.snippet ? `<span class="citation-snippet">${esc(c.snippet)}</span>` : ''}
+      </span>`;
+    const body = c.pageId
+      ? `<a class="citation-link" href="#/pages/${esc(c.pageId)}">${head}<span class="citation-go" aria-hidden="true">→</span></a>`
+      : `<div class="citation-link is-plain">${head}</div>`;
+    const foot = c.pageId && c.version
+      ? `<p class="citation-foot"><a href="#/pages/${esc(c.pageId)}/versions/${esc(c.version)}">Read v${esc(c.version)} exactly as cited</a></p>`
+      : '';
+    return `<li class="citation" data-citation="${c.n}">${body}${foot}</li>`;
+  }).join('');
+  const n = citations.length;
+  return `
+    <section class="citations">
+      <h2 class="h-small">${n} source${n === 1 ? '' : 's'}</h2>
+      <p class="citations-note">Every claim above comes from these pages. Open any one to
+        check it against the record — the answer is only as official as what it cites.</p>
+      <ol class="citation-list">${items}</ol>
+    </section>`;
+}
+
+function answerHTML(answer, citations) {
+  const n = citations.length;
+  return `
+    <article class="answer">
+      <div class="answer-head">
+        <h2 class="h-small">Answer</h2>
+        <span class="answer-grounding">drawn from ${n} Canonical page${n === 1 ? '' : 's'}</span>
+      </div>
+      <div class="answer-body">${linkifyCitationMarkers(renderMarkdown(answer), n)}</div>
+    </article>
+    ${citationsHTML(citations)}`;
+}
+
+function refusalHTML(result, question, collection) {
+  const known = !result.reason || result.reason === 'no_canonical_match';
+  return `
+    <section class="refusal">
+      <h2>The record does not answer this yet.</h2>
+      <p>Nothing Canonical${collection ? ` in <strong>${esc(collection.name)}</strong>` : ''}
+        covers ${question ? `&ldquo;${esc(question)}&rdquo;` : 'this question'}. Canon says so rather
+        than assembling an answer it cannot cite — a confident guess is the one thing a
+        knowledge record must never produce.</p>
+      ${known ? '' : `<p class="muted">Reported reason: <code>${esc(result.reason)}</code></p>`}
+      <p class="refusal-why">Answers are drawn only from ${badge('canonical', 'sm')} pages you are
+        permitted to see. If someone has written this up in a Draft, a Note, or a page still in
+        review, it is deliberately not used here — it becomes answerable the moment it is
+        reviewed to Canonical.</p>
+      <h3 class="h-small refusal-next">What you can do</h3>
+      <div class="refusal-actions">
+        ${state.features.search === true ? '<button class="btn" type="button" id="refusal-search">Search the record instead</button>' : ''}
+        ${collection
+          ? '<button class="btn primary" type="button" id="refusal-draft">Draft a page in this collection</button>'
+          : '<a class="btn primary" href="#/">Pick a collection and draft a page</a>'}
+        <button class="btn subtle" type="button" id="refusal-rephrase">Ask it another way</button>
+      </div>
+    </section>`;
+}
+
+function askProblemHTML(err) {
+  return `
+    <section class="ask-problem">
+      <h2 class="h-small">The question could not be put to the record</h2>
+      <p>${esc(err?.message ?? 'Something went wrong.')}</p>
+      <p><button class="btn" type="button" id="ask-retry">Try again</button></p>
+    </section>`;
+}
+
+function askUnavailableHTML() {
+  return `
+    <div class="empty-state">
+      <h2>Grounded answers are not available yet</h2>
+      <p>This Canon server does not serve <code>/ask</code>. Search still covers the whole
+        published record.</p>
+      <p><a class="btn" href="#/">Back to collections</a></p>
+    </div>`;
+}
+
+async function viewAsk(collectionId = null) {
+  if (!(await detectAsk())) {
+    app.innerHTML = `<div class="ask-wrap">${askUnavailableHTML()}</div>`;
+    return;
+  }
+  const collection = collectionId ? await api('GET', `/collections/${collectionId}`) : null;
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { /* scope picker is optional */ }
+
+  const cached = state.ask && state.ask.collectionId === collectionId ? state.ask : null;
+
+  app.innerHTML = `
+    <div class="ask-wrap">
+      ${collection ? `<p class="breadcrumb"><a href="#/collections/${esc(collection.id)}">← ${esc(collection.name)}</a></p>` : ''}
+      <div class="ask-head">
+        <h1>Ask the record</h1>
+        <p class="ask-lede">A plain-language question, answered only from Canonical pages you are
+          permitted to see, with a citation for every claim. When the record is silent, Canon
+          says so instead of guessing.</p>
+      </div>
+
+      <form class="ask-form" id="ask-form">
+        <textarea id="ask-question" class="ask-question" rows="2" maxlength="500"
+          aria-label="Your question"
+          placeholder="${esc(ASK_EXAMPLES[0])}">${esc(cached?.question ?? '')}</textarea>
+        <div class="ask-form-foot">
+          <p class="ask-grounding">Grounded in ${badge('canonical', 'sm')} pages only${collection ? `, within <strong>${esc(collection.name)}</strong>` : ''}.
+            Drafts, Notes, and pages in review are never used.</p>
+          <button class="btn primary" type="submit" id="ask-submit">Ask</button>
+        </div>
+      </form>
+
+      <div class="ask-scope">
+        <label class="ask-scope-label" for="ask-scope-select">Answer from</label>
+        <select id="ask-scope-select">
+          <option value="" ${collection ? '' : 'selected'}>Every collection I can see</option>
+          ${collections.map((c) => `<option value="${esc(c.id)}" ${c.id === collectionId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        </select>
+        ${collection ? `<span class="muted">Only ${esc(collection.name)}'s Canonical pages can be cited.</span>` : ''}
+      </div>
+
+      <div class="ask-result" id="ask-result" aria-live="polite"></div>
+    </div>`;
+
+  const form = app.querySelector('#ask-form');
+  const input = app.querySelector('#ask-question');
+  const submit = app.querySelector('#ask-submit');
+  const resultHost = app.querySelector('#ask-result');
+
+  const idleHTML = `
+    <div class="ask-idle">
+      <p class="h-small">Try something like</p>
+      <ul class="ask-examples">
+        ${ASK_EXAMPLES.map((q) => `<li><button type="button" class="ask-example" data-q="${esc(q)}">${esc(q)}</button></li>`).join('')}
+      </ul>
+      <p class="muted ask-idle-foot">Answers arrive with their sources attached, so you can read
+        the page behind every sentence.</p>
+    </div>`;
+
+  const wireResult = (question) => {
+    resultHost.querySelectorAll('[data-cite]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = resultHost.querySelector(`[data-citation="${btn.dataset.cite}"]`);
+        if (!target) return;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('flash');
+        setTimeout(() => target.classList.remove('flash'), 1400);
+      });
+    });
+    resultHost.querySelector('#refusal-rephrase')?.addEventListener('click', () => {
+      input.focus();
+      input.select();
+    });
+    resultHost.querySelector('#refusal-search')?.addEventListener('click', () => {
+      const box = document.getElementById('search-input');
+      if (!box) return;
+      box.value = question;
+      box.dispatchEvent(new Event('input'));
+      box.focus();
+    });
+    resultHost.querySelector('#refusal-draft')?.addEventListener('click', async () => {
+      try {
+        const tree = await api('GET', `/collections/${collection.id}/tree`);
+        openNewPageModal(collection, tree);
+      } catch (err) { toastError(err); }
+    });
+    resultHost.querySelector('#ask-retry')?.addEventListener('click', () => ask(question));
+  };
+
+  const renderResult = (result, question) => {
+    const citations = (Array.isArray(result?.citations) ? result.citations : []).map(normalizeCitation);
+    // An answer without citations is never returned (DATA-BACKBONE §5), so an
+    // empty-handed non-refusal is treated as the refusal it effectively is.
+    if (result?.refused || !result?.answer || !citations.length) {
+      resultHost.innerHTML = refusalHTML(result ?? {}, question, collection);
+    } else {
+      resultHost.innerHTML = answerHTML(result.answer, citations);
+    }
+    wireResult(question);
+  };
+
+  const ask = async (question) => {
+    resultHost.setAttribute('aria-busy', 'true');
+    resultHost.innerHTML = askSkeletonHTML();
+    submit.disabled = true;
+    submit.textContent = 'Reading…';
+    try {
+      const payload = { question };
+      if (collectionId) payload.collectionId = collectionId;
+      const result = await api('POST', '/ask', payload);
+      state.ask = { question, collectionId, result };
+      renderResult(result, question);
+    } catch (err) {
+      if (err.status === 404 || err.status === 405) {
+        state.features.ask = false;
+        const link = document.getElementById('nav-ask');
+        if (link) link.hidden = true;
+        resultHost.innerHTML = askUnavailableHTML();
+      } else {
+        resultHost.innerHTML = askProblemHTML(err);
+        wireResult(question);
+      }
+    } finally {
+      resultHost.removeAttribute('aria-busy');
+      submit.disabled = false;
+      submit.textContent = 'Ask';
+    }
+  };
+
+  if (cached?.result) renderResult(cached.result, cached.question);
+  else {
+    resultHost.innerHTML = idleHTML;
+    resultHost.querySelectorAll('.ask-example').forEach((btn) => {
+      btn.addEventListener('click', () => { input.value = btn.dataset.q; ask(btn.dataset.q); });
+    });
+  }
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const question = input.value.trim();
+    if (!question) { input.focus(); return; }
+    ask(question);
+  });
+  // Enter asks; Shift+Enter is a newline, as in any question box.
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+  });
+  app.querySelector('#ask-scope-select').addEventListener('change', (e) => {
+    location.hash = e.target.value ? `#/ask/${e.target.value}` : '#/ask';
+  });
+  input.focus();
 }
 
 // ---------------------------------------------------------------------------

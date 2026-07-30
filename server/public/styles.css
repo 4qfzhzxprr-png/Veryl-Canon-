@@ -608,6 +608,260 @@ label.check input { width: auto; display: inline; margin: 0; }
 .comment-body { white-space: pre-wrap; }
 .comment.resolved { opacity: 0.6; }
 
+/* ---------- grounded answers -------------------------------------------- */
+
+.ask-wrap { max-width: 760px; margin: 0 auto; }
+.ask-head h1 { margin: 0 0 0.4rem; font-size: 1.55rem; line-height: 1.25; font-weight: 650; }
+.ask-lede { margin: 0 0 1.25rem; color: var(--muted); max-width: 44rem; }
+
+.ask-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.9rem 1.1rem 0.8rem;
+  transition: border-color 0.12s ease;
+}
+.ask-form:focus-within { border-color: var(--accent); }
+
+.ask-question {
+  display: block;
+  width: 100%;
+  font-family: var(--serif);
+  font-size: 1.12rem;
+  line-height: 1.55;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  padding: 0.1rem 0;
+  resize: vertical;
+  min-height: 3.4rem;
+}
+.ask-question:focus { outline: none; }
+.ask-question::placeholder { color: var(--muted); opacity: 0.75; }
+
+.ask-form-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
+}
+.ask-grounding { margin: 0; font-size: 0.82rem; color: var(--muted); max-width: 34rem; }
+.ask-grounding .badge { margin: 0 0.1rem; }
+
+.ask-scope {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin: 0.8rem 0.2rem 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.ask-scope-label { margin: 0; font-weight: 550; font-size: 0.84rem; color: var(--muted); }
+.ask-scope select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.18rem 0.4rem;
+}
+
+/* One reserved region for every result state, so nothing jumps when an
+   answer, a refusal, or the loading skeleton lands in it. */
+.ask-result { margin-top: 1.5rem; min-height: 260px; }
+
+.ask-idle {
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  padding: 1.4rem 1.6rem;
+}
+.ask-examples { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.ask-example {
+  font: inherit;
+  font-family: var(--serif);
+  font-size: 1rem;
+  text-align: left;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+}
+.ask-example:hover { background: var(--surface-2); }
+.ask-idle-foot { margin: 0.9rem 0 0; font-size: 0.86rem; }
+
+.ask-skeleton {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 1.4rem 1.6rem;
+}
+.ask-skeleton .h-small { margin-bottom: 1rem; }
+.skel-line {
+  height: 0.8rem;
+  border-radius: 5px;
+  background: var(--surface-2);
+  margin-top: 0.7rem;
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-cites { margin-top: 1.6rem; }
+.skel-cite { height: 3.1rem; border-radius: 10px; }
+@keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .skel-line { animation: none; } }
+
+.answer {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 1.3rem 1.6rem 1.5rem;
+}
+.answer-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.answer-head .h-small { margin-bottom: 0.5rem; }
+.answer-grounding { font-size: 0.8rem; color: var(--muted); }
+.answer-body { font-family: var(--serif); font-size: 1.08rem; line-height: 1.72; overflow-wrap: break-word; }
+.answer-body > :first-child { margin-top: 0; }
+.answer-body > :last-child { margin-bottom: 0; }
+.answer-body ul, .answer-body ol { padding-left: 1.4em; }
+.answer-body li { margin: 0.25em 0; }
+.answer-body blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1.1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.cite-ref {
+  font-family: var(--sans);
+  font-size: 0.66em;
+  font-weight: 650;
+  line-height: 1;
+  vertical-align: super;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.12em 0.3em;
+  margin: 0 0.03em;
+  cursor: pointer;
+}
+.cite-ref:hover { border-color: var(--accent); }
+
+.citations { margin-top: 1.6rem; }
+.citations .h-small { margin-bottom: 0.3rem; }
+.citations-note { margin: 0 0 0.85rem; font-size: 0.86rem; color: var(--muted); max-width: 42rem; }
+.citation-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+
+.citation {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.3s ease;
+}
+.citation:hover, .citation:focus-within { border-color: var(--accent); box-shadow: 0 3px 14px rgba(30, 32, 36, 0.07); }
+.citation.flash { border-color: var(--accent); background: var(--accent-soft); }
+
+.citation-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  padding: 0.85rem 1.1rem;
+  color: var(--text);
+}
+.citation-link:hover { text-decoration: none; }
+.citation-link.is-plain { cursor: default; }
+.citation-num {
+  flex: 0 0 auto;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.citation-main { flex: 1 1 auto; min-width: 0; }
+.citation-title-row { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.citation-title { font-weight: 600; }
+.citation-version {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.02rem 0.42rem;
+  white-space: nowrap;
+}
+.citation-snippet {
+  display: block;
+  margin-top: 0.35rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--border);
+  font-family: var(--serif);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--muted);
+  overflow-wrap: break-word;
+}
+.citation-go { flex: 0 0 auto; color: var(--muted); }
+.citation:hover .citation-go { color: var(--accent); }
+.citation-foot { margin: 0; padding: 0 1.1rem 0.75rem 3.55rem; font-size: 0.8rem; }
+
+.refusal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 1.4rem 1.6rem 1.5rem;
+}
+.refusal h2 { margin: 0 0 0.55rem; font-family: var(--serif); font-size: 1.25rem; font-weight: 600; }
+.refusal p { margin: 0 0 0.75rem; max-width: 42rem; }
+.refusal-why {
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.9rem;
+}
+.refusal-why .badge { margin: 0 0.1rem; }
+.refusal-next { margin: 1.1rem 0 0.6rem; }
+.refusal-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+
+.ask-problem {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 12px;
+  padding: 1.2rem 1.5rem;
+}
+.ask-problem p { margin: 0 0 0.75rem; }
+.ask-problem p:last-child { margin-bottom: 0; }
+
+.ask-btn { white-space: nowrap; }
+
+.related-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.related-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  padding: 0.25rem 0.45rem;
+  border-radius: 6px;
+  color: var(--text);
+}
+.related-link:hover { background: var(--surface-2); text-decoration: none; }
+.related-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- toasts ------------------------------------------------------ */
 
 .toasts {
@@ -671,4 +925,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   .topbar { flex-wrap: wrap; height: auto; padding: 0.5rem 1rem; }
   .topnav { margin-left: 0; }
   .doc-body { padding: 1.25rem 1.25rem; }
+  .answer, .refusal, .ask-skeleton { padding-left: 1.1rem; padding-right: 1.1rem; }
+  .citation-foot { padding-left: 1.1rem; }
+  .ask-form-foot { align-items: flex-start; }
 }
