@@ -126,6 +126,14 @@ const routes: Route[] = [
   route('POST', '/comments/:id/resolve', ({ store, actorId, params }) => store.resolveComment(actorId, params.id!)),
   route('POST', '/comments/:id/reopen', ({ store, actorId, params }) => store.reopenComment(actorId, params.id!)),
   route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
+
+  route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
+  route('GET', '/pages/:id/related', ({ store, actorId, params, query }) =>
+    store.related(actorId, params.id!, {
+      canonicalOnly: query.get('canonical') === 'true',
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -164,7 +172,7 @@ export function createApi(store: CanonStore): Server {
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
-      const result = match.handler({ store, actorId, params, query: url.searchParams, body });
+      const result = await match.handler({ store, actorId, params, query: url.searchParams, body });
       send(res, 200, result ?? { ok: true });
     } catch (err) {
       if (err instanceof CanonError) {
