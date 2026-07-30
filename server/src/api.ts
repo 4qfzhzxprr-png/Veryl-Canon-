@@ -98,6 +98,17 @@ const routes: Route[] = [
     store.restore(actorId, params.id!, Number(body.version)),
   ),
 
+  route('GET', '/search', ({ store, actorId, query }) =>
+    store.searchIndex.search(actorId, {
+      q: query.get('q') ?? '',
+      collectionId: query.get('collection') ?? undefined,
+      type: query.get('type') ?? undefined,
+      status: query.get('status') ?? undefined,
+      ownerId: query.get('owner') ?? undefined,
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
+
   route('GET', '/audit', ({ store, actorId, query }) =>
     store.queryAudit(actorId, {
       actorId: query.get('actor') ?? undefined,
