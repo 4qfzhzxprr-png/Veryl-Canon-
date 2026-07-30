@@ -1,0 +1,19 @@
+{
+  "name": "@veryl/canon-server",
+  "version": "0.1.0",
+  "description": "Veryl Canon server: the data storage and organization backbone of the Veryl suite.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "start": "npm run build && node dist/src/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "5.6"
+  },
+  "private": true,
+  "type": "module"
+}

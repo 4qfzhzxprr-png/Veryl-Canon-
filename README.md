@@ -49,6 +49,8 @@ See [CORE-PLAN.md](CORE-PLAN.md) for the Core product plan: what the first versi
 
 See [DATA-BACKBONE.md](DATA-BACKBONE.md) for Canon's role as the suite's data backbone: what it stores, how the record is organized, and the contracts Veryl Agent Registry and Veryl Studio depend on.
 
+See [server/](server/) for the code: the running Canon server, starting with the M1 foundation from the Core plan.
+
 ## Naming
 
 Use the full name, Veryl Canon, on first mention, in headings, and anywhere the product shows up cold. Once the reader is clearly inside the product's context, the short form Canon is fine.
