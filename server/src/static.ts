@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url';
 // the server's request listener so unmatched GETs can fall through to the
 // API's own 404. One call from index.ts is the entire integration.
 
-// Compiled file lives at dist/src/static.js; public/ ships at server/public.
-const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public');
+// Compiled file lives at dist/server/src/static.js (the build is rooted a
+// level up so tests can reach the registry-stub); public/ ships at
+// server/public, three levels up from there.
+const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'public');
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

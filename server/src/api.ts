@@ -1,10 +1,17 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
+import { AgentAuth, AgentSession, passportAuthUnavailable } from './agentauth.js';
 import { CanonError } from './model.js';
 import { CanonStore } from './store.js';
 
 // A deliberately thin HTTP layer over the store. Actor identity arrives in
-// the X-Actor-Id header for now; people get SSO and agents get Agent
-// Passport authentication when the Registry contract lands (Epic D).
+// the X-Actor-Id header for now; people get SSO later.
+//
+// Agents arrive by the other door (Epic D): a request carrying X-Agent-Passport is
+// verified with the Veryl Agent Registry and resolved to an agent actor by
+// agentauth.ts, which also applies the Registry's limits before the store
+// sees the request. With no Registry configured (no CANON_REGISTRY_URL),
+// Canon runs in dev mode: X-Actor-Id only, passport authentication refused
+// with a clear message.
 
 type Handler = (ctx: {
   store: CanonStore;
@@ -146,7 +153,7 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
   res.end(body);
 }
 
-export function createApi(store: CanonStore): Server {
+export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null): Server {
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://canon');
@@ -155,7 +162,17 @@ export function createApi(store: CanonStore): Server {
         send(res, 404, { error: 'not_found', message: `No route: ${req.method} ${url.pathname}` });
         return;
       }
-      const actorId = (req.headers['x-actor-id'] as string) ?? '';
+      // An Agent Passport, when presented, wins: it is verified with the
+      // Registry and resolved to the agent's actor (Epic D). X-Actor-Id
+      // remains the path for people (and dev mode).
+      const passport = (req.headers['x-agent-passport'] as string) ?? '';
+      let actorId = (req.headers['x-actor-id'] as string) ?? '';
+      let session: AgentSession | null = null;
+      if (passport) {
+        if (!agentAuth) throw passportAuthUnavailable();
+        session = await agentAuth.authenticate(passport, actorId);
+        actorId = session.actorId;
+      }
       if (!match.open && !actorId) {
         send(res, 401, { error: 'unauthenticated', message: 'X-Actor-Id header required' });
         return;
@@ -164,8 +181,12 @@ export function createApi(store: CanonStore): Server {
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
+      // The Registry's half of the intersection, applied before the store
+      // applies Canon's own permissions. Neither side can widen the other.
+      const limits = session ? agentAuth!.enforce(session, { method: req.method ?? '', pathname: url.pathname, body }) : null;
       const result = match.handler({ store, actorId, params, query: url.searchParams, body });
-      send(res, 200, result ?? { ok: true });
+      const payload = result ?? { ok: true };
+      send(res, 200, limits ? limits.narrow(payload) : payload);
     } catch (err) {
       if (err instanceof CanonError) {
         send(res, err.httpStatus, { error: err.code, message: err.message, ...err.details });

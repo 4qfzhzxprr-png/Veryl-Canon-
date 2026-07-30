@@ -39,33 +39,12 @@ curl -s :3100/verify -d '{"passport":"vap_..."}'        # 403 revoked — Canon'
 
 ## Wiring into Canon
 
-`server/src/registry.ts` ships now; plugging it into Canon's auth path is a deliberate follow-up change to `server/src/api.ts` (Epic D), not part of this commit. The shape of that change:
+This is wired. Canon's auth path lives in [`server/src/agentauth.ts`](../server/src/agentauth.ts), which the API calls where it reads `X-Actor-Id`: a request carrying `X-Agent-Passport` is verified through the `RegistryClient`, resolved to a Canon actor (by `registryRef`, creating one on first contact), and checked against the Registry's limits before the store sees it. Enforcement is an intersection with Canon's own collection permissions — neither side can widen the other.
 
-Today `createApi` reads `X-Actor-Id` and hands the actor to the store. The follow-up accepts `X-Agent-Passport` as the agent alternative: verify it through the `RegistryClient`, resolve the agent to a Canon actor (by `registryRef`, creating one on first contact), and enforce the Registry's limits before the store sees the request. Sketch:
+The switch is one environment variable, and it is the same one that will point at the live Registry:
 
-```ts
-// api.ts (follow-up): construct once, TTL within the one-minute guarantee.
-const registry = new RegistryClient({
-  baseUrl: process.env.REGISTRY_URL ?? 'http://127.0.0.1:3100',
-  cacheTtlMs: 30_000, // clamped to 60s regardless; 0 = re-verify every request
-});
-
-// In the request handler, where X-Actor-Id is read today:
-const passport = req.headers['x-agent-passport'] as string | undefined;
-if (passport) {
-  const verified = await registry.verifyPassport(passport);
-  if (!verified.ok) {
-    // Fail closed. unknown_passport → 401; lapsed/revoked → 403;
-    // registry_unreachable → 503. Audit the refusal either way.
-    return send(res, statusFor(verified.reason), { error: verified.reason, message: verified.message });
-  }
-  // Resolve or create the agent actor: kind 'agent', registryRef = agentId.
-  actorId = store.actorForRegistryAgent(verified.agent).id;
-  // Enforce limits as an intersection with Canon's own permissions:
-  // the route's collection must be in agent.permittedCollections (or '*'),
-  // and the route's action class (read/comment/write) in permittedActions.
-  agentLimits = verified.agent;
-}
+```sh
+CANON_REGISTRY_URL=http://127.0.0.1:3100 npm --prefix ../server start
 ```
 
-Requests carry a person's `X-Actor-Id` or an agent's `X-Agent-Passport`, never both. Nothing from the verification is stored beyond the client's sub-minute cache — a Registry revocation or limits change is live in Canon on the next uncached request, inside the guarantee.
+Unset, Canon runs in dev mode: `X-Actor-Id` only, and a presented passport is refused with `503` saying passport authentication is not configured. Requests carry a person's `X-Actor-Id` or an agent's `X-Agent-Passport`, never both. Nothing from the verification is stored beyond the client's sub-minute cache — a Registry revocation or limits change is live in Canon on the next uncached request, inside the guarantee. `server/test/agentauth.test.ts` runs that whole loop against this stub in-process, revocation included.
