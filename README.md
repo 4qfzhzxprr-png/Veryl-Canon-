@@ -35,11 +35,15 @@ Veryl makes advanced AI safe for any organization to put to work. Set the rules 
 
 Rules are set in one place and carried everywhere, so people can do powerful things safely without being able to do harmful ones.
 
+Within that suite, Canon is the backbone for data storage and organization. Registry and Studio keep no copies of company knowledge; both work against Canon's record, live, under the rules carried in from the Registry. See [DATA-BACKBONE.md](DATA-BACKBONE.md) for what that means in practice.
+
 ## Going deeper
 
 See [FEATURES.md](FEATURES.md) for the full feature breakdown: how the record is organized, how pages become canonical, how agents contribute, and what ships first.
 
 See [CORE-PLAN.md](CORE-PLAN.md) for the Core product plan: what the first version must prove, its scope, feature requirements, build order, and success measures.
+
+See [DATA-BACKBONE.md](DATA-BACKBONE.md) for Canon's role as the suite's data backbone: what it stores, how the record is organized, and the contracts Veryl Agent Registry and Veryl Studio depend on.
 
 ## Naming
 
