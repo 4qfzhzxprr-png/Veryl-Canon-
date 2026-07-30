@@ -98,6 +98,17 @@ Four milestones, sequenced so each one is usable by the design partner as it lan
 
 The design-partner phase is called the alpha, matching the public status on Veryl.ai. The alpha begins at M2 and widens at each milestone. General availability is a decision taken after M4, not a milestone in this plan.
 
+### Where the build actually stands
+
+Every milestone above states its exit in terms of a design partner using the product. Those exits are deliberately not something the team can mark complete on its own, so this section tracks two different things: what is **built**, which we control, and what is **proven with a partner**, which we do not. Nothing below claims an exit.
+
+- **M1 — built.** Collections, page trees, the four document types with structured fields, the editor's draft-and-publish loop with the page lock, and append-only version history with restore. Immutability is enforced in the storage layer, not only in application code.
+- **M2 — built, with one gap.** Status, the type-driven review workflow, comments with mentions, and the notification system. Notifications are written to an outbox and delivered through a pluggable transport; the real email transport is the gap. Search shipped here too, ahead of its place in the plan, because grounded answers needed the index.
+- **M3 — in progress.** The Registry contract is agreed and written down, a Registry stub implements it so Epic D no longer waits on the live service, and the retrieval architecture behind grounded answers is decided (see DATA-BACKBONE.md section 5). Passport authentication and the answer engine are being built against both.
+- **M4 — not started.** Audit log querying exists from M1 onward; CSV export, the Confluence and Google Docs importers, and the security review remain.
+
+The honest summary: the product is ahead of where its public alpha status implies on the record and review side, and behind it on the parts that need a real partner's material in the system. Import quality, named in section 7 as the risk that decides first impressions, is the work that closes that distance.
+
 ## 6. Success measures
 
 Measured with the design partners during the alpha:
