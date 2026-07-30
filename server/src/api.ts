@@ -133,6 +133,14 @@ const routes: Route[] = [
   route('POST', '/comments/:id/resolve', ({ store, actorId, params }) => store.resolveComment(actorId, params.id!)),
   route('POST', '/comments/:id/reopen', ({ store, actorId, params }) => store.reopenComment(actorId, params.id!)),
   route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
+
+  route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
+  route('GET', '/pages/:id/related', ({ store, actorId, params, query }) =>
+    store.related(actorId, params.id!, {
+      canonicalOnly: query.get('canonical') === 'true',
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -184,7 +192,9 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       // The Registry's half of the intersection, applied before the store
       // applies Canon's own permissions. Neither side can widen the other.
       const limits = session ? agentAuth!.enforce(session, { method: req.method ?? '', pathname: url.pathname, body }) : null;
-      const result = match.handler({ store, actorId, params, query: url.searchParams, body });
+      // Awaited: retrieval and grounded answers are async (the embedding
+      // provider interface is), so a bare value would serialize as {}.
+      const result = await match.handler({ store, actorId, params, query: url.searchParams, body });
       const payload = result ?? { ok: true };
       send(res, 200, limits ? limits.narrow(payload) : payload);
     } catch (err) {

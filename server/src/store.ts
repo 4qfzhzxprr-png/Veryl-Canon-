@@ -19,6 +19,9 @@ import {
 import { SearchIndex } from './search.js';
 import { Comment, CommentAnchor, CommentService } from './comments.js';
 import { Notification, NotificationTransport, Notifier } from './notify.js';
+import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
+import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
+import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -31,16 +34,30 @@ function now(): string {
 export class CanonStore {
   // Derived search index over the published record; rebuildable, never authoritative.
   readonly searchIndex: SearchIndex;
+  // The second derived index: chunk embeddings over the same published
+  // record (Epic D, M3). Same rules, same rebuildability.
+  readonly embeddings: EmbeddingStore;
   // Comments and notifications (Epic C, M2) live in comments.ts and
   // notify.ts; the store carries thin delegates so its surface stays
   // uniform (actorId first). The transport defaults to the dev transport.
   private readonly notifier: Notifier;
   private readonly commentService: CommentService;
+  // Retrieval and grounded answers (Epic D, M3) live in retrieval.ts and
+  // answers.ts; delegates at the end of this class.
+  private readonly retrieval: RetrievalService;
+  private readonly answers: AnswerService;
 
-  constructor(private readonly db: DatabaseSync, transport?: NotificationTransport) {
+  constructor(
+    private readonly db: DatabaseSync,
+    transport?: NotificationTransport,
+    embeddingProvider?: EmbeddingProvider,
+  ) {
     this.searchIndex = new SearchIndex(db);
+    this.embeddings = new EmbeddingStore(db, embeddingProvider);
     this.notifier = new Notifier(db, this, transport);
     this.commentService = new CommentService(db, this, this.notifier);
+    this.retrieval = new RetrievalService(db, this, this.searchIndex, this.embeddings);
+    this.answers = new AnswerService(db, this, this.retrieval);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -313,6 +330,7 @@ export class CanonStore {
     this.requireRole(actorId, row.collection_id as string, 'edit');
     this.db.prepare("UPDATE pages SET status = 'archived' WHERE id = ?").run(pageId);
     this.searchIndex.indexPage(pageId); // archived pages leave search
+    this.embeddings.indexPage(pageId); // and leave the vector index too
     this.audit(actorId, 'page.archive', { collectionId: row.collection_id as string, pageId });
     return this.getPage(actorId, pageId);
   }
@@ -505,6 +523,7 @@ export class CanonStore {
       );
     this.db.prepare('DELETE FROM drafts WHERE page_id = ?').run(page.id);
     this.searchIndex.indexPage(page.id); // publish, approve, and restore all land here
+    this.embeddings.indexPage(page.id); // the same hook for the derived vector index
     this.audit(actorId, 'page.publish', {
       collectionId: page.collectionId,
       pageId: page.id,
@@ -737,5 +756,24 @@ export class CanonStore {
 
   listNotifications(actorId: string): Notification[] {
     return this.notifier.listFor(actorId);
+  }
+
+  // ---- retrieval and grounded answers (Epic D, M3) ---------------------
+  // Thin delegates; the logic lives in retrieval.ts and answers.ts.
+
+  ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
+    return this.answers.ask(actorId, request);
+  }
+
+  retrieve(actorId: string, request: RetrieveRequest): Promise<RetrievalCandidate[]> {
+    return this.retrieval.retrieve(actorId, request);
+  }
+
+  related(
+    actorId: string,
+    pageId: string,
+    opts: { canonicalOnly?: boolean; limit?: number } = {},
+  ): RetrievalCandidate[] {
+    return this.retrieval.related(actorId, pageId, opts);
   }
 }
