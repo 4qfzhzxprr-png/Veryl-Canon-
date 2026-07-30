@@ -16,6 +16,7 @@ import {
   ROLE_RANK,
   TYPE_RULES,
 } from './model.js';
+import { SearchIndex } from './search.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -26,7 +27,12 @@ function now(): string {
 }
 
 export class CanonStore {
-  constructor(private readonly db: DatabaseSync) {}
+  // Derived search index over the published record; rebuildable, never authoritative.
+  readonly searchIndex: SearchIndex;
+
+  constructor(private readonly db: DatabaseSync) {
+    this.searchIndex = new SearchIndex(db);
+  }
 
   // ---- actors ----------------------------------------------------------
 
@@ -297,6 +303,7 @@ export class CanonStore {
     const row = this.pageRow(pageId);
     this.requireRole(actorId, row.collection_id as string, 'edit');
     this.db.prepare("UPDATE pages SET status = 'archived' WHERE id = ?").run(pageId);
+    this.searchIndex.indexPage(pageId); // archived pages leave search
     this.audit(actorId, 'page.archive', { collectionId: row.collection_id as string, pageId });
     return this.getPage(actorId, pageId);
   }
@@ -488,6 +495,7 @@ export class CanonStore {
         page.id,
       );
     this.db.prepare('DELETE FROM drafts WHERE page_id = ?').run(page.id);
+    this.searchIndex.indexPage(page.id); // publish, approve, and restore all land here
     this.audit(actorId, 'page.publish', {
       collectionId: page.collectionId,
       pageId: page.id,

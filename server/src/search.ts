@@ -1,0 +1,150 @@
+import type { DatabaseSync } from 'node:sqlite';
+import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
+
+// Full-text search over the PUBLISHED record (CORE-PLAN.md Epic A scope,
+// FEATURES.md "Search"). The index is a derived structure per
+// DATA-BACKBONE.md §2: rebuildable from pages and page_versions, never
+// authoritative, and held apart from the record and its history — which is
+// why its schema lives here and not in db.ts. Only published content is
+// indexed: readers search the record, never work in progress, so drafts
+// stay out entirely and archived pages leave search.
+const SEARCH_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS page_search USING fts5(
+  page_id UNINDEXED,
+  title,
+  body
+);
+`;
+
+const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical', 'archived'];
+
+export interface SearchResult {
+  pageId: string;
+  title: string;
+  collectionId: string;
+  type: DocType;
+  status: PageStatus;
+  ownerId: string | null;
+  snippet: string;
+}
+
+export interface SearchFilter {
+  q: string;
+  collectionId?: string;
+  type?: string;
+  status?: string;
+  ownerId?: string;
+  limit?: number;
+}
+
+export class SearchIndex {
+  constructor(private readonly db: DatabaseSync) {
+    db.exec(SEARCH_SCHEMA);
+  }
+
+  // Re-derives one page's index entry from the record. Called from the
+  // store whenever the published state of a page changes: publish, approve,
+  // restore (all through writeVersion) and archive. Idempotent: an archived
+  // page or one with no published version simply leaves the index.
+  indexPage(pageId: string): void {
+    this.db.prepare('DELETE FROM page_search WHERE page_id = ?').run(pageId);
+    const row = this.db
+      .prepare(
+        `SELECT v.title, v.body FROM pages p
+         JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+         WHERE p.id = ? AND p.status != 'archived'`,
+      )
+      .get(pageId) as { title: string; body: string } | undefined;
+    if (!row) return;
+    this.db
+      .prepare('INSERT INTO page_search (page_id, title, body) VALUES (?, ?, ?)')
+      .run(pageId, row.title, row.body);
+  }
+
+  // Drops and rebuilds the whole index from the record. The index is never
+  // the source of truth; this proves it.
+  rebuildIndex(): void {
+    this.db.exec('DELETE FROM page_search');
+    this.db
+      .prepare(
+        `INSERT INTO page_search (page_id, title, body)
+         SELECT p.id, v.title, v.body FROM pages p
+         JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+         WHERE p.status != 'archived'`,
+      )
+      .run();
+  }
+
+  // Permission-filtered search: results come only from collections where
+  // the searcher holds at least the view role — membership itself, since
+  // view is the lowest rank and every role implies it. Ranked with
+  // Canonical pages first (official means something), then FTS relevance.
+  search(actorId: string, filter: SearchFilter): SearchResult[] {
+    const actor = this.db.prepare('SELECT id FROM actors WHERE id = ?').get(actorId);
+    if (!actor) throw new CanonError('not_found', `No such actor: ${actorId}`);
+
+    const match = toMatchQuery(filter.q);
+    if (!match) throw new CanonError('invalid', 'Search requires a query (q)');
+    if (filter.type && !DOC_TYPES.includes(filter.type as DocType)) {
+      throw new CanonError('invalid', `Unknown document type: ${filter.type}`);
+    }
+    if (filter.status && !PAGE_STATUSES.includes(filter.status as PageStatus)) {
+      throw new CanonError('invalid', `Unknown page status: ${filter.status}`);
+    }
+
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (filter.collectionId) {
+      clauses.push('AND p.collection_id = ?');
+      params.push(filter.collectionId);
+    }
+    if (filter.type) {
+      clauses.push('AND p.type = ?');
+      params.push(filter.type);
+    }
+    if (filter.status) {
+      clauses.push('AND p.status = ?');
+      params.push(filter.status);
+    }
+    if (filter.ownerId) {
+      clauses.push('AND p.owner_id = ?');
+      params.push(filter.ownerId);
+    }
+    const limit = Math.min(Math.max(filter.limit ?? 25, 1), 100);
+
+    const rows = this.db
+      .prepare(
+        `SELECT p.id, p.collection_id, p.type, p.status, p.owner_id, p.title,
+                snippet(page_search, -1, '<mark>', '</mark>', '…', 12) AS snip
+         FROM page_search
+         JOIN pages p ON p.id = page_search.page_id
+         JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
+         WHERE page_search MATCH ? ${clauses.join(' ')}
+         ORDER BY CASE WHEN p.status = 'canonical' THEN 0 ELSE 1 END, bm25(page_search)
+         LIMIT ${limit}`,
+      )
+      .all(actorId, match, ...params) as Record<string, unknown>[];
+
+    return rows.map((r) => ({
+      pageId: r.id as string,
+      title: r.title as string,
+      collectionId: r.collection_id as string,
+      type: r.type as DocType,
+      status: r.status as PageStatus,
+      ownerId: (r.owner_id as string) ?? null,
+      snippet: r.snip as string,
+    }));
+  }
+}
+
+// Users type words, not FTS5 syntax. Each whitespace-separated term becomes
+// a quoted phrase (all terms must match), so operators and punctuation in
+// the input can never break or subvert the MATCH expression.
+function toMatchQuery(q: string | undefined): string | null {
+  const terms = (q ?? '')
+    .split(/\s+/)
+    .map((t) => t.replace(/"/g, ''))
+    .filter((t) => t.length > 0)
+    .map((t) => `"${t}"`);
+  return terms.length ? terms.join(' ') : null;
+}
