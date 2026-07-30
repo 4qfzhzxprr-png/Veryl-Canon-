@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError } from './model.js';
+import { STOPWORDS } from './embeddings.js';
 import type { RetrievalService } from './retrieval.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
@@ -93,6 +94,77 @@ export const extractiveGenerator: AnswerGenerator = {
   },
 };
 
+// Retrieval always returns its best candidates, because ranking has no notion
+// of "good enough" — a question sharing one common word with a page ("what is
+// our policy on submarine procurement" against a retention *policy*) still
+// ranks that page first, since it is the best of what exists. Answering from
+// it would be the confident wrong answer CORE-PLAN §7 names as costing more
+// than many right ones earn.
+//
+// So being retrieved is not sufficient to be cited. At least one directly
+// retrieved page must also be *about* the question, measured as overlap with
+// the question's content terms. Pages pulled in by graph expansion are exempt:
+// a child procedure legitimately answers in words the question never used, and
+// it earns its place through the anchor that reached it, not on its own.
+//
+// The gate is deliberately blunt and deliberately strict. It costs recall on
+// oddly-worded questions, and buys refusal instead of invention — the trade
+// DATA-BACKBONE.md §5 asks for.
+export const MIN_TOPICAL_OVERLAP = 0.5;
+
+// Enough of a stemmer to survive plurals and tense: records/record,
+// policies/policy, retained/retain. Not linguistics — just the difference
+// between a gate that works on real questions and one that refuses everything.
+function stem(term: string): string {
+  if (term.length > 4 && term.endsWith('ies')) return `${term.slice(0, -3)}y`;
+  for (const suffix of ['ing', 'ed', 'es', 's']) {
+    if (term.length > suffix.length + 3 && term.endsWith(suffix)) return term.slice(0, -suffix.length);
+  }
+  return term;
+}
+
+function contentTerms(text: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 2 || STOPWORDS.has(raw)) continue;
+    seen.add(stem(raw));
+  }
+  return [...seen];
+}
+
+function termsCovered(questionTerms: string[], text: string): number {
+  const found = new Set(contentTerms(text));
+  let covered = 0;
+  for (const term of questionTerms) {
+    if (found.has(term)) {
+      covered += 1;
+      continue;
+    }
+    // Prefix match catches the pairs the stemmer misses (retention/retained)
+    // without matching on two or three shared letters.
+    for (const candidate of found) {
+      const shorter = term.length <= candidate.length ? term : candidate;
+      const longer = term.length <= candidate.length ? candidate : term;
+      if (shorter.length >= 5 && longer.startsWith(shorter)) {
+        covered += 1;
+        break;
+      }
+    }
+  }
+  return covered;
+}
+
+// Is this candidate actually about the question? Coverage of at least half the
+// question's content terms, and never on the strength of a single shared word
+// unless the question itself was a single word.
+export function isOnTopic(question: string, text: string): boolean {
+  const questionTerms = contentTerms(question);
+  if (questionTerms.length === 0) return false;
+  const covered = termsCovered(questionTerms, text);
+  const minimum = questionTerms.length === 1 ? 1 : 2;
+  return covered >= minimum && covered / questionTerms.length >= MIN_TOPICAL_OVERLAP;
+}
+
 // The minimal slice of CanonStore this service needs; CanonStore satisfies it.
 export interface AnswerHost {
   getActor(id: string): Actor;
@@ -125,8 +197,18 @@ export class AnswerService {
 
     // Belt and braces over the SQL filter: nothing that is not a Canonical,
     // non-Note page can reach the generator, whatever retrieval returns.
-    const passages: AnswerPassage[] = candidates
-      .filter((c) => c.status === 'canonical' && c.type !== 'note' && c.passage.trim().length > 0)
+    const eligible = candidates.filter(
+      (c) => c.status === 'canonical' && c.type !== 'note' && c.passage.trim().length > 0,
+    );
+
+    // The topical gate. A directly retrieved candidate must be about the
+    // question to anchor an answer; expanded neighbours ride on the anchor
+    // that reached them, and are dropped when their anchor does not clear.
+    const anchors = eligible.filter((c) => c.via === null && isOnTopic(question, `${c.title} ${c.passage}`));
+    const anchored = new Set(anchors.map((c) => c.pageId));
+    const passages: AnswerPassage[] = (
+      anchors.length === 0 ? [] : eligible.filter((c) => c.via === null ? anchored.has(c.pageId) : anchored.has(c.via.fromPageId))
+    )
       .slice(0, MAX_CITED_PASSAGES)
       .map((c) => ({ pageId: c.pageId, title: c.title, version: c.version, text: c.passage }));
 

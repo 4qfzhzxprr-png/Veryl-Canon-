@@ -329,3 +329,73 @@ test('API: POST /ask and GET /pages/:id/related over HTTP', async () => {
     server.close();
   }
 });
+
+// Regression: retrieval ranks the best of what exists, which for an unrelated
+// question is still something. Answering from it produced a confident, cited,
+// wrong answer — caught end to end against a live server, fixed by the topical
+// gate in answers.ts. These tests are the gate's contract.
+
+test('ask: refuses a question the record does not cover, however well it ranks', async () => {
+  const { store, marc, iris, collection } = setup();
+  publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+  );
+
+  // Shares exactly one content word with the record ("policy"), which is
+  // enough to be retrieved and nowhere near enough to be cited.
+  const result = await store.ask(marc.id, { question: 'What is our policy on submarine procurement?' });
+  assert.equal(result.refused, true, 'an unrelated question must refuse, not cite the nearest page');
+  assert.equal(result.answer, null);
+  assert.deepEqual(result.citations, []);
+  assert.equal(result.reason, 'no_canonical_match');
+
+  // The same record still answers the question it actually covers.
+  const covered = await store.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.equal(covered.refused, false);
+  assert.equal(covered.citations.length, 1);
+});
+
+test('ask: a refusal on an off-topic question is audited like any other', async () => {
+  const { store, marc, iris, collection } = setup();
+  publishCanonical(store, marc.id, iris.id, collection.id, 'Vault policy', 'Every access to the vault is logged.');
+
+  await store.ask(marc.id, { question: 'What is our policy on submarine procurement?' });
+  const events = store.queryAudit(marc.id, { action: 'answer.ask' });
+  assert.equal(events[0]!.details.refused, true);
+  assert.deepEqual(events[0]!.details.citedPageIds ?? [], []);
+});
+
+test('ask: graph-expanded neighbours ride on their anchor, not on their own wording', async () => {
+  const { store, marc, iris, collection } = setup();
+  const policy = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Vault access policy',
+    'Every access to the vault is logged and reviewed each month.',
+  );
+  // A child whose text shares almost nothing with the question: it earns its
+  // place through its parent, which is exactly what expansion is for.
+  publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Monthly review steps',
+    'Pull the ledger, confirm each entry against the badge system, then sign off.',
+    policy.id,
+  );
+
+  const result = await store.ask(marc.id, { question: 'Is vault access logged and reviewed?' });
+  assert.equal(result.refused, false);
+  assert.ok(
+    result.citations.some((c) => c.pageId === policy.id),
+    'the anchor page must be cited',
+  );
+});
