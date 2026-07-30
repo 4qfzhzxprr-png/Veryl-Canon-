@@ -52,6 +52,13 @@ The verification answer carries the agent's limits, set in the Registry by the o
 
 Enforcement is an intersection, never a union. An agent acts only where **both** the Registry's limits and Canon's own collection permissions allow. The Registry's answer can narrow what an agent's collection membership would permit; it can never widen it. And per the backbone principles, Canon stores none of this: the limits live in the Registry, arrive with each verification, are enforced against the request in hand, and expire with the cached answer. A limits change in the Registry therefore propagates exactly as fast as a revocation — within the same minute.
 
+Two cases the list of collection IDs does not decide on its own, settled when Epic D wired this contract into Canon's door:
+
+- **A request that spans collections** — a collection listing, a search, the audit log — is narrowed to the agent's permitted collections rather than refused. Refusing a search because the record holds a collection the agent may not see would be a strange reading of "permitted"; the guarantee that matters is that nothing outside the list reaches the agent, and narrowing keeps it.
+- **A request that touches no existing collection**, such as creating one, cannot be checked against a list of IDs that necessarily excludes it. Canon requires `"*"` for these: an agent limited to named collections cannot mint itself a new one.
+
+Both rules follow the same principle as the rest of this section — where the limits are silent, the agent gets less, not more.
+
 ## 5. Error semantics: fail closed
 
 Every failure mode has one outcome — the agent's request is refused — but Canon distinguishes them, because the audit log and the agent's operator need to know why.
@@ -65,7 +72,7 @@ Every failure mode has one outcome — the agent's request is refused — but Ca
 
 Two rules sharpen the last row. First, Canon never converts "no answer" into any of the definitive refusals or, worse, into an allowance; it reports the outage as an outage. Second, definitive answers — verified or refused — may be cached up to the sixty-second ceiling, but "no usable answer" is never cached: the next request tries the Registry again, so recovery is immediate when the Registry returns.
 
-Every refused agent request is an audit event in Canon, attributed to the passport's agent where the agent is known and recorded against the presented (refused) credential where it is not.
+Every refused agent request is an audit event in Canon, attributed to the passport's agent where the agent is known. Where it is not — an unknown passport names no agent, and a refusal carries no `agentId` — the event is recorded against a one-way fingerprint of the presented passport, never the passport itself. Rule 1 admits no exception for the audit log: a refused credential written down verbatim is still a credential Canon stores, and a fingerprint correlates repeated attempts without ever being replayable.
 
 ## 6. Endpoints
 

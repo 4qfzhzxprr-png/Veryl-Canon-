@@ -4,7 +4,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "rootDir": ".",
+    // Rooted a level up so the agent-authentication tests can boot the real
+    // registry-stub in-process, exactly as registry-stub's own tests compile
+    // Canon's RegistryClient. Output therefore lands in dist/server/…
+    "rootDir": "..",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "forceConsistentCasingInFileNames": true,
@@ -12,5 +15,5 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "../registry-stub/src/**/*.ts"]
 }

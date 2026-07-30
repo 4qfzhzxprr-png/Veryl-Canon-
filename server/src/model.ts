@@ -116,7 +116,13 @@ export type ErrorCode =
   | 'conflict'
   | 'locked'
   | 'invalid'
-  | 'workflow';
+  | 'workflow'
+  // Authentication codes, carrying the Registry contract's error semantics
+  // into Canon's envelope (REGISTRY-CONTRACT.md §5): an unknown passport is
+  // 401, a lapsed or revoked certification is 403 (forbidden, above), and an
+  // unreachable Registry is 503 — refused, never served from stale trust.
+  | 'unauthenticated'
+  | 'unavailable';
 
 const HTTP_STATUS: Record<ErrorCode, number> = {
   not_found: 404,
@@ -125,6 +131,8 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   locked: 423,
   invalid: 400,
   workflow: 422,
+  unauthenticated: 401,
+  unavailable: 503,
 };
 
 export class CanonError extends Error {
