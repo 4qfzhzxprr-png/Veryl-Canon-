@@ -1,6 +1,10 @@
 # Veryl Canon
 
-The trusted source of company knowledge, built by people and agents together.
+**Status: Alpha** — in alpha with a small group of design partners.
+
+The trusted source of company knowledge, built by people and agents together, so what agents act on is the same information teams write and rely on.
+
+*This is the official description from [Veryl.ai](https://veryl.ai). Use it verbatim wherever Canon is introduced cold.*
 
 ## What Canon is
 

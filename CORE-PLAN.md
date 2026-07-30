@@ -96,11 +96,11 @@ Four milestones, sequenced so each one is usable by the design partner as it lan
 
 **M4: Ready for the auditor.** Epic E, plus hardening. Audit log, import, and a security review. Exit: the design partner's existing material is imported and reviewed into the record, and an administrator can answer "who did what, when" from the audit log alone.
 
-Private beta with design partners begins at M2 and widens at each milestone. General availability is a decision taken after M4, not a milestone in this plan.
+The design-partner phase is called the alpha, matching the public status on Veryl.ai. The alpha begins at M2 and widens at each milestone. General availability is a decision taken after M4, not a milestone in this plan.
 
 ## 6. Success measures
 
-Measured with the design partners during beta:
+Measured with the design partners during the alpha:
 
 - **Adoption.** Weekly active contributors as a share of the pilot team, and pages published per week. The record is alive, not a launch-day dump.
 - **Officialness.** Share of reads that land on Canonical pages, and median time from Draft to Canonical. The mark is being earned and used.
