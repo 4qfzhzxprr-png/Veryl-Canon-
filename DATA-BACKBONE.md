@@ -68,7 +68,54 @@ Organization is what turns a store into a record. Three structures do the work:
 
 Underneath, storage separates by lifecycle: the current record (pages, fields, permissions) optimized for live reads and writes; immutable history (versions, audit events) optimized for append and proof; and derived indexes (search, query) that can always be rebuilt from the first two. Any technology choice that respects this separation is acceptable; any that blurs it is not.
 
-## 5. What Registry and Studio depend on
+## 5. How the record is retrieved
+
+Storing the record is half the job. The other half is answering from it — for a person using the question box, for an approved agent, and for a Studio app. This section fixes how retrieval works, because the answer determines whether the trust promises above survive contact with generated text.
+
+### The rule that governs everything here
+
+Retrieval is derived. Every index it uses — full-text, vector, or otherwise — is rebuildable from pages and versions, and none of it is ever authoritative. Nothing enters an index that is not already in the record, and nothing an index produces is treated as fact on its own. This is principle 1 applied to answers: a fact lives in exactly one place, and that place is a page.
+
+### Why not GraphRAG
+
+The obvious modern answer to "how do we answer from a corpus" is GraphRAG: have a model extract entities and relationships across the whole body of material, cluster them into communities, and pre-write summaries that answers draw on. It is a genuinely strong technique for global questions over large, unstructured, low-governance corpora. Canon is none of those things, and it fails us on three specific counts:
+
+- **Provenance.** Our promise is that answers cite Canonical pages and refuse when the record is silent. GraphRAG answers are grounded in model-written community summaries — derived prose no owner approved and no approver ever saw. Putting synthesized intermediate text between the record and the answer is precisely how a confident wrong answer gets made, and one of those costs more than many right ones earn.
+- **Permissions.** Access is evaluated per asker, per call. A community summary blends many pages into one artifact; if the asker may see only some of its sources, the summary leaks. Pre-computing a summary per permission scope multiplies cost by the number of distinct scopes, and filtering after generation cannot un-leak what the text already merged.
+- **Freshness.** Canon exists to remove the gap between what people know and what agents use. A graph index that costs model calls per edit is expensive to keep current, so in practice it lags — reintroducing the very drift the product is against.
+
+### What we do instead
+
+Canon does not need an inferred graph, because it already has an explicit one. Trees, page links, owners, types, labels, and status are structured data that people maintain deliberately. That graph is more trustworthy than anything extraction would produce, and it is free. Retrieval is therefore four deterministic steps:
+
+1. **Hybrid candidate search.** Lexical retrieval (the existing FTS5/BM25 index) unioned with semantic retrieval over chunk embeddings, then reranked. Lexical catches exact policy language and proper nouns; semantic catches the question asked in different words than the record uses. Neither alone is sufficient for a knowledge record.
+2. **Permission filtering before ranking, not after.** The asker's collections bound the candidate set at query time, exactly as search already does, so material the asker cannot see never influences the ranking, the context, or the answer.
+3. **Graph expansion along real edges.** For each surviving candidate, pull in its Canonical neighbours — parent, children, explicitly linked pages — up to a small, fixed depth. This is where multi-hop answers come from ("the policy states the rule, its child procedure states the steps"), and it costs a tree query rather than a model call. Every expanded page is a real page with a real citation.
+4. **Generation under the record's rules.** Canonical pages only, never Drafts or Notes. Every claim cites page and version. When the filtered, expanded context does not answer the question, the answer is that the record does not say so — refusal is a correct answer, not a failure.
+
+### What this requires, and what it does not
+
+Semantic retrieval needs an embedding model, which would be Canon's first runtime dependency on an outside service. It is therefore optional and configurable: with an embedding provider, retrieval is hybrid; without one, it degrades to lexical retrieval plus graph expansion, which is a respectable answer engine on its own and keeps the whole system runnable with no external calls. The same applies to generation. Embeddings are stored as a derived table keyed by page and version, rebuilt when a page publishes and reconstructible in full from the record.
+
+At alpha scale — one design partner, thousands of pages — exact similarity over stored vectors is fast enough, and choosing a vector database is a decision we do not have to make yet. The interface is what matters: as long as retrieval asks for "candidates for this query, visible to this actor," the storage behind it can change without touching the contract.
+
+### The answer contract
+
+One shape, used by Canon's own question box, by agents, and by Studio apps through the Knowledge API:
+
+```
+POST /ask   { question, collectionId?, limit? }
+    ->      { answer | null, citations: [{ pageId, title, version, snippet }],
+              refused: bool, reason?: "no_canonical_match" | ... }
+```
+
+An answer without citations is never returned. `refused: true` with an empty citation list is the honest response to a silent record, and it is the response we would rather ship than a plausible guess.
+
+### When we would revisit this
+
+If design partners turn out to ask genuinely global questions — "what themes run across all our policies," "where does the record contradict itself" — that is the shape GraphRAG is good at, and this decision should be reopened. Even then it would arrive as a clearly labelled derived layer computed per permission scope, with its summaries treated as navigation aids that point at pages, never as sources an answer may cite directly.
+
+## 6. What Registry and Studio depend on
 
 These are the contracts. They name what each product may assume about Canon, and what Canon assumes in return.
 
@@ -88,7 +135,7 @@ These are the contracts. They name what each product may assume about Canon, and
 
 The Knowledge API lands in the Next tier ([FEATURES.md](FEATURES.md), what ships first). The contract is stated now so nothing in Core forecloses it — which is Core's standing rule for all deferred work.
 
-## 6. What this means for build order
+## 7. What this means for build order
 
 The Core plan already sequences the product correctly for this role; the backbone framing changes emphasis, not order.
 
@@ -96,9 +143,11 @@ The Core plan already sequences the product correctly for this role; the backbon
 - **The Registry contract comes first among integrations.** Core's plan already requires agreeing the Passport and certification-check contract before M1 ends. This document adds the reason: it is the suite's trust boundary, not just a Canon feature.
 - **The Knowledge API is the third product's foundation.** It ships in the Next tier, but its shape — actor on every call, permission per call, Canonical-only grounding — is fixed now. Studio's timeline depends on it, so the Next tier should open with it.
 
-## 7. Open questions
+## 8. Open questions
 
-Beyond the Core plan's open questions, the backbone role raises three of its own:
+Beyond the Core plan's open questions, the backbone role raises four of its own:
+
+- Which embedding provider, and does a regulated design partner accept their record's text being sent to it at all? If not, retrieval runs lexical-plus-graph until a self-hosted model is available — which is one reason semantic retrieval is optional rather than assumed.
 
 - Does Studio need read access to any non-Canonical material — for example, an app that helps a team work on drafts — or is the Canonical-only boundary absolute for apps? Leaning absolute for answers, permitted-with-attribution for working tools.
 - Where an app acts for a person, does Canon record the person, the app, or both as the actor? Leaning both, always: the audit question is "who did what, through what."
