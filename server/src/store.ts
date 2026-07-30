@@ -17,6 +17,8 @@ import {
   TYPE_RULES,
 } from './model.js';
 import { SearchIndex } from './search.js';
+import { Comment, CommentAnchor, CommentService } from './comments.js';
+import { Notification, NotificationTransport, Notifier } from './notify.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -29,9 +31,16 @@ function now(): string {
 export class CanonStore {
   // Derived search index over the published record; rebuildable, never authoritative.
   readonly searchIndex: SearchIndex;
+  // Comments and notifications (Epic C, M2) live in comments.ts and
+  // notify.ts; the store carries thin delegates so its surface stays
+  // uniform (actorId first). The transport defaults to the dev transport.
+  private readonly notifier: Notifier;
+  private readonly commentService: CommentService;
 
-  constructor(private readonly db: DatabaseSync) {
+  constructor(private readonly db: DatabaseSync, transport?: NotificationTransport) {
     this.searchIndex = new SearchIndex(db);
+    this.notifier = new Notifier(db, this, transport);
+    this.commentService = new CommentService(db, this, this.notifier);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -584,6 +593,7 @@ export class CanonStore {
     }
     this.db.prepare("UPDATE pages SET status = 'in_review' WHERE id = ?").run(pageId);
     this.audit(actorId, 'page.submit', { collectionId: page.collectionId, pageId });
+    this.notifier.reviewRequested(actorId, pageId);
     return this.getPage(actorId, pageId);
   }
 
@@ -618,6 +628,7 @@ export class CanonStore {
       pageId,
       details: { version: approved.currentVersion },
     });
+    this.notifier.draftApproved(actorId, pageId, draft.editor_id as string);
     return approved;
   }
 
@@ -637,6 +648,7 @@ export class CanonStore {
       pageId,
       details: { comment: input.comment.trim() },
     });
+    this.notifier.draftSentBack(actorId, pageId, input.comment.trim());
     return this.getPage(actorId, pageId);
   }
 
@@ -702,5 +714,28 @@ export class CanonStore {
       pageId: (r.page_id as string) ?? null,
       details: JSON.parse(r.details_json as string) as Record<string, unknown>,
     }));
+  }
+
+  // ---- comments, mentions, notifications (Epic C, M2) ------------------
+  // Thin delegates; the logic lives in comments.ts and notify.ts.
+
+  createComment(actorId: string, pageId: string, input: { body: string; anchor?: Partial<CommentAnchor> | null }): Comment {
+    return this.commentService.create(actorId, pageId, input);
+  }
+
+  listComments(actorId: string, pageId: string): Comment[] {
+    return this.commentService.list(actorId, pageId);
+  }
+
+  resolveComment(actorId: string, commentId: string): Comment {
+    return this.commentService.resolve(actorId, commentId);
+  }
+
+  reopenComment(actorId: string, commentId: string): Comment {
+    return this.commentService.reopen(actorId, commentId);
+  }
+
+  listNotifications(actorId: string): Notification[] {
+    return this.notifier.listFor(actorId);
   }
 }

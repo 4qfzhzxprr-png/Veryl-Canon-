@@ -118,6 +118,14 @@ const routes: Route[] = [
       limit: query.get('limit') ? Number(query.get('limit')) : undefined,
     }),
   ),
+
+  route('POST', '/pages/:id/comments', ({ store, actorId, params, body }) =>
+    store.createComment(actorId, params.id!, body),
+  ),
+  route('GET', '/pages/:id/comments', ({ store, actorId, params }) => store.listComments(actorId, params.id!)),
+  route('POST', '/comments/:id/resolve', ({ store, actorId, params }) => store.resolveComment(actorId, params.id!)),
+  route('POST', '/comments/:id/reopen', ({ store, actorId, params }) => store.reopenComment(actorId, params.id!)),
+  route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
