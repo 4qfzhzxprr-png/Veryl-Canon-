@@ -1,0 +1,1352 @@
+// Veryl Canon web UI — a single-file, no-dependency SPA over the Canon API.
+// Identity is the dev X-Actor-Id header (SSO and Agent Passport arrive with
+// the Registry integration). Hash routing; all rendering through esc() so no
+// record content is ever injected as HTML.
+
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Constants mirrored from the server's document-type table. These describe
+// form shape only (which fields a type carries); permissions and workflow
+// legality stay server-side and surface here through API error codes.
+
+const TYPE_LABELS = { policy: 'Policy', spec: 'Spec', plan: 'Plan', note: 'Note' };
+const TYPE_HELP = {
+  policy: 'Official rules. Needs an owner and a named approver; carries an effective date.',
+  spec: 'How something is built or must behave. Needs an owner and a named approver.',
+  plan: 'What will be done and when. Needs an owner.',
+  note: 'Working material. Publishes directly and never carries the Canonical mark.',
+};
+const TYPE_FIELDS = {
+  policy: { owner: true, approver: true, effectiveDate: true },
+  spec: { owner: true, approver: true, effectiveDate: false },
+  plan: { owner: true, approver: false, effectiveDate: false },
+  note: { owner: false, approver: false, effectiveDate: false },
+};
+const REVIEWED_TYPES = ['policy', 'spec', 'plan'];
+
+const STATUS_LABELS = { draft: 'Draft', in_review: 'In Review', canonical: 'Canonical', archived: 'Archived' };
+
+const AUDIT_ACTIONS = [
+  'collection.create', 'collection.member_set', 'collection.member_removed',
+  'page.create', 'page.view', 'page.move', 'page.archive',
+  'draft.start', 'draft.discard',
+  'page.publish', 'page.submit', 'page.approve', 'page.send_back', 'page.restore',
+];
+
+const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
+
+// ---------------------------------------------------------------------------
+// State
+
+const state = {
+  actor: readStoredActor(),
+  actors: null, // cached GET /actors
+  features: { search: null, comments: null }, // null = not yet probed
+  afterIdentity: null, // hash to return to after picking an identity
+};
+
+function readStoredActor() {
+  try {
+    const raw = localStorage.getItem('canon.actor');
+    const a = raw ? JSON.parse(raw) : null;
+    return a && a.id ? a : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeActor(actor) {
+  state.actor = actor;
+  if (actor) localStorage.setItem('canon.actor', JSON.stringify(actor));
+  else localStorage.removeItem('canon.actor');
+}
+
+// ---------------------------------------------------------------------------
+// API client — every call carries X-Actor-Id; errors throw {status, code,
+// message, details} built from the server's error payload.
+
+async function api(method, path, body, opts = {}) {
+  const headers = {};
+  const actorId = opts.actorId ?? state.actor?.id;
+  if (actorId) headers['X-Actor-Id'] = actorId;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw { status: 0, code: 'network', message: 'Cannot reach the Canon server.', details: {} };
+  }
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON body */ }
+  if (!res.ok) {
+    throw {
+      status: res.status,
+      code: data?.error ?? 'error',
+      message: data?.message ?? `Request failed (${res.status})`,
+      details: data ?? {},
+    };
+  }
+  return data;
+}
+
+async function loadActors(force = false) {
+  if (!state.actors || force) {
+    state.actors = await api('GET', '/actors', undefined, state.actor ? {} : { actorId: 'onboarding' });
+  }
+  return state.actors;
+}
+
+function actorById(id) {
+  return (state.actors ?? []).find((a) => a.id === id) ?? null;
+}
+
+function actorName(id) {
+  if (!id) return '—';
+  const a = actorById(id);
+  return a ? a.name : id.slice(0, 8) + '…';
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return esc(iso);
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso + (iso.length === 10 ? 'T00:00:00' : ''));
+  if (Number.isNaN(d.getTime())) return esc(iso);
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function badge(status, size = '') {
+  const label = STATUS_LABELS[status] ?? status;
+  return `<span class="badge badge-${esc(status)} ${size}">${esc(label)}</span>`;
+}
+
+function kindTag(kind) {
+  return kind === 'agent' ? '<span class="kind-tag agent">agent</span>' : '<span class="kind-tag">person</span>';
+}
+
+function actorLabel(id) {
+  const a = actorById(id);
+  if (!a) return esc(actorName(id));
+  return `${esc(a.name)}${a.kind === 'agent' ? ' <span class="kind-tag agent">agent</span>' : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Toasts
+
+function toast(message, kind = 'error') {
+  const host = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = `toast toast-${kind}`;
+  el.textContent = message;
+  host.appendChild(el);
+  setTimeout(() => { el.classList.add('leaving'); setTimeout(() => el.remove(), 300); }, 4500);
+}
+
+function toastError(err) {
+  toast(err?.message ?? 'Something went wrong.', 'error');
+}
+
+// ---------------------------------------------------------------------------
+// Modal — one at a time; onSubmit(form) may throw/reject to keep it open.
+
+function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit }) {
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+        <h2>${esc(title)}</h2>
+        <form>
+          ${body}
+          <div class="modal-actions">
+            <button type="button" class="btn" data-cancel>${esc(cancelLabel)}</button>
+            <button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(submitLabel)}</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+  const backdrop = root.querySelector('.modal-backdrop');
+  const form = root.querySelector('form');
+  const close = () => { root.innerHTML = ''; };
+  backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+  root.querySelector('[data-cancel]').addEventListener('click', close);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const submitBtn = form.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      await onSubmit(form);
+      close();
+    } catch (err) {
+      submitBtn.disabled = false;
+      toastError(err);
+    }
+  });
+  const first = form.querySelector('input, textarea, select');
+  if (first) first.focus();
+  return { close };
+}
+
+// ---------------------------------------------------------------------------
+// Markdown — a deliberately small, safe subset. Everything is HTML-escaped
+// first; only markup this renderer generates ever reaches the DOM.
+
+function renderMarkdown(src) {
+  const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  const isBlank = (l) => /^\s*$/.test(l);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++; // closing fence (or EOF)
+      out.push(`<pre class="codeblock"><code>${esc(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level}>${mdInline(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${mdInline(lines[i].replace(/^\s*[-*]\s+/, ''))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(`<li>${mdInline(lines[i].replace(/^\s*\d+\.\s+/, ''))}</li>`);
+        i++;
+      }
+      out.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(mdInline(lines[i].replace(/^\s*>\s?/, '')));
+        i++;
+      }
+      out.push(`<blockquote>${buf.join('<br>')}</blockquote>`);
+      continue;
+    }
+    if (isBlank(line)) { i++; continue; }
+    const buf = [];
+    while (
+      i < lines.length && !isBlank(lines[i]) &&
+      !/^(#{1,6}\s|```|\s*[-*]\s|\s*\d+\.\s|\s*>)/.test(lines[i])
+    ) {
+      buf.push(mdInline(lines[i]));
+      i++;
+    }
+    out.push(`<p>${buf.join(' ')}</p>`);
+  }
+  return out.join('\n');
+}
+
+function mdInline(raw) {
+  let s = esc(raw);
+  const codes = [];
+  s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, href) => {
+    // href is already entity-escaped; allow only benign schemes.
+    if (/^(https?:|mailto:|#)/i.test(href)) {
+      const external = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
+      return `<a href="${href}"${external}>${text}</a>`;
+    }
+    return text;
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${codes[Number(n)]}</code>`);
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Line diff — LCS-based, computed client-side for version compare.
+
+function diffLines(aText, bText) {
+  const a = String(aText ?? '').split('\n');
+  const b = String(bText ?? '').split('\n');
+  const n = a.length, m = b.length;
+  if (n * m > 2_000_000) {
+    // Degenerate fallback for very large bodies: whole-file replace.
+    return [...a.map((l) => ({ type: 'del', a: l })), ...b.map((l) => ({ type: 'add', b: l }))];
+  }
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const rows = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { rows.push({ type: 'same', a: a[i], b: b[j] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { rows.push({ type: 'del', a: a[i] }); i++; }
+    else { rows.push({ type: 'add', b: b[j] }); j++; }
+  }
+  while (i < n) rows.push({ type: 'del', a: a[i++] });
+  while (j < m) rows.push({ type: 'add', b: b[j++] });
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Chrome: top bar, identity chip, search (feature-detected)
+
+function renderChrome() {
+  const chip = document.getElementById('actor-chip');
+  const nav = document.getElementById('topnav');
+  if (state.actor) {
+    nav.hidden = false;
+    chip.innerHTML = `
+      <span class="chip-name">${esc(state.actor.name)}</span>
+      ${state.actor.kind === 'agent' ? '<span class="kind-tag agent">agent</span>' : ''}
+      <button class="btn subtle" id="switch-actor" title="Switch identity">Switch</button>`;
+    chip.querySelector('#switch-actor').addEventListener('click', () => {
+      storeActor(null);
+      state.features = { search: null, comments: null };
+      document.getElementById('search-slot').hidden = true;
+      renderChrome();
+      location.hash = '#/identity';
+      route();
+    });
+    detectSearch();
+  } else {
+    nav.hidden = true;
+    chip.innerHTML = '';
+  }
+}
+
+async function detectSearch() {
+  if (state.features.search !== null) {
+    document.getElementById('search-slot').hidden = state.features.search !== true;
+    return;
+  }
+  try {
+    await api('GET', '/search?q=');
+    state.features.search = true;
+  } catch (err) {
+    // 404 = endpoint not built yet; anything else (400 for a missing/short
+    // query, etc.) means the endpoint exists.
+    state.features.search = err.status !== 404 && err.status !== 0;
+  }
+  document.getElementById('search-slot').hidden = state.features.search !== true;
+}
+
+function wireSearch() {
+  const input = document.getElementById('search-input');
+  const results = document.getElementById('search-results');
+  let timer = null;
+  const hide = () => { results.hidden = true; };
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 2) { hide(); return; }
+    timer = setTimeout(async () => {
+      try {
+        const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
+        const items = Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
+        if (!items.length) {
+          results.innerHTML = '<div class="search-empty">Nothing in the record matches.</div>';
+        } else {
+          results.innerHTML = items.slice(0, 12).map((it) => {
+            const id = it.pageId ?? it.id;
+            const title = it.title ?? '(untitled)';
+            const status = it.status ? badge(it.status, 'sm') : '';
+            const type = it.type ? `<span class="muted">${esc(TYPE_LABELS[it.type] ?? it.type)}</span>` : '';
+            const snippet = it.snippet ?? it.excerpt ?? '';
+            return `<a class="search-hit" href="#/pages/${esc(id)}">
+              <span class="search-hit-title">${esc(title)}</span> ${status} ${type}
+              ${snippet ? `<span class="search-snippet">${esc(snippet)}</span>` : ''}
+            </a>`;
+          }).join('');
+        }
+        results.hidden = false;
+      } catch (err) {
+        if (err.status === 404) { state.features.search = false; document.getElementById('search-slot').hidden = true; }
+        else toastError(err);
+      }
+    }, 250);
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hide(); input.blur(); } });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.search-slot')) hide();
+    if (e.target.closest('.search-hit')) { hide(); input.value = ''; }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Router
+
+const app = document.getElementById('app');
+
+function parseHash() {
+  const h = location.hash.replace(/^#/, '');
+  const parts = h.split('/').filter(Boolean).map(decodeURIComponent);
+  return parts; // e.g. ['pages', id, 'edit']
+}
+
+async function route() {
+  const parts = parseHash();
+  if (!state.actor && parts[0] !== 'identity') {
+    state.afterIdentity = location.hash || '#/';
+    await render(viewIdentity);
+    return;
+  }
+  document.querySelectorAll('#topnav a').forEach((a) => {
+    const key = a.dataset.nav;
+    const active = (key === 'audit' && parts[0] === 'audit') || (key === 'home' && parts[0] !== 'audit');
+    a.classList.toggle('active', active);
+  });
+  try {
+    if (parts.length === 0) return await render(viewHome);
+    if (parts[0] === 'identity') return await render(viewIdentity);
+    if (parts[0] === 'audit') return await render(viewAudit);
+    if (parts[0] === 'collections' && parts[1]) return await render(() => viewCollection(parts[1]));
+    if (parts[0] === 'pages' && parts[1]) {
+      const id = parts[1];
+      if (parts[2] === 'edit') return await render(() => viewEditor(id));
+      if (parts[2] === 'history') return await render(() => viewHistory(id));
+      if (parts[2] === 'versions' && parts[3]) return await render(() => viewVersion(id, Number(parts[3])));
+      if (parts[2] === 'compare' && parts[3] && parts[4]) {
+        return await render(() => viewCompare(id, Number(parts[3]), Number(parts[4])));
+      }
+      return await render(() => viewPage(id));
+    }
+    return await render(viewHome);
+  } catch (err) {
+    renderErrorPage(err);
+  }
+}
+
+async function render(view) {
+  app.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    await view();
+  } catch (err) {
+    renderErrorPage(err);
+  }
+}
+
+function renderErrorPage(err) {
+  const msg = err?.message ?? 'Something went wrong.';
+  app.innerHTML = `
+    <div class="page-narrow">
+      <div class="empty-state">
+        <h2>${err?.status === 403 ? 'No access' : err?.status === 404 ? 'Not found' : 'Something went wrong'}</h2>
+        <p>${esc(msg)}</p>
+        <p><a class="btn" href="#/">Back to collections</a></p>
+      </div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Identity screen (dev sign-in)
+
+async function viewIdentity() {
+  let actors = [];
+  let loadError = null;
+  try {
+    actors = await api('GET', '/actors', undefined, { actorId: state.actor?.id ?? 'onboarding' });
+  } catch (err) {
+    loadError = err;
+  }
+  app.innerHTML = `
+    <div class="identity-wrap">
+      <div class="identity-card">
+        <h1>Who are you?</h1>
+        <p class="muted">Development sign-in for the Canon alpha. Identity travels as the
+        <code>X-Actor-Id</code> header; SSO for people and Agent Passport authentication for
+        agents arrive with the Registry integration.</p>
+        ${loadError ? `<p class="form-error">${esc(loadError.message)}</p>` : ''}
+        <div class="identity-list">
+          ${actors.length ? actors.map((a) => `
+            <button class="identity-row" data-pick="${esc(a.id)}">
+              <span class="identity-name">${esc(a.name)}</span>
+              ${kindTag(a.kind)}
+              ${a.email ? `<span class="muted">${esc(a.email)}</span>` : ''}
+            </button>`).join('') : '<p class="muted identity-none">No one is registered yet. Create the first actor below.</p>'}
+        </div>
+        <hr>
+        <h2 class="h-small">New actor</h2>
+        <form id="new-actor-form" class="stack">
+          <label>Name <input name="name" required maxlength="120" placeholder="e.g. Dana Whitfield"></label>
+          <label>Email <input name="email" type="email" placeholder="optional"></label>
+          <label>Kind
+            <select name="kind">
+              <option value="person">Person</option>
+              <option value="agent">Agent</option>
+            </select>
+          </label>
+          <label id="registry-ref-row" hidden>Registry reference (Agent Passport)
+            <input name="registryRef" placeholder="e.g. passport:acme/helper-1">
+          </label>
+          <div><button class="btn primary" type="submit">Create and continue</button></div>
+        </form>
+      </div>
+    </div>`;
+
+  app.querySelectorAll('[data-pick]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const actor = actors.find((a) => a.id === btn.dataset.pick);
+      storeActor({ id: actor.id, name: actor.name, kind: actor.kind });
+      state.actors = null;
+      renderChrome();
+      location.hash = state.afterIdentity && state.afterIdentity !== '#/identity' ? state.afterIdentity : '#/';
+      state.afterIdentity = null;
+      route();
+    });
+  });
+
+  const form = app.querySelector('#new-actor-form');
+  form.kind.addEventListener('change', () => {
+    app.querySelector('#registry-ref-row').hidden = form.kind.value !== 'agent';
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const body = {
+        kind: form.kind.value,
+        name: form.name.value.trim(),
+      };
+      if (form.email.value.trim()) body.email = form.email.value.trim();
+      if (form.kind.value === 'agent') body.registryRef = form.registryRef.value.trim();
+      const actor = await api('POST', '/actors', body);
+      storeActor({ id: actor.id, name: actor.name, kind: actor.kind });
+      state.actors = null;
+      renderChrome();
+      location.hash = state.afterIdentity && state.afterIdentity !== '#/identity' ? state.afterIdentity : '#/';
+      state.afterIdentity = null;
+      route();
+    } catch (err) {
+      toastError(err);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Collections home
+
+async function viewHome() {
+  const [collections] = await Promise.all([api('GET', '/collections'), loadActors().catch(() => null)]);
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <h1>Collections</h1>
+        <button class="btn primary" id="new-collection">New collection</button>
+      </div>
+      ${collections.length ? `
+        <div class="card-grid">
+          ${collections.map((c) => `
+            <a class="card collection-card" href="#/collections/${esc(c.id)}">
+              <h3>${esc(c.name)} ${c.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h3>
+              <p class="muted">${esc(c.description || 'No description.')}</p>
+              <p class="card-foot muted">Created ${fmtDateTime(c.createdAt)}</p>
+            </a>`).join('')}
+        </div>` : `
+        <div class="empty-state">
+          <h2>The record starts here</h2>
+          <p>Collections hold your organization's knowledge: one per team, department, or
+          domain. Create the first collection, then add pages of the four Core types —
+          Policy, Spec, Plan, and Note.</p>
+          <p><button class="btn primary" id="new-collection-empty">Create your first collection</button></p>
+        </div>`}
+    </div>`;
+
+  const openCreate = () => openModal({
+    title: 'New collection',
+    submitLabel: 'Create',
+    body: `
+      <label>Name <input name="name" required maxlength="120" placeholder="e.g. Compliance"></label>
+      <label>Description <textarea name="description" rows="2" placeholder="What this collection holds (optional)"></textarea></label>
+      <label class="check"><input type="checkbox" name="restricted"> Restricted
+        <span class="muted">page views are recorded in the audit log</span></label>`,
+    onSubmit: async (form) => {
+      const c = await api('POST', '/collections', {
+        name: form.name.value.trim(),
+        description: form.description.value.trim(),
+        restricted: form.restricted.checked,
+      });
+      toast(`Collection "${c.name}" created.`, 'ok');
+      location.hash = `#/collections/${c.id}`;
+    },
+  });
+  app.querySelector('#new-collection')?.addEventListener('click', openCreate);
+  app.querySelector('#new-collection-empty')?.addEventListener('click', openCreate);
+}
+
+// ---------------------------------------------------------------------------
+// Collection layout helpers (sidebar shared by collection + page views)
+
+function flattenTree(nodes, depth = 0, out = []) {
+  for (const n of nodes) {
+    out.push({ ...n, depth });
+    flattenTree(n.children, depth + 1, out);
+  }
+  return out;
+}
+
+function treeHTML(nodes, currentPageId) {
+  if (!nodes.length) return '<p class="muted tree-empty">No pages yet.</p>';
+  const item = (n) => {
+    const active = n.id === currentPageId ? ' active' : '';
+    const link = `<a class="tree-link${active}" href="#/pages/${esc(n.id)}">
+      <span class="tree-title">${esc(n.title)}</span>${badge(n.status, 'sm')}</a>`;
+    if (n.children.length) {
+      return `<li><details open><summary>${link}</summary>${treeHTML(n.children, currentPageId)}</details></li>`;
+    }
+    return `<li class="leaf">${link}</li>`;
+  };
+  return `<ul class="tree">${nodes.map(item).join('')}</ul>`;
+}
+
+function sidebarHTML(collection, tree, currentPageId) {
+  return `
+    <aside class="sidebar">
+      <a class="sidebar-collection" href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a>
+      ${collection.restricted ? '<span class="restricted-tag">restricted</span>' : ''}
+      <button class="btn subtle sidebar-new" id="sidebar-new-page">+ New page</button>
+      <nav class="tree-nav">${treeHTML(tree, currentPageId)}</nav>
+    </aside>`;
+}
+
+function wireSidebar(collection, tree) {
+  app.querySelector('#sidebar-new-page')?.addEventListener('click', () => openNewPageModal(collection, tree));
+}
+
+function openNewPageModal(collection, tree, presetParentId = null) {
+  const flat = flattenTree(tree);
+  openModal({
+    title: `New page in ${collection.name}`,
+    submitLabel: 'Create page',
+    body: `
+      <label>Title <input name="title" required maxlength="200" placeholder="Page title"></label>
+      <label>Type
+        <select name="type">
+          ${Object.keys(TYPE_LABELS).map((t) => `<option value="${t}">${TYPE_LABELS[t]}</option>`).join('')}
+        </select>
+      </label>
+      <p class="muted type-help" data-type-help>${esc(TYPE_HELP.policy)}</p>
+      <label>Parent page
+        <select name="parentId">
+          <option value="">(top level)</option>
+          ${flat.map((n) => `<option value="${esc(n.id)}" ${n.id === presetParentId ? 'selected' : ''}>${'&nbsp;'.repeat(n.depth * 3)}${esc(n.title)}</option>`).join('')}
+        </select>
+      </label>`,
+    onSubmit: async (form) => {
+      const page = await api('POST', '/pages', {
+        collectionId: collection.id,
+        parentId: form.parentId.value || null,
+        type: form.type.value,
+        title: form.title.value.trim(),
+      });
+      toast(`Page "${page.title}" created as a ${TYPE_LABELS[page.type]}.`, 'ok');
+      location.hash = `#/pages/${page.id}`;
+    },
+  });
+  const form = document.querySelector('#modal-root form');
+  form.type.addEventListener('change', () => {
+    form.querySelector('[data-type-help]').textContent = TYPE_HELP[form.type.value];
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Collection view
+
+async function viewCollection(id) {
+  const [collection, tree] = await Promise.all([
+    api('GET', `/collections/${id}`),
+    api('GET', `/collections/${id}/tree`),
+  ]);
+  await loadActors().catch(() => null);
+  let members = [];
+  try { members = await api('GET', `/collections/${id}/members`); } catch { /* view-only edge */ }
+
+  app.innerHTML = `
+    <div class="layout">
+      ${sidebarHTML(collection, tree, null)}
+      <section class="main">
+        <div class="page-head">
+          <div>
+            <h1>${esc(collection.name)}
+              ${collection.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h1>
+            <p class="muted">${esc(collection.description || 'No description.')}</p>
+          </div>
+          <button class="btn primary" id="main-new-page">New page</button>
+        </div>
+
+        ${tree.length ? '' : `
+          <div class="empty-state">
+            <h2>No pages yet</h2>
+            <p>Pages are the unit of knowledge in Canon. Start with a Note for working
+            material, or a Policy, Spec, or Plan when there is an owner ready to stand
+            behind it.</p>
+          </div>`}
+
+        <section class="panel">
+          <h2 class="h-small">Members</h2>
+          ${members.length ? `
+            <table class="table">
+              <thead><tr><th>Member</th><th>Role</th><th></th></tr></thead>
+              <tbody>
+                ${members.map((m) => `
+                  <tr>
+                    <td>${actorLabel(m.actorId)}</td>
+                    <td><span class="role-tag">${esc(m.role)}</span></td>
+                    <td class="t-right"><button class="btn subtle" data-remove-member="${esc(m.actorId)}">Remove</button></td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>` : '<p class="muted">Membership is not visible to you.</p>'}
+          <form id="add-member-form" class="inline-form">
+            <select name="actorId" required>
+              <option value="">Add member…</option>
+              ${(state.actors ?? []).filter((a) => !members.some((m) => m.actorId === a.id))
+                .map((a) => `<option value="${esc(a.id)}">${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('')}
+            </select>
+            <select name="role">
+              ${ROLES.map((r) => `<option value="${r}" ${r === 'view' ? 'selected' : ''}>${r}</option>`).join('')}
+            </select>
+            <button class="btn" type="submit">Add</button>
+          </form>
+        </section>
+      </section>
+    </div>`;
+
+  wireSidebar(collection, tree);
+  app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
+
+  app.querySelector('#add-member-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    if (!form.actorId.value) return;
+    try {
+      await api('PUT', `/collections/${id}/members/${form.actorId.value}`, { role: form.role.value });
+      toast('Member added.', 'ok');
+      route();
+    } catch (err) { toastError(err); }
+  });
+  app.querySelectorAll('[data-remove-member]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('DELETE', `/collections/${id}/members/${btn.dataset.removeMember}`);
+        toast('Member removed.', 'ok');
+        route();
+      } catch (err) { toastError(err); }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Page view
+
+async function viewPage(id) {
+  const page = await api('GET', `/pages/${id}`);
+  const [collection, tree] = await Promise.all([
+    api('GET', `/collections/${page.collectionId}`),
+    api('GET', `/collections/${page.collectionId}/tree`),
+    loadActors().catch(() => null),
+  ]);
+  let draft = null;
+  try {
+    const d = await api('GET', `/pages/${id}/draft`);
+    draft = d && d.pageId ? d : null;
+  } catch { /* viewers without edit access */ }
+
+  const current = page.current;
+  const rules = TYPE_FIELDS[page.type] ?? {};
+  const reviewed = REVIEWED_TYPES.includes(page.type);
+  const isArchived = page.status === 'archived';
+  const inReview = page.status === 'in_review';
+
+  const draftBanner = draft ? `
+    <div class="notice ${draft.editorId === state.actor.id ? 'notice-mine' : 'notice-locked'}">
+      ${draft.editorId === state.actor.id
+        ? `You have a draft in progress (last saved ${fmtDateTime(draft.updatedAt)}).
+           <a class="btn subtle" href="#/pages/${esc(id)}/edit">Resume editing</a>`
+        : `This page is being edited by <strong>${esc(actorName(draft.editorId))}</strong>. Canon keeps drafts to one editor at a time.`}
+    </div>` : '';
+
+  const actions = [];
+  if (!isArchived && !inReview) actions.push(`<a class="btn" href="#/pages/${esc(id)}/edit">Edit</a>`);
+  actions.push(`<a class="btn" href="#/pages/${esc(id)}/history">History</a>`);
+  if (reviewed && page.status === 'draft' && draft) actions.push('<button class="btn primary" id="act-submit">Submit for review</button>');
+  if (inReview) {
+    actions.push('<button class="btn primary" id="act-approve">Approve</button>');
+    actions.push('<button class="btn" id="act-sendback">Send back</button>');
+  }
+  if (!isArchived) actions.push('<button class="btn subtle" id="act-archive">Archive</button>');
+
+  app.innerHTML = `
+    <div class="layout">
+      ${sidebarHTML(collection, tree, id)}
+      <section class="main">
+        <p class="breadcrumb"><a href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a></p>
+        <div class="page-head">
+          <h1 class="doc-title">${esc(page.title)} ${badge(page.status)}</h1>
+          <div class="actions">${actions.join('')}</div>
+        </div>
+        ${draftBanner}
+        ${isArchived ? '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>' : ''}
+        ${inReview ? `<div class="notice">In review. ${rules.approver ? `Waiting on the named approver, <strong>${esc(actorName(page.approverId))}</strong>.` : 'Waiting on an approver for this collection.'}</div>` : ''}
+
+        <dl class="field-block">
+          <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
+          <div><dt>Status</dt><dd>${badge(page.status)}</dd></div>
+          ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(page.ownerId)}</dd></div>` : ''}
+          ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(page.approverId)}</dd></div>` : ''}
+          ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(page.effectiveDate)}</dd></div>` : ''}
+          <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
+        </dl>
+
+        ${current ? `<article class="doc-body">${renderMarkdown(current.body)}</article>` : `
+          <div class="empty-state">
+            <h2>Nothing published yet</h2>
+            <p>This page has no published version. ${isArchived ? '' : 'Open the editor to write the first draft, then publish it.'}</p>
+            ${isArchived ? '' : `<p><a class="btn primary" href="#/pages/${esc(id)}/edit">Write the first draft</a></p>`}
+          </div>`}
+
+        <div id="comments-host"></div>
+      </section>
+    </div>`;
+
+  wireSidebar(collection, tree);
+
+  app.querySelector('#act-submit')?.addEventListener('click', async () => {
+    try {
+      await api('POST', `/pages/${id}/submit`);
+      toast('Submitted for review.', 'ok');
+      route();
+    } catch (err) { toastError(err); }
+  });
+  app.querySelector('#act-approve')?.addEventListener('click', () => openModal({
+    title: 'Approve as Canonical',
+    submitLabel: 'Approve',
+    body: `
+      <p class="muted">Approving publishes the reviewed draft and grants the Canonical mark.</p>
+      <label>Note <input name="note" placeholder="optional, kept in version history"></label>`,
+    onSubmit: async (form) => {
+      await api('POST', `/pages/${id}/approve`, form.note.value.trim() ? { note: form.note.value.trim() } : {});
+      toast('Approved. This page is now Canonical.', 'ok');
+      route();
+    },
+  }));
+  app.querySelector('#act-sendback')?.addEventListener('click', () => openModal({
+    title: 'Send back to the author',
+    submitLabel: 'Send back',
+    body: `
+      <p class="muted">The page returns to Draft. Your comment goes to the author.</p>
+      <label>Comment <textarea name="comment" rows="3" required placeholder="What needs to change before this can be Canonical?"></textarea></label>`,
+    onSubmit: async (form) => {
+      await api('POST', `/pages/${id}/send-back`, { comment: form.comment.value.trim() });
+      toast('Sent back with your comment.', 'ok');
+      route();
+    },
+  }));
+  app.querySelector('#act-archive')?.addEventListener('click', () => openModal({
+    title: 'Archive this page',
+    submitLabel: 'Archive',
+    danger: true,
+    body: '<p>Archived pages leave the tree and become read-only, but their history is preserved. Continue?</p>',
+    onSubmit: async () => {
+      await api('POST', `/pages/${id}/archive`);
+      toast('Page archived.', 'ok');
+      route();
+    },
+  }));
+
+  renderCommentsPanel(id);
+}
+
+// ---------------------------------------------------------------------------
+// Comments panel — feature-detected; degrades to nothing while the comments
+// endpoints are still being built.
+
+function normalizeComment(c) {
+  return {
+    id: c.id ?? c.commentId ?? null,
+    body: c.body ?? c.text ?? c.content ?? '',
+    authorId: c.authorId ?? c.actorId ?? c.author ?? null,
+    createdAt: c.createdAt ?? c.at ?? null,
+    resolved: c.resolved ?? c.resolvedAt ?? false,
+  };
+}
+
+async function renderCommentsPanel(pageId) {
+  const host = document.getElementById('comments-host');
+  if (!host || state.features.comments === false) return;
+  let comments;
+  try {
+    const r = await api('GET', `/pages/${pageId}/comments`);
+    state.features.comments = true;
+    comments = (Array.isArray(r) ? r : (r?.comments ?? [])).map(normalizeComment);
+  } catch (err) {
+    if (err.status === 404) { state.features.comments = false; return; }
+    host.innerHTML = `<section class="panel"><h2 class="h-small">Comments</h2>
+      <p class="muted">Comments could not be loaded: ${esc(err.message)}</p></section>`;
+    return;
+  }
+  host.innerHTML = `
+    <section class="panel" id="comments-panel">
+      <h2 class="h-small">Comments</h2>
+      ${comments.length ? `
+        <ul class="comment-list">
+          ${comments.map((c) => `
+            <li class="comment ${c.resolved ? 'resolved' : ''}">
+              <div class="comment-meta">${actorLabel(c.authorId)}
+                <span class="muted">${fmtDateTime(c.createdAt)}</span>
+                ${c.resolved ? '<span class="role-tag">resolved</span>' : ''}</div>
+              <div class="comment-body">${esc(c.body)}</div>
+            </li>`).join('')}
+        </ul>` : '<p class="muted">No comments yet.</p>'}
+      <form id="comment-form" class="stack">
+        <textarea name="body" rows="2" required placeholder="Add a comment…"></textarea>
+        <div><button class="btn" type="submit">Comment</button></div>
+      </form>
+    </section>`;
+  host.querySelector('#comment-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = e.target.body.value.trim();
+    if (!body) return;
+    try {
+      await api('POST', `/pages/${pageId}/comments`, { body });
+      renderCommentsPanel(pageId);
+    } catch (err) {
+      if (err.status === 404 || err.status === 405) {
+        state.features.comments = false;
+        host.innerHTML = '';
+        toast('Comments are not available yet.', 'info');
+      } else toastError(err);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Editor
+
+async function viewEditor(id) {
+  const page = await api('GET', `/pages/${id}`);
+  await loadActors().catch(() => null);
+  let draft;
+  try {
+    draft = await api('PUT', `/pages/${id}/draft`, {}); // acquires the page lock
+  } catch (err) {
+    if (err.status === 423) {
+      const editor = err.details?.editorName ?? actorName(err.details?.editorId);
+      app.innerHTML = `
+        <div class="page-narrow">
+          <div class="empty-state">
+            <h2>Being edited by ${esc(editor)}</h2>
+            <p>${esc(err.message)}. Canon keeps drafts to one editor at a time, so
+            nothing is overwritten. Try again once they publish or discard.</p>
+            <p>
+              <a class="btn" href="#/pages/${esc(id)}">Back to page</a>
+              <button class="btn" id="retry-lock">Try again</button>
+            </p>
+          </div>
+        </div>`;
+      app.querySelector('#retry-lock').addEventListener('click', () => render(() => viewEditor(id)));
+      return;
+    }
+    if (err.status === 422) {
+      app.innerHTML = `
+        <div class="page-narrow">
+          <div class="empty-state">
+            <h2>Not editable right now</h2>
+            <p>${esc(err.message)}</p>
+            <p><a class="btn" href="#/pages/${esc(id)}">Back to page</a></p>
+          </div>
+        </div>`;
+      return;
+    }
+    throw err;
+  }
+
+  const rules = TYPE_FIELDS[page.type] ?? {};
+  const reviewed = REVIEWED_TYPES.includes(page.type);
+  const people = state.actors ?? [];
+  const actorOptions = (selected) => `<option value="">—</option>` + people.map((a) =>
+    `<option value="${esc(a.id)}" ${a.id === selected ? 'selected' : ''}>${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('');
+
+  app.innerHTML = `
+    <div class="page-wide editor">
+      <p class="breadcrumb"><a href="#/pages/${esc(id)}">← Back to page</a></p>
+      <div class="page-head">
+        <h1>Editing <span class="muted">(${esc(TYPE_LABELS[page.type])})</span></h1>
+        <span id="save-state" class="muted"></span>
+      </div>
+      ${page.status === 'canonical' ? `
+        <div class="notice">This page is Canonical. Publishing new content returns it to Draft —
+        the Canonical mark applies to reviewed content and is granted again through review.</div>` : ''}
+      <form id="editor-form" class="editor-grid">
+        <div class="editor-mainCol">
+          <label>Title <input name="title" required maxlength="200" value="${esc(draft.title)}"></label>
+          <label>Body
+            <textarea name="body" class="editor-body" spellcheck="true">${esc(draft.body)}</textarea>
+          </label>
+          <p class="muted md-hint">Markdown subset: <code># headings</code>, <code>**bold**</code>,
+            <code>*italic*</code>, <code>- lists</code>, <code>1. lists</code>, <code>\`code\`</code>,
+            fenced blocks, <code>[links](https://…)</code>, <code>&gt; quotes</code>.</p>
+        </div>
+        <div class="editor-sideCol">
+          <div class="panel">
+            <h2 class="h-small">Fields</h2>
+            ${rules.owner ? `<label>Owner <select name="ownerId">${actorOptions(draft.fields.ownerId)}</select></label>` : ''}
+            ${rules.approver ? `<label>Approver <select name="approverId">${actorOptions(draft.fields.approverId)}</select></label>` : ''}
+            ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>` : ''}
+            ${!rules.owner && !rules.approver && !rules.effectiveDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
+          </div>
+          <div class="panel editor-actions">
+            <button class="btn primary" type="submit">Save draft</button>
+            <button class="btn" type="button" id="ed-publish">Publish…</button>
+            ${reviewed ? '<button class="btn" type="button" id="ed-submit">Submit for review</button>' : ''}
+            <button class="btn danger-subtle" type="button" id="ed-discard">Discard draft</button>
+          </div>
+        </div>
+      </form>
+    </div>`;
+
+  const form = app.querySelector('#editor-form');
+  const saveState = app.querySelector('#save-state');
+
+  const gather = () => {
+    const fields = {};
+    if (rules.owner) fields.ownerId = form.ownerId.value || null;
+    if (rules.approver) fields.approverId = form.approverId.value || null;
+    if (rules.effectiveDate) fields.effectiveDate = form.effectiveDate.value || null;
+    return { title: form.title.value.trim(), body: form.body.value, fields };
+  };
+
+  const save = async () => {
+    const d = await api('PUT', `/pages/${id}/draft`, gather());
+    saveState.textContent = `Draft saved ${fmtDateTime(d.updatedAt)}`;
+    return d;
+  };
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try { await save(); toast('Draft saved.', 'ok'); } catch (err) { handleEditError(err); }
+  });
+
+  app.querySelector('#ed-publish').addEventListener('click', async () => {
+    openModal({
+      title: 'Publish this draft',
+      submitLabel: 'Publish',
+      body: `
+        <p class="muted">Publishing makes this draft the current version for every reader.
+        ${reviewed ? 'It publishes without review — use "Submit for review" if this page should earn the Canonical mark.' : ''}</p>
+        <label>Version note <input name="note" placeholder="optional, kept in version history"></label>`,
+      onSubmit: async (mform) => {
+        await save();
+        await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
+        toast('Published.', 'ok');
+        location.hash = `#/pages/${id}`;
+      },
+    });
+  });
+
+  app.querySelector('#ed-submit')?.addEventListener('click', async () => {
+    try {
+      await save();
+      await api('POST', `/pages/${id}/submit`);
+      toast('Submitted for review.', 'ok');
+      location.hash = `#/pages/${id}`;
+    } catch (err) { handleEditError(err); }
+  });
+
+  app.querySelector('#ed-discard').addEventListener('click', () => openModal({
+    title: 'Discard this draft',
+    submitLabel: 'Discard',
+    danger: true,
+    body: '<p>Unsaved and saved draft changes are thrown away; the published version is untouched. Continue?</p>',
+    onSubmit: async () => {
+      await api('DELETE', `/pages/${id}/draft`);
+      toast('Draft discarded.', 'ok');
+      location.hash = `#/pages/${id}`;
+    },
+  }));
+
+  function handleEditError(err) {
+    if (err.status === 423) {
+      const editor = err.details?.editorName ?? 'someone else';
+      toast(`This page is being edited by ${editor}.`, 'error');
+    } else toastError(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Version history
+
+async function viewHistory(id) {
+  const [page, versions] = await Promise.all([
+    api('GET', `/pages/${id}`),
+    api('GET', `/pages/${id}/versions`),
+    loadActors().catch(() => null),
+  ]);
+  const desc = [...versions].reverse();
+  app.innerHTML = `
+    <div class="page-wide">
+      <p class="breadcrumb"><a href="#/pages/${esc(id)}">← ${esc(page.title)}</a></p>
+      <div class="page-head">
+        <h1>Version history ${badge(page.status)}</h1>
+        <button class="btn primary" id="compare-btn" disabled>Compare selected</button>
+      </div>
+      <p class="muted">Every published version is kept. Restoring never rewrites history —
+      it publishes the old content as a new version. Select two versions to compare.</p>
+      ${versions.length ? `
+        <table class="table">
+          <thead><tr><th></th><th>Version</th><th>Published</th><th>Author</th><th>Note</th><th></th></tr></thead>
+          <tbody>
+            ${desc.map((v) => `
+              <tr>
+                <td><input type="checkbox" data-cmp="${v.number}" aria-label="Select version ${v.number} for compare"></td>
+                <td>v${v.number} ${v.number === page.currentVersion ? '<span class="role-tag">current</span>' : ''}</td>
+                <td>${fmtDateTime(v.createdAt)}</td>
+                <td>${actorLabel(v.authorId)}</td>
+                <td class="muted">${esc(v.note ?? '')}</td>
+                <td class="t-right">
+                  <a class="btn subtle" href="#/pages/${esc(id)}/versions/${v.number}">View</a>
+                  ${v.number !== page.currentVersion && page.status !== 'archived'
+                    ? `<button class="btn subtle" data-restore="${v.number}">Restore</button>` : ''}
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>` : `
+        <div class="empty-state">
+          <h2>No published versions yet</h2>
+          <p>History begins with the first publish.</p>
+        </div>`}
+    </div>`;
+
+  const compareBtn = app.querySelector('#compare-btn');
+  const boxes = [...app.querySelectorAll('[data-cmp]')];
+  const refresh = () => {
+    const picked = boxes.filter((b) => b.checked);
+    compareBtn.disabled = picked.length !== 2;
+  };
+  boxes.forEach((b) => b.addEventListener('change', () => {
+    const picked = boxes.filter((x) => x.checked);
+    if (picked.length > 2) { b.checked = false; }
+    refresh();
+  }));
+  compareBtn.addEventListener('click', () => {
+    const picked = boxes.filter((b) => b.checked).map((b) => Number(b.dataset.cmp)).sort((a, b) => a - b);
+    if (picked.length === 2) location.hash = `#/pages/${id}/compare/${picked[0]}/${picked[1]}`;
+  });
+
+  app.querySelectorAll('[data-restore]').forEach((btn) => {
+    btn.addEventListener('click', () => openModal({
+      title: `Restore version ${btn.dataset.restore}`,
+      submitLabel: 'Restore',
+      body: `<p>The content of version ${esc(btn.dataset.restore)} will be published as a new
+        version. Nothing in history changes. Continue?</p>`,
+      onSubmit: async () => {
+        const p = await api('POST', `/pages/${id}/restore`, { version: Number(btn.dataset.restore) });
+        toast(`Restored as v${p.currentVersion}.`, 'ok');
+        route();
+      },
+    }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Single-version view
+
+async function viewVersion(id, n) {
+  const [page, version] = await Promise.all([
+    api('GET', `/pages/${id}`),
+    api('GET', `/pages/${id}/versions/${n}`),
+    loadActors().catch(() => null),
+  ]);
+  const isCurrent = page.currentVersion === n;
+  app.innerHTML = `
+    <div class="page-wide">
+      <p class="breadcrumb"><a href="#/pages/${esc(id)}/history">← Version history</a></p>
+      <div class="notice ${isCurrent ? '' : 'notice-version'}">
+        Viewing <strong>v${n}</strong> of <strong>${esc(page.title)}</strong>,
+        published ${fmtDateTime(version.createdAt)} by ${esc(actorName(version.authorId))}.
+        ${isCurrent ? 'This is the current version.' : `The current version is v${page.currentVersion ?? '—'}.
+          ${page.status !== 'archived' ? `<button class="btn subtle" id="restore-here">Restore this version</button>` : ''}`}
+      </div>
+      <h1 class="doc-title">${esc(version.title)} ${badge(page.status)}</h1>
+      <dl class="field-block">
+        <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
+        ${version.fields.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(version.fields.ownerId)}</dd></div>` : ''}
+        ${version.fields.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(version.fields.approverId)}</dd></div>` : ''}
+        ${version.fields.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(version.fields.effectiveDate)}</dd></div>` : ''}
+        ${version.note ? `<div><dt>Version note</dt><dd>${esc(version.note)}</dd></div>` : ''}
+      </dl>
+      <article class="doc-body">${renderMarkdown(version.body)}</article>
+    </div>`;
+  app.querySelector('#restore-here')?.addEventListener('click', () => openModal({
+    title: `Restore version ${n}`,
+    submitLabel: 'Restore',
+    body: `<p>The content of version ${n} will be published as a new version. Nothing in
+      history changes. Continue?</p>`,
+    onSubmit: async () => {
+      const p = await api('POST', `/pages/${id}/restore`, { version: n });
+      toast(`Restored as v${p.currentVersion}.`, 'ok');
+      location.hash = `#/pages/${id}`;
+    },
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Side-by-side compare
+
+async function viewCompare(id, a, b) {
+  const [page, va, vb] = await Promise.all([
+    api('GET', `/pages/${id}`),
+    api('GET', `/pages/${id}/versions/${a}`),
+    api('GET', `/pages/${id}/versions/${b}`),
+    loadActors().catch(() => null),
+  ]);
+  const rows = diffLines(va.body, vb.body);
+  const changed = rows.filter((r) => r.type !== 'same').length;
+  const cell = (text, cls) => `<td class="diff-cell ${cls}">${text === undefined ? '' : `<span>${esc(text) || '&nbsp;'}</span>`}</td>`;
+  app.innerHTML = `
+    <div class="page-wide">
+      <p class="breadcrumb"><a href="#/pages/${esc(id)}/history">← Version history</a></p>
+      <div class="page-head">
+        <h1>Compare <span class="muted">${esc(page.title)}</span></h1>
+      </div>
+      ${va.title !== vb.title ? `<p class="notice">Title changed:
+        <del>${esc(va.title)}</del> → <ins>${esc(vb.title)}</ins></p>` : ''}
+      <p class="muted">${changed ? `${changed} changed line${changed === 1 ? '' : 's'}.` : 'The two versions have identical bodies.'}</p>
+      <div class="diff-scroll">
+        <table class="diff-table">
+          <thead>
+            <tr>
+              <th>v${a} · ${fmtDateTime(va.createdAt)} · ${esc(actorName(va.authorId))}</th>
+              <th>v${b} · ${fmtDateTime(vb.createdAt)} · ${esc(actorName(vb.authorId))}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((r) => {
+              if (r.type === 'same') return `<tr>${cell(r.a, '')}${cell(r.b, '')}</tr>`;
+              if (r.type === 'del') return `<tr>${cell(r.a, 'del')}${cell(undefined, 'void')}</tr>`;
+              return `<tr>${cell(undefined, 'void')}${cell(r.b, 'add')}</tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Audit view
+
+async function viewAudit() {
+  await loadActors().catch(() => null);
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head"><h1>Audit log</h1></div>
+      <p class="muted">Append-only. Every write, workflow step, and view of restricted
+      material, attributed to its actor.</p>
+      <form id="audit-filters" class="inline-form">
+        <label>Action
+          <select name="action">
+            <option value="">All actions</option>
+            ${AUDIT_ACTIONS.map((a) => `<option value="${a}">${a}</option>`).join('')}
+          </select>
+        </label>
+        <label>Actor
+          <select name="actor">
+            <option value="">All actors</option>
+            ${(state.actors ?? []).map((a) => `<option value="${esc(a.id)}">${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('')}
+          </select>
+        </label>
+      </form>
+      <div id="audit-table"><div class="loading">Loading…</div></div>
+    </div>`;
+
+  const form = app.querySelector('#audit-filters');
+  const tableHost = app.querySelector('#audit-table');
+
+  const load = async () => {
+    tableHost.innerHTML = '<div class="loading">Loading…</div>';
+    const params = new URLSearchParams();
+    if (form.action.value) params.set('action', form.action.value);
+    if (form.actor.value) params.set('actor', form.actor.value);
+    try {
+      const events = await api('GET', `/audit${params.toString() ? `?${params}` : ''}`);
+      if (!events.length) {
+        tableHost.innerHTML = `
+          <div class="empty-state"><h2>No matching events</h2>
+          <p>Nothing in the log matches these filters yet.</p></div>`;
+        return;
+      }
+      tableHost.innerHTML = `
+        <table class="table audit">
+          <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Where</th><th>Details</th></tr></thead>
+          <tbody>
+            ${events.map((e) => {
+              const details = Object.entries(e.details ?? {})
+                .map(([k, v]) => `<span class="detail-kv"><span class="muted">${esc(k)}:</span> ${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</span>`)
+                .join(' ');
+              return `<tr>
+                <td class="nowrap">${fmtDateTime(e.at)}</td>
+                <td>${esc(actorName(e.actorId))} ${e.actorKind === 'agent' ? '<span class="kind-tag agent">agent</span>' : ''}</td>
+                <td><code class="action-code">${esc(e.action)}</code></td>
+                <td>${e.pageId ? `<a href="#/pages/${esc(e.pageId)}">page</a>` : e.collectionId ? `<a href="#/collections/${esc(e.collectionId)}">collection</a>` : '<span class="muted">—</span>'}</td>
+                <td class="audit-details">${details || '<span class="muted">—</span>'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    } catch (err) {
+      tableHost.innerHTML = `<div class="empty-state"><h2>Could not load the log</h2><p>${esc(err.message)}</p></div>`;
+    }
+  };
+
+  form.action.addEventListener('change', load);
+  form.actor.addEventListener('change', load);
+  await load();
+}
+
+// ---------------------------------------------------------------------------
+// Global wiring
+
+// Tree links live inside <summary>; navigate without toggling the branch.
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('summary a.tree-link');
+  if (link) {
+    e.preventDefault();
+    location.hash = link.getAttribute('href');
+  }
+});
+
+window.addEventListener('hashchange', route);
+renderChrome();
+wireSearch();
+route();
