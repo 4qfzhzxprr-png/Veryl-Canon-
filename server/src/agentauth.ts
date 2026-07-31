@@ -132,6 +132,15 @@ const RULES: Rule[] = [
 
   { method: 'GET', pattern: /^\/search$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'search' }) },
   { method: 'GET', pattern: /^\/audit$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'audit' }) },
+
+  // Grounded answers. REGISTRY-CONTRACT.md §4 puts these under `read`
+  // explicitly — "read covers viewing pages, trees, versions, and grounded
+  // answers". An ask that names a collection is checked against it like any
+  // other; an ask that names none needs no collection check, because the
+  // answer path already filters candidates by the asker's own permissions, so
+  // an agent can never be told something its collections do not hold.
+  { method: 'POST', pattern: /^\/ask$/, action: 'read', scope: () => ({ kind: 'bodyCollection' }) },
+  { method: 'GET', pattern: /^\/pages\/([^/]+)\/related$/, action: 'read', scope: PAGE },
 ];
 
 function classify(method: string, pathname: string): { action: AgentAction; scope: Scope } | null {

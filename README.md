@@ -49,7 +49,7 @@ See [CORE-PLAN.md](CORE-PLAN.md) for the Core product plan: what the first versi
 
 See [DATA-BACKBONE.md](DATA-BACKBONE.md) for Canon's role as the suite's data backbone: what it stores, how the record is organized, and the contracts Veryl Agent Registry and Veryl Studio depend on.
 
-See [server/](server/) for the code: the running Canon server and its web interface — the record, drafts and publishing, version history, the review workflow, comments, search, the audit log, and a browser UI over all of it. `cd server && npm start`, no runtime dependencies.
+See [server/](server/) for the code: the running Canon server and its web interface — the record, drafts and publishing, version history, the review workflow, comments and email notifications, search, grounded answers with citations, Agent Passport authentication, import from Confluence and Google Docs, the audit log with CSV export, and a browser UI over all of it. `cd server && npm start`, no runtime dependencies.
 
 See [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) for the Agent Passport contract between Canon and Veryl Agent Registry, and [registry-stub/](registry-stub/) for the stub service that implements it, so agent work can be built and demonstrated before the live Registry exists.
 

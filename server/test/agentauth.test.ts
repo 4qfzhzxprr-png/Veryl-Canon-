@@ -427,3 +427,72 @@ test('the configuration switch is the environment, and it defaults to off', asyn
   });
   assert.equal(greedy!.registry.cacheTtlMs, 60_000);
 });
+
+// Regression: /ask and /pages/:id/related were added by a later stream than
+// agentauth, so they fell through to the fail-closed default and a certified
+// read-only agent was refused a grounded answer. The contract (section 4)
+// names grounded answers as `read`; the classification table now says so too.
+// Caught running the M3 demo end to end, not by the suite.
+test('a read-certified agent may ask, and the answer respects both sides', async () => {
+  const r = await rig();
+  try {
+    const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+    const iris = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Iris' })).json;
+
+    const open = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Benefits' })).json;
+    const shut = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Secret' })).json;
+    for (const c of [open, shut]) {
+      await r.call('PUT', `/collections/${c.id}/members/${iris.id}`, { actor: dana.id }, { role: 'approve' });
+    }
+
+    const canonical = async (collectionId: string, title: string, body: string) => {
+      const page = (
+        await r.call('POST', '/pages', { actor: dana.id }, { collectionId, type: 'policy', title })
+      ).json;
+      await r.call(
+        'PUT',
+        `/pages/${page.id}/draft`,
+        { actor: dana.id },
+        { body, fields: { ownerId: dana.id, approverId: iris.id } },
+      );
+      await r.call('POST', `/pages/${page.id}/submit`, { actor: dana.id }, {});
+      await r.call('POST', `/pages/${page.id}/approve`, { actor: iris.id }, {});
+      return page;
+    };
+
+    const visible = await canonical(open.id, 'Coverage policy', 'Generic prescriptions are covered at 100 percent.');
+    await canonical(shut.id, 'Secret coverage policy', 'Generic prescriptions are covered at 5 percent.');
+
+    const agent = r.registry.register({ name: 'Benefits Assistant' });
+    r.registry.certify(agent.agentId);
+    r.registry.setPermissions(agent.agentId, { permittedCollections: [open.id], permittedActions: ['read'] });
+
+    // Canon's half of the intersection: the Registry allowing it is not enough.
+    const denied = await r.call('POST', '/ask', { passport: agent.passport }, { question: 'How are generic prescriptions covered?' });
+    assert.equal(denied.status, 200);
+    assert.equal(denied.json.refused, true, 'with no Canon role the agent must be told nothing');
+
+    const actor = r.store.listActors().find((a) => a.kind === 'agent')!;
+    r.store.setMember(dana.id, open.id, actor.id, 'view');
+
+    const asked = await r.call('POST', '/ask', { passport: agent.passport }, { question: 'How are generic prescriptions covered?' });
+    assert.equal(asked.status, 200, `expected an answer, got ${asked.status}: ${JSON.stringify(asked.json)}`);
+    assert.equal(asked.json.refused, false);
+    assert.ok(asked.json.citations.length >= 1, 'the agent must get a cited answer');
+    assert.ok(
+      asked.json.citations.every((c: { pageId: string }) => c.pageId === visible.id),
+      'nothing from a collection the agent cannot see may be cited',
+    );
+
+    // read does not imply write.
+    const wrote = await r.call(
+      'POST',
+      '/pages',
+      { passport: agent.passport },
+      { collectionId: open.id, type: 'note', title: 'nope' },
+    );
+    assert.equal(wrote.status, 403);
+  } finally {
+    r.close();
+  }
+});
