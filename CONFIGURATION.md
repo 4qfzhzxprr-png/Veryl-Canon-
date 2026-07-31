@@ -1,0 +1,145 @@
+# Veryl Canon — configuration reference
+
+Every environment variable Canon reads, in one table, gathered from the code
+rather than from memory. Nothing else configures Canon: there is no
+configuration file, no database-held settings, and no runtime toggles. A
+deployment is its environment, which is what makes it reviewable.
+
+Read this with [OPERATIONS.md](OPERATIONS.md) (how to run it) and
+[SECURITY.md](SECURITY.md) §5 (the assumptions a deployment must keep true).
+The **Safety** column names the §5 assumption where one applies.
+
+## How to read the columns
+
+- **Required?** — `required` means a real deployment must set it;
+  `required if` means it becomes required once something else is set;
+  `optional` means the default is the right answer for most deployments;
+  **`dev only`** means it must not appear in a deployment at all.
+- **Default** — what the code does when the variable is unset, not what a
+  sensible person would choose.
+- **Secret?** — a `yes` here means the value is a credential. Canon never logs
+  these: `src/log.ts` replaces them by name, and any URL it prints has its
+  userinfo stripped.
+
+Canon **refuses to start** on several combinations of these; each refusal names
+the variable to change. See "Start-up validation" at the end.
+
+---
+
+## The record and the process
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_DB` | required | `canon.db` | Path to the SQLite file that **is** Canon: the record, the version history and the audit log. In a container this must point inside the mounted volume (`/data/canon.db`), or the record dies with the container. | The audit log has no second copy. Back it up — OPERATIONS.md, "Back up". |
+| `PORT` | optional | `3000` | TCP port to listen on. | Bind behind a reverse proxy that terminates TLS; Canon speaks plain HTTP. |
+| `CANON_BASE_URL` | required | `http://localhost:3000` | Where Canon is reachable from a browser. Deep links in notification emails are built from it, and the OIDC redirect URI defaults to `<base>/auth/callback`. Also decides whether the session cookie gets `Secure` (on unless the base URL is plain `http`). | An `http://` base URL with SSO live means session cookies cross the network in clear. |
+| `CANON_PRODUCT_NAME` | optional | `Veryl Canon` | The name in the footer of notification emails. | — |
+| `CANON_SHUTDOWN_TIMEOUT_MS` | optional | `10000` | How long in-flight requests get to finish after SIGTERM before the process stops waiting. Keep it below your orchestrator's kill delay (`docker stop` allows 10s by default; the demo compose file raises the grace period to 20s). | — |
+| `CANON_LOG_LEVEL` | optional | `info` | `debug`, `info`, `warn`, `error`. | — |
+| `CANON_LOG_FORMAT` | optional | `json` | `json` (one object per line, for a log collector) or `text` (for a person at a terminal). | — |
+| `CANON_SKIP_DNS_CHECK` | optional | unset | `true` skips the start-up DNS check on `CANON_SOURCE_ALLOWED_HOSTS`. For an air-gapped or split-horizon network where the name genuinely does not resolve from here. | Skipping it means an unreachable source is discovered at read time instead. |
+
+## Identity: people
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_DEV_AUTH` | **dev only** | unset | `true` accepts the `X-Actor-Id` header, **verifying nothing**: anyone who can reach the port is any actor they name, and `POST /actors` exists. This is what the test suite runs under. | **SECURITY.md §5, assumption 1: the one thing a deployment must get right is not setting this.** Canon refuses to start if it is set alongside `CANON_OIDC_ISSUER`. |
+| `CANON_OIDC_ISSUER` | required | unset | The organization's OpenID Connect provider. Setting it turns single sign-on on; unset, people cannot sign in. Discovery is read from `<issuer>/.well-known/openid-configuration` and **must name the same issuer**. | §5 assumption 1: never point this at `idp-stub`, which authenticates nobody. |
+| `CANON_OIDC_CLIENT_ID` | required if issuer | unset | The client Canon is registered as at the provider. | — |
+| `CANON_OIDC_CLIENT_SECRET` | required if issuer | unset | **Secret.** Authenticates the token call with `client_secret_basic`. | Rotate it at the provider and here together — OPERATIONS.md, "Rotate secrets". |
+| `CANON_OIDC_REDIRECT_URI` | optional | `<CANON_BASE_URL>/auth/callback` | Register it at the provider verbatim. | — |
+| `CANON_OIDC_SCOPE` | optional | `openid profile email` | — | — |
+| `CANON_OIDC_CLOCK_TOLERANCE_SEC` | optional | `60` | Skew allowed on `exp`/`nbf`/`iat`. | A large tolerance extends the life of a stolen token. |
+| `CANON_OIDC_TIMEOUT_MS` | optional | `5000` | How long to wait for the provider. | — |
+| `CANON_SESSION_SECRET` | required if issuer | invented per process | **Secret.** HMAC key the session cookie is signed with. Without one, every restart signs everybody out and a second instance cannot read the first's cookies. | §5 assumption 1 names this as the second thing to get right. Canon refuses to start with SSO configured and no secret. |
+| `CANON_SESSION_TTL_MS` | optional | `28800000` (8h) | Idle lifetime, renewed on use. | — |
+| `CANON_SESSION_MAX_LIFETIME_MS` | optional | `86400000` (24h) | The ceiling no renewal passes. | Bounds SECURITY.md R9: a session outlives a revocation at the provider by at most this. |
+| `CANON_COOKIE_SECURE` | optional | on unless `CANON_BASE_URL` is plain `http` | Force the cookie's `Secure` flag on or off. | Only ever set to `false` locally. |
+| `CANON_ALLOWED_ORIGINS` | optional | the redirect URI's own origin | Extra origins a cookie-authenticated write may come from (CSRF). Comma- or space-separated. | Each entry is a site you are trusting to make writes on a signed-in person's behalf. |
+
+## Identity: agents
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_REGISTRY_URL` | required for agents | unset | The Veryl Agent Registry. Setting it turns Agent Passport authentication on; unset, a passport is refused `503`. | §5 assumption 4: a compromised Registry is a compromised Canon for every agent. |
+| `CANON_REGISTRY_TTL_MS` | optional | `30000` (clamped to 60s) | How long a verified answer may be reused. `0` re-verifies every request. | This is the revocation guarantee: revoking an agent cuts its access within this. |
+| `CANON_REGISTRY_TIMEOUT_MS` | optional | `3000` | How long to wait for the Registry before failing closed. | An unreachable Registry is a `503`, never an allowance. |
+
+## Email and notifications
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_SMTP_URL` | optional | unset (dev transport logs instead) | **Secret** — it carries the relay password in its userinfo. `smtp://user:pass@relay:587` upgrades with STARTTLS (required whenever credentials are present); `smtps://` is TLS from the first byte. Flags: `?starttls=required\|opportunistic\|off`, `?insecure=true`, `?name=`, `?timeout=`. | Never logged: SECURITY.md F7 removed the one place it was echoed, and `log.ts` now strips userinfo from every string it prints. |
+| `CANON_MAIL_FROM` | required if SMTP | unset | Sender, e.g. `Veryl Canon <canon@example.com>`. Canon refuses to start with a relay and no sender. | CR/LF/NUL are rejected in every header value (F4). |
+| `CANON_FLUSH_INTERVAL_MS` | optional | `60000` | How often the built-in outbox delivery pass runs. `0` turns it off and hands delivery to your own scheduler calling `POST /notifications/flush`. | With it off and no scheduler, **nothing is ever delivered** — see OPERATIONS.md, "The timers". |
+
+## Federation: which hosts Canon may reach
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_SOURCE_ALLOWED_HOSTS` | required for federation | unset = **nothing is reachable** | Comma- or space-separated allowlist. Each entry is `host`, `host:port` or `*.domain`; a full URL is reduced to its host. | §5 assumption 2: everything on this list is something you are asserting is safe for Canon to fetch and follow redirects within. Canon refuses to start if a named host does not resolve. |
+| `CANON_SOURCE_ALLOWED_SCHEMES` | optional | `https,http` | Set to `https` alone wherever the record systems support it. | Plain `http` leaves the network path between Canon and the source unprotected. |
+| `CANON_SOURCE_ALLOW_PRIVATE` | **dev only** | unset | `true` permits loopback, link-local and private ranges — including the cloud metadata address `169.254.169.254`. | §5 assumption 2 / F1. This is what lets the test suite reach a stub on `127.0.0.1`. A deployment leaves it unset. |
+| `CANON_SOURCE_SERVICE_IDENTITY` | required for `service` sources | unset | The identity a `service`-mode source is resolved with. Absent, a service source fails visibly rather than resolving anonymously. | §5 assumption 7: Canon stores no credential for a source. This is an identity, and any credential belongs in the connector's own configuration. |
+| `CANON_SOURCE_TIMEOUT_MS` | optional | `3000` | Bounds the whole exchange: connect, handshake, headers and body. | — |
+
+## Import
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_IMPORT_ROOTS` | recommended | unset = unrestricted | Colon- or comma-separated directories an import may read from. | §5 assumption 3: `admin` on one collection otherwise buys the ability to name any server-side path. Set it wherever collection admin is not the same trust level as shell access. |
+
+## Rate limiting
+
+Four token buckets, per actor, in process. Nothing that reads the record is
+limited. Each is written `burst/perMinute`, or `off`.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_RATE_LIMIT` | optional | on | `off` turns every bucket off, for a deployment whose front door already limits. | — |
+| `CANON_RATE_LIMIT_ASK` | optional | `12/12` | `POST /ask` and `POST /knowledge/ask`. | Retrieval plus a generator; with a hosted embedding provider it is also a bill. |
+| `CANON_RATE_LIMIT_REFERENCES` | optional | `60/60` | `GET /pages/:id/references` — the route that reaches an external system. | — |
+| `CANON_RATE_LIMIT_IMPORT` | optional | `2/0.5` | `POST /imports`. | — |
+| `CANON_RATE_LIMIT_AUTH` | optional | `20/20` | **Failed** passport authentications, keyed by connection origin. Only a failure spends a token. | — |
+
+## Freshness and maintenance
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_MAINTENANCE_ACTOR_ID` | required for the timed sweep | unset | The actor the timed freshness sweep runs as. It must hold `admin` on a collection, like any other operator. Unset, the sweep runs only from `POST /maintenance/freshness`. | Every flip is an audit event; Canon does not write to its own log under a nameless system identity (DATA-BACKBONE.md §2, principle 5). |
+| `CANON_FRESHNESS_INTERVAL_MS` | optional | `3600000` (hourly) | How often the sweep runs. `0` turns it off. | With it off and no scheduler, "stale knowledge announces itself" is not true of this deployment. |
+
+## Not Canon's: the stubs
+
+These configure the **test doubles** in `idp-stub/`, `registry-stub/`,
+`source-stub/` and `studio-stub/`. They exist for demos and tests. None of them
+belongs anywhere near a deployment.
+
+| Variable | Service | Meaning |
+| --- | --- | --- |
+| `PORT` | all stubs | Listen port (registry 3100, idp 3200, source 3200, studio 3300 by default). |
+| `IDP_ISSUER`, `IDP_CLIENT_ID`, `IDP_CLIENT_SECRET`, `IDP_REDIRECT_URIS` | idp-stub | The provider's own identity and its one registered client. |
+| `CANON_URL`, `STUDIO_PASSPORT`, `STUDIO_APP_NAME`, `STUDIO_TIMEOUT_MS` | studio-stub | Where Canon is, and the app's Agent Passport. |
+
+---
+
+## Start-up validation
+
+Canon checks the environment before it binds a port (`src/config.ts`) and
+**exits 78 (`EX_CONFIG`)** rather than starting, naming the variable, on any of:
+
+| Refusal | Why it cannot mean what it says |
+| --- | --- |
+| `CANON_OIDC_ISSUER` set, `CANON_SESSION_SECRET` unset | Sessions signed with a key invented at start-up: every restart signs everybody out, and no second instance can read the first's cookies. |
+| `CANON_DEV_AUTH=true` **and** `CANON_OIDC_ISSUER` set | An identity provider is configured and the unverified header is accepted beside it. Every authorization control is downstream of that. |
+| `CANON_SOURCE_ALLOWED_HOSTS` names a host that does not resolve | Federation is allowlisted to somewhere Canon cannot reach; every reference through it would fail at read time. (`*.domain` entries and literal addresses are skipped — there is nothing to look up.) |
+| `CANON_SMTP_URL` set, `CANON_MAIL_FROM` unset | An email needs a sender. |
+| `CANON_OIDC_ISSUER` set without a client id or secret | The code exchange cannot be made. |
+| `CANON_OIDC_ISSUER` set with neither `CANON_BASE_URL` nor `CANON_OIDC_REDIRECT_URI` | The redirect URI would default to `http://localhost:3000/auth/callback`, which no provider outside the machine can send a person back to. |
+| Any URL variable that is not an `http(s)` URL | — |
+| Any numeric variable that is not a number | A typo in an interval silently becomes `NaN`, and a `NaN` interval is a timer that never fires. |
+
+Warnings — logged at start-up, never fatal — cover the merely unwise: a short
+session secret, no maintenance actor, dev auth beside a real Registry, private
+addresses reachable in a deployment with SSO, an `http://` base URL with SSO
+live, a relay with no base URL for its deep links, and no door open at all.

@@ -113,7 +113,63 @@ Node 22+ (uses the built-in `node:sqlite`; no runtime dependencies).
 npm install   # dev dependencies only (TypeScript)
 npm test      # build + invariant test suite (runs with CANON_DEV_AUTH=true, stated in package.json)
 npm start     # serve on :3000, record in ./canon.db (CANON_DB, PORT to override)
+npm run backup -- --out ../backups   # a verified snapshot; safe while serving
+npm run restore -- --verify <artefact>
 ```
+
+Or in a container, from the repository root: `docker build -t veryl-canon:local
+--target canon .`, and `docker compose up --build` for a demo stack with the
+stubs. **[OPERATIONS.md](../OPERATIONS.md)** is the runbook — install, upgrade,
+back up, restore, rotate secrets, read the logs, what each timer does and what
+breaks if it stops, and a first-hour checklist — and
+**[CONFIGURATION.md](../CONFIGURATION.md)** is every environment variable below
+in one table, with which are required and which are development-only.
+
+### Two probes, two questions
+
+`GET /health` is **liveness**: the process is up. It stays 200 while the
+Registry is down, because restarting Canon does not fix somebody else's outage.
+
+`GET /ready` is **readiness**: this process can serve — the record is reachable,
+its schema is the version this binary expects, and every configured door
+(identity provider, Registry) answers. Point a load balancer and a container
+health check at this one. It answers 503 with the failing check named
+([`src/ready.ts`](src/ready.ts)).
+
+### Start-up refuses an incoherent configuration
+
+Several settings are only meaningful in combination, so a deployment can be
+coherent in each individual variable and incoherent as a whole. Canon checks
+before it binds a port and exits 78 naming the variable
+([`src/config.ts`](src/config.ts)): single sign-on with no
+`CANON_SESSION_SECRET`, `CANON_DEV_AUTH=true` beside a real identity provider,
+`CANON_SOURCE_ALLOWED_HOSTS` naming a host that does not resolve, a relay with
+no sender, an issuer with no client credentials or nowhere to send people back
+to, and any URL or number that is neither. Warnings cover the merely unwise.
+
+### Migrations
+
+The schema is versioned and forward-only ([`src/migrate.ts`](src/migrate.ts)).
+Migrations apply in order, each inside a transaction with the version row
+written in the same transaction, so a migration that throws leaves the database
+exactly as it was. Migration 1 *is* the old bootstrap, so a fresh database and
+one written by any earlier build converge on the same version. A database
+written by a **newer** Canon makes this binary refuse to start rather than
+misread columns it does not know about. How to add a table from now on is in
+[OPERATIONS.md](../OPERATIONS.md), "Adding a table".
+
+### Backups, briefly
+
+The audit log is a compliance artefact with no second copy. `npm run backup`
+takes a consistent snapshot with `VACUUM INTO` — safe while the server is
+serving — and **verifies it before calling it a backup**: integrity check,
+foreign keys, schema version, every core table read back with its row count, and
+the audit hash chain where a verifier for one exists in the build. **Never `cp
+canon.db`**: under WAL that copies a file whose newest commits are in a WAL it
+did not copy, and the result looks perfectly healthy while missing the end of the
+audit log. Restore verifies twice, before and after. Retention, and what a
+partner is expected to do with the artefact, are in
+[OPERATIONS.md](../OPERATIONS.md).
 
 ### A demo corpus
 

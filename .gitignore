@@ -1,1 +1,7 @@
 .claude/
+# Backup artefacts contain the whole record — every policy, every draft, every
+# actor's name and email. They belong in encrypted storage off this machine
+# (OPERATIONS.md, "Retention"), never in the repository.
+backups/
+*.db.partial
+*.db.displaced-*

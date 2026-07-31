@@ -9,7 +9,9 @@
     "build": "tsc",
     "test": "npm run build && CANON_DEV_AUTH=true node --test \"dist/server/test/**/*.test.js\"",
     "start": "npm run build && node dist/server/src/index.js",
-    "seed:demo": "npm run build && node dist/server/scripts/seed-demo.js"
+    "seed:demo": "npm run build && node dist/server/scripts/seed-demo.js",
+    "backup": "npm run build && node dist/server/scripts/backup.js",
+    "restore": "npm run build && node dist/server/scripts/restore.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
