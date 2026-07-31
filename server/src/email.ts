@@ -110,9 +110,36 @@ export function formatDate(date: Date): string {
 
 const SPECIALS = /[()<>@,;:\\".[\]]/;
 
+// Header injection. A header value carrying a bare CR or LF ends the header
+// and starts whatever follows it — a second `To:`, a `Bcc:`, or the body
+// itself. Subjects and display names are safe by construction, because
+// encodeWord base64-encodes anything that is not printable ASCII, but an
+// ADDRESS is interpolated verbatim, and an actor's email address is
+// unvalidated user input (CanonStore.createActor takes what it is given, and
+// POST /actors is open). So every value that reaches a header is checked here,
+// at the last point before it is written.
+//
+// A refusal is permanent: the address will fail identically on every retry, so
+// the outbox marks the notification dead instead of queueing it forever. This
+// is the same judgement smtp.ts's assertAddress makes about the envelope.
+const HEADER_UNSAFE = /[\r\n\u0000]/;
+
+export function assertHeaderSafe(what: string, value: string): string {
+  if (HEADER_UNSAFE.test(value)) {
+    throw new SmtpPermanentError(
+      `${what} carries a line break and cannot be written into a header: ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
 export function formatAddress(address: MailAddress): string {
+  // The address, never the formatted result: encodeWord folds a long display
+  // name with a legitimate CRLF-plus-space continuation, and that is not
+  // injection. The address is the part interpolated verbatim.
+  assertHeaderSafe('An email address', address.address);
   if (!address.name) return address.address;
-  const name = encodeWord(address.name);
+  const name = encodeWord(assertHeaderSafe('A display name', address.name));
   const needsQuotes = name === address.name && SPECIALS.test(name);
   return `${needsQuotes ? `"${name.replace(/(["\\])/g, '\\$1')}"` : name} <${address.address}>`;
 }
@@ -178,9 +205,15 @@ export function composeMessage(input: ComposeInput): ComposedMessage {
     ['MIME-Version', '1.0'],
     // Tells other mailers not to answer with vacation replies or tickets.
     ['Auto-Submitted', 'auto-generated'],
-    ...Object.entries(input.headers ?? {}),
+    ...Object.entries(input.headers ?? {}).map(
+      ([name, value]): [string, string] => [
+        assertHeaderSafe('A header name', name),
+        assertHeaderSafe(`The ${name} header`, value),
+      ],
+    ),
     ['Content-Type', `multipart/alternative; boundary="${boundary}"`],
   ];
+  assertHeaderSafe('The Message-ID', messageId);
   const part = (contentType: string, body: string): string =>
     [
       `--${boundary}`,

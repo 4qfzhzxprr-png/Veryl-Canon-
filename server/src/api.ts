@@ -232,9 +232,27 @@ const routes: Route[] = [
   ...KNOWLEDGE_ROUTES.map((r) => route(r.method, r.path, r.handler)),
 ];
 
+// A page body, an imported document, and a question are all bodies a person
+// legitimately sends, so the cap is generous — but it is a cap. Without one,
+// a single unauthenticated request can hold the process's memory: the body is
+// buffered whole before anything looks at who is asking. The check runs per
+// chunk, so an oversized body is refused as it arrives rather than after it
+// has all been accepted.
+export const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+
 async function readBody(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).byteLength;
+    if (size > MAX_REQUEST_BODY_BYTES) {
+      req.destroy();
+      throw new CanonError('invalid', `Request body is larger than ${MAX_REQUEST_BODY_BYTES} bytes`, {
+        limit: MAX_REQUEST_BODY_BYTES,
+      });
+    }
+    chunks.push(chunk as Buffer);
+  }
   const raw = Buffer.concat(chunks).toString('utf8');
   if (!raw) return {};
   try {

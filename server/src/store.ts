@@ -741,9 +741,22 @@ export class CanonStore {
     actorId: string,
     filter: { actorId?: string; action?: string; from?: string; to?: string; limit?: number } = {},
   ): AuditEvent[] {
-    this.getActor(actorId); // audit access control tightens with the admin surface; presence check for now
-    const clauses: string[] = [];
-    const params: (string | number)[] = [];
+    this.getActor(actorId);
+    // Permission filtering happens in the SQL that generates the rows, not
+    // after they are read: an event naming a collection reaches a reader only
+    // where that reader is a member of it. Events naming no collection — an
+    // agent session, a refused passport, an ask that named none — are not
+    // collection-scoped and stay, which is exactly the narrowing the Registry
+    // contract already fixes for agents (REGISTRY-CONTRACT.md §4.2) and is now
+    // the same rule for people. Before this, any actor could read the whole
+    // log, including page ids, titles and send-back comments from collections
+    // they hold no role in.
+    const clauses: string[] = [
+      `(audit_events.collection_id IS NULL
+         OR EXISTS (SELECT 1 FROM collection_members m
+                     WHERE m.collection_id = audit_events.collection_id AND m.actor_id = ?))`,
+    ];
+    const params: (string | number)[] = [actorId];
     if (filter.actorId) {
       clauses.push('actor_id = ?');
       params.push(filter.actorId);
@@ -760,11 +773,15 @@ export class CanonStore {
       clauses.push('at <= ?');
       params.push(filter.to);
     }
-    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const limit = Math.min(filter.limit ?? 200, 1000);
+    const where = `WHERE ${clauses.join(' AND ')}`;
+    // Bound, and bound as a parameter rather than as text spliced into SQL: a
+    // caller reaching the store directly with a non-numeric limit would
+    // otherwise write into the statement.
+    const asked = Number(filter.limit ?? 200);
+    const limit = Number.isFinite(asked) ? Math.min(Math.max(Math.trunc(asked), 1), 1000) : 200;
     const rows = this.db
-      .prepare(`SELECT * FROM audit_events ${where} ORDER BY id DESC LIMIT ${limit}`)
-      .all(...params) as Record<string, unknown>[];
+      .prepare(`SELECT * FROM audit_events ${where} ORDER BY id DESC LIMIT ?`)
+      .all(...params, limit) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: r.id as number,
       at: r.at as string,

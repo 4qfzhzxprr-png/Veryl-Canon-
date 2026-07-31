@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
+import { OutboundPolicy, OutboundRefused, assertRegistrableBaseUrl, defaultOutboundPolicy } from './outbound.js';
 
 // Federation, part one: the registered external systems Canon may resolve a
 // value from (DATA-BACKBONE.md §6). A Source is a governed object, registered
@@ -109,6 +110,14 @@ export class SourceService {
   constructor(
     private readonly db: DatabaseSync,
     private readonly host: SourceHost,
+    /**
+     * Which hosts this deployment may reach (outbound.ts). A source is a
+     * governed object, and where it points is the governed part: an
+     * operator-supplied baseUrl is otherwise a server-side request forgery
+     * primitive aimed at whatever is inside the network. Defaults to the
+     * process-wide policy, which permits nothing until a deployment says so.
+     */
+    private readonly outbound: OutboundPolicy = defaultOutboundPolicy(),
   ) {}
 
   create(actorId: string, input: SourceInput): Source {
@@ -285,6 +294,24 @@ export class SourceService {
         'A source requires freshnessWindowMs: a whole number of milliseconds, set from how fast this system\'s values change',
       );
     }
+    // Where a source points is checked when it is registered AND again when a
+    // reference resolves (httpconnector.ts). Registration-time alone is not
+    // enough — a name can be repointed after the check — and resolution-time
+    // alone would leave an unreachable source sitting in the register looking
+    // legitimate. Both, or neither is worth much.
+    const baseUrl = (input.baseUrl ?? '').trim();
+    try {
+      assertRegistrableBaseUrl(baseUrl, this.outbound);
+    } catch (err) {
+      if (err instanceof OutboundRefused) {
+        throw new CanonError('invalid', `This source's baseUrl is not one Canon may reach: ${err.message}`, {
+          baseUrl,
+          reason: err.code,
+        });
+      }
+      throw err;
+    }
+
     const collectionIds = [...new Set(input.collectionIds ?? [])];
     for (const collectionId of collectionIds) {
       const exists = this.db.prepare('SELECT 1 AS hit FROM collections WHERE id = ?').get(collectionId) as
@@ -295,7 +322,7 @@ export class SourceService {
     return {
       name: input.name.trim(),
       kind: input.kind.trim(),
-      baseUrl: (input.baseUrl ?? '').trim(),
+      baseUrl,
       authMode: input.authMode,
       freshnessWindowMs: window,
       collectionIds: collectionIds.sort(),

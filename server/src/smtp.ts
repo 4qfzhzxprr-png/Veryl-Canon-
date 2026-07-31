@@ -85,7 +85,12 @@ export function parseSmtpUrl(raw: string): SmtpConfig {
   try {
     url = new URL(raw);
   } catch {
-    throw new CanonError('invalid', `CANON_SMTP_URL is not a URL: ${raw}`);
+    // The value is not echoed. CANON_SMTP_URL routinely carries the relay
+    // password, and this error is thrown at start-up where it lands in the
+    // console, in a crash report, or — if a caller ever parses one at request
+    // time — in an HTTP body. A secret in an error message is a secret Canon
+    // has published, so the message says what is wrong and nothing else.
+    throw new CanonError('invalid', 'CANON_SMTP_URL is not a URL');
   }
   const scheme = url.protocol.replace(/:$/, '');
   if (scheme !== 'smtp' && scheme !== 'smtps') {

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, relative, resolve, sep } from 'node:path';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   Actor,
@@ -116,6 +116,54 @@ export interface ImportRunRecord extends ImportSummary {
   items: { file: string; pageId: string | null; outcome: ImportOutcome; reason: string | null; at: string }[];
 }
 
+// ---------------------------------------------------------------------------
+// Where an import may read from
+//
+// The export path is operator input, walked and read by the server. Two things
+// follow, and both are enforced below rather than assumed:
+//
+//   1. A run never reads outside the directory it was pointed at. Discovery
+//      builds paths only from directory-entry names, so no `..` can appear in
+//      one — but a SYMLINK inside an otherwise ordinary export is a file named
+//      `Onboarding.html` whose contents are `/etc/passwd`, and following it
+//      would import that file into the record as a page. Every file is
+//      therefore resolved through realpath and refused if it lands outside the
+//      run's own root. A refused file is reported like any other bad file; it
+//      never aborts the run.
+//
+//   2. A deployment can bound the roots themselves. CANON_IMPORT_ROOTS, a
+//      colon- or comma-separated list of directories, restricts every import to
+//      paths inside them. UNSET MEANS UNRESTRICTED, which is the historical
+//      behaviour and is why this is opt-in rather than default-deny: an
+//      operator running the importer by hand from an arbitrary unpack
+//      directory is the normal case. Any deployment where `edit` on a
+//      collection is not the same trust level as shell access should set it.
+//      See SECURITY.md.
+
+function importRootsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env.CANON_IMPORT_ROOTS ?? '')
+    .split(/[:,]/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => realPathOr(resolve(p)));
+}
+
+/** realpath where it resolves, the path itself where it does not. */
+function realPathOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Is `path` the directory `root` itself, or something beneath it? */
+function within(root: string, path: string): boolean {
+  if (path === root) return true;
+  const rel = relative(root, path);
+  return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
+}
+
 // A run reads at most this many documents. An export directory is operator
 // input, so the cap is what keeps a mis-aimed path (a home directory, say) from
 // becoming an unbounded job. Files past the cap are reported as skipped.
@@ -169,6 +217,20 @@ interface Discovery {
 function isHtmlFile(name: string): boolean {
   const ext = extname(name).toLowerCase();
   return ext === '.html' || ext === '.htm';
+}
+
+/**
+ * Read a file only if it really lives under `realRoot`. Discovery reads the
+ * export's index and its pages' breadcrumbs before the import pass ever runs,
+ * so the containment rule has to hold here too: an index.html symlinked at
+ * another file would otherwise be parsed, and its text would reach the record
+ * as a space name or a page title.
+ */
+function readContained(realRoot: string, absPath: string): string {
+  if (!within(realRoot, realPathOr(absPath))) {
+    throw new Error('this file resolves outside the export directory');
+  }
+  return readFileSync(absPath, 'utf8');
 }
 
 function readDirSafe(dir: string): { name: string; isDirectory: boolean }[] {
@@ -331,6 +393,7 @@ function orderByTree(files: string[], parentOf: Map<string, string>): string[] {
  */
 export function discoverConfluence(root: string): Discovery {
   const skipped: { file: string; reason: string }[] = [];
+  const realRoot = realPathOr(root);
   const entries = readDirSafe(root);
   const files: string[] = [];
   for (const entry of entries) {
@@ -350,7 +413,7 @@ export function discoverConfluence(root: string): Discovery {
   let indexOrder: string[] = [];
   if (indexPath) {
     try {
-      const doc = parseHtml(readFileSync(join(root, indexPath.name), 'utf8'));
+      const doc = parseHtml(readContained(realRoot, join(root, indexPath.name)));
       const heading = firstByTag(doc, 'h1');
       spaceName = heading ? textContent(heading) || null : null;
       const list = findIndexList(doc);
@@ -377,7 +440,7 @@ export function discoverConfluence(root: string): Discovery {
   for (const file of files) {
     if (parentOf.has(file)) continue;
     try {
-      const doc = parseHtml(readFileSync(join(root, file), 'utf8'));
+      const doc = parseHtml(readContained(realRoot, join(root, file)));
       const parent = breadcrumbParent(doc, file);
       if (parent && parent !== file) {
         parentOf.set(file, parent);
@@ -589,6 +652,16 @@ export class ImportService {
     if (!stat.isDirectory()) {
       throw new CanonError('invalid', `Not a directory: ${root}. Unpack the export archive first.`);
     }
+    // The run's own boundary, resolved once: every file read below must land
+    // inside it, whatever symlinks the export directory carries.
+    const realRoot = realPathOr(root);
+    const permittedRoots = importRootsFromEnv();
+    if (permittedRoots.length && !permittedRoots.some((permitted) => within(permitted, realRoot))) {
+      throw new CanonError('forbidden', 'This deployment restricts imports to CANON_IMPORT_ROOTS', {
+        path: root,
+        permittedRoots,
+      });
+    }
 
     const runId = input.runId?.trim() || randomUUID();
     const startedAt = now();
@@ -653,6 +726,7 @@ export class ImportService {
         runId,
         source,
         root,
+        realRoot,
         type,
         collectionId: input.collectionId,
         doc,
@@ -726,6 +800,8 @@ export class ImportService {
       runId: string;
       source: ImportSource;
       root: string;
+      /** The run root with every symlink resolved; nothing may be read outside it. */
+      realRoot: string;
       type: DocType;
       collectionId: string;
       doc: DiscoveredDocument;
@@ -744,6 +820,18 @@ export class ImportService {
       reason: null,
     };
     try {
+      // Containment first, before anything is stat'd for size or read. A file
+      // that resolves outside the run's root is a symlink out of the export —
+      // `Onboarding.html -> /etc/passwd` — and importing it would put a file
+      // the operator never chose into the record as a page.
+      const real = realPathOr(doc.absPath);
+      if (!within(ctx.realRoot, real)) {
+        return this.record(
+          ctx.runId,
+          { ...base, outcome: 'skipped', reason: 'refused: this file resolves outside the export directory' },
+          '',
+        );
+      }
       const size = statSync(doc.absPath).size;
       if (size > MAX_FILE_BYTES) {
         return this.record(ctx.runId, { ...base, outcome: 'skipped', reason: `larger than ${MAX_FILE_BYTES} bytes` }, '');
