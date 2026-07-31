@@ -86,6 +86,7 @@ type Scope =
   | { kind: 'collection'; id: string } // collection id in the path
   | { kind: 'page'; id: string } // collection resolved from the page
   | { kind: 'comment'; id: string } // collection resolved from the comment's page
+  | { kind: 'reference'; id: string } // collection resolved from the reference's page
   | { kind: 'bodyCollection' } // collection id in the request body
   | { kind: 'newCollection' } // creates a collection: only '*' can reach it
   | { kind: 'source'; id: string } // source id in the path
@@ -175,6 +176,20 @@ const RULES: Rule[] = [
   // resolve is still readable; the references come back refused in place.
   { method: 'GET', pattern: /^\/pages\/([^/]+)\/references$/, action: 'read', scope: PAGE },
 
+  // Authoring a reference on a page is `write` on that page's collection, and
+  // needs no `"*"`: a reference belongs to exactly one page, so the collection
+  // that governs the page governs it. (Registering the *source* it points at
+  // is the other case entirely — see below.) Removing one is the same act
+  // reversed, but the path names the reference rather than the page, so the
+  // collection is resolved through the reference's page.
+  { method: 'POST', pattern: /^\/pages\/([^/]+)\/references$/, action: 'write', scope: PAGE },
+  {
+    method: 'DELETE',
+    pattern: /^\/references\/([^/]+)$/,
+    action: 'write',
+    scope: (g) => ({ kind: 'reference', id: g[0] ?? '' }),
+  },
+
   // Reading the source register is `read`, and the listing is narrowed to the
   // agent's permitted sources rather than refused — the same treatment
   // collection listings and searches get (REGISTRY-CONTRACT.md §4.2).
@@ -182,9 +197,11 @@ const RULES: Rule[] = [
   { method: 'GET', pattern: /^\/sources\/([^/]+)$/, action: 'read', scope: (g) => ({ kind: 'source', id: g[0] ?? '' }) },
 
   // Registering, changing, or removing a source is `write` AND requires `"*"`,
-  // exactly as creating a collection does. Being permitted to read *through* a
-  // source is not being permitted to *redefine* it: an agent that could
-  // repoint a source would be writing its own limits.
+  // exactly as creating a collection does, and for the same reason: a source
+  // is not scoped to one collection, so there is no collection to check it
+  // against. Being permitted to read *through* a source is not being permitted
+  // to *redefine* it — an agent that could retarget an external system would
+  // be writing its own limits.
   { method: 'POST', pattern: /^\/sources$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
   { method: 'PUT', pattern: /^\/sources\/([^/]+)$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
   { method: 'DELETE', pattern: /^\/sources\/([^/]+)$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
@@ -399,6 +416,8 @@ export class AgentAuth {
         return this.collectionOfPage(scope.id);
       case 'comment':
         return this.collectionOfComment(scope.id);
+      case 'reference':
+        return this.collectionOfReference(scope.id);
       case 'bodyCollection': {
         const value = (body as { collectionId?: unknown } | undefined)?.collectionId;
         return typeof value === 'string' && value ? value : null;
@@ -419,6 +438,18 @@ export class AgentAuth {
     const row = this.db
       .prepare('SELECT p.collection_id FROM comments c JOIN pages p ON p.id = c.page_id WHERE c.id = ?')
       .get(commentId) as { collection_id: string } | undefined;
+    return row?.collection_id ?? null;
+  }
+
+  // The same shape as collectionOfComment: a reference belongs to a page, and
+  // the page's collection is what governs it. The table name is quoted because
+  // REFERENCES is a reserved word in SQLite — unquoted, this is a syntax error
+  // rather than a missing row, which is the sort of thing that only shows up
+  // the first time an agent deletes a reference.
+  private collectionOfReference(referenceId: string): string | null {
+    const row = this.db
+      .prepare('SELECT p.collection_id FROM page_references r JOIN pages p ON p.id = r.page_id WHERE r.id = ?')
+      .get(referenceId) as { collection_id: string } | undefined;
     return row?.collection_id ?? null;
   }
 
@@ -471,18 +502,25 @@ export class AgentAuth {
    * reference; a refused resolution is that same event with the reason where
    * the value would have been. Public because the reference layer refuses
    * individual references long after `enforce` has let the request through.
+   *
+   * The details borrow the `reference.resolve` vocabulary rather than inventing
+   * a parallel one — same `referenceId`, `sourceId`, `sourceName`, `authMode`,
+   * `selector`, `key`, and `origin: 'none'` for a value that came from neither
+   * source nor cache — so one audit query can follow a reference across both
+   * event families. `fromCache` and `stale` are left out because `origin:
+   * 'none'` already answers them; nothing was fetched to be fresh or stale.
    */
-  denySource(
-    session: AgentSession,
-    sourceId: string,
-    context: { pageId?: string; selector?: string; key?: string } = {},
-  ): void {
+  denySource(session: AgentSession, sourceId: string, context: ReferenceContext = {}): void {
     this.deny(session, 'source', {
       sourceId,
-      reference: true,
+      ...(context.referenceId ? { referenceId: context.referenceId } : {}),
       ...(context.pageId ? { pageId: context.pageId } : {}),
+      ...(context.sourceName ? { sourceName: context.sourceName } : {}),
+      ...(context.authMode ? { authMode: context.authMode } : {}),
       ...(context.selector ? { selector: context.selector } : {}),
       ...(context.key ? { key: context.key } : {}),
+      origin: 'none',
+      error: 'source_not_permitted',
     });
   }
 
@@ -536,27 +574,54 @@ export class AgentAuth {
 //
 // The seam is a request-scoped session. `runInAgentRequestScope` wraps handler
 // execution in api.ts; anything called from inside a handler — however deep,
-// across as many awaits as it likes — can ask who is asking without that
+// across as many awaits as it likes, which matters because
+// `store.resolveReferences` is async — can ask who is asking without that
 // question being threaded through every signature. For a person there is no
 // scope, and every function here answers "permitted": people are governed by
 // Canon's own permissions alone, which the store applies as it always has.
 //
-// The reference layer's whole obligation is one call per reference:
+// The reference layer's whole obligation is one call per reference, inside
+// resolveReferences' loop, before the connector is asked for anything:
 //
-//     const refusal = refuseUnpermittedSource(ref.sourceId, { pageId, selector: ref.selector });
-//     if (refusal) { out.push({ ...slot, value: null, ...refusal }); continue; }
+//     const refusal = refuseUnpermittedSource(source.id, {
+//       referenceId: ref.id, pageId, sourceName: source.name,
+//       authMode: source.authMode, selector: ref.selector, key: ref.key,
+//     });
+//     if (refusal) { results.push({ ...slot, value: null, ...refusal }); continue; }
 //
 // It returns null when the reference may be resolved and a refusal record when
-// it may not, having already written the audit event. Spreading the record
-// into the reference's slot is what makes the refusal visible: a refused
-// reference must never be dropped from the payload, because a silently missing
+// it may not, having already written the audit event. The record carries
+// `origin: 'none'` and an `error`, so spreading it over the reference's result
+// slot produces a well-formed refused reference in the shape the rest of the
+// layer already speaks. Spreading rather than dropping is the point: a refused
+// reference must never vanish from the payload, because a silently missing
 // value reads as "no such value" — the deductible unset, the headcount zero.
+//
+// Never fail the whole call for a refusal. `resolveReferences` does not throw
+// when a source is down, and a source withheld by the Registry is the same
+// kind of event with a governance cause instead of a network one.
 
-/** What occupies a reference's slot when the Registry withholds its source. */
+/** Everything the reference layer knows about the reference being refused. */
+export interface ReferenceContext {
+  referenceId?: string;
+  pageId?: string;
+  sourceName?: string;
+  authMode?: string;
+  selector?: string;
+  key?: string;
+}
+
+/**
+ * What occupies a reference's slot when the Registry withholds its source.
+ * Shaped to spread over a resolved-reference result: `origin` and `error` are
+ * the fields `reference.resolve` already uses for a value that never arrived.
+ */
 export interface SourceRefusal {
   error: 'source_not_permitted';
   message: string;
   sourceId: string;
+  /** Nothing was fetched — from neither the source nor the cache. */
+  origin: 'none';
   /** Which side of the intersection refused. Canon's own half says `canon`. */
   refusedBy: 'registry';
 }
@@ -600,10 +665,7 @@ export function permitsSourceForRequest(sourceId: string): boolean {
  * event naming the source as a side effect, so a caller that honours the
  * return value cannot forget to log the refusal.
  */
-export function refuseUnpermittedSource(
-  sourceId: string,
-  context: { pageId?: string; selector?: string; key?: string } = {},
-): SourceRefusal | null {
+export function refuseUnpermittedSource(sourceId: string, context: ReferenceContext = {}): SourceRefusal | null {
   const scope = agentRequestScope.getStore();
   if (!scope || scope.session.permitsSource(sourceId)) return null;
   scope.auth.denySource(scope.session, sourceId, context);
@@ -611,6 +673,7 @@ export function refuseUnpermittedSource(
     error: 'source_not_permitted',
     message: 'The Registry does not permit this agent to resolve references from this source',
     sourceId,
+    origin: 'none',
     refusedBy: 'registry',
   };
 }

@@ -40,6 +40,8 @@
  * connector actually reads; a fuller `Source` carrying `owner`, permitted
  * collections and the rest satisfies it without change.
  */
+import type { Asker, Connector as CoreConnector, ResolveResult } from './connectors.js';
+
 export interface ConnectorSource {
   id: string;
   name: string;
@@ -59,7 +61,7 @@ export interface ResolveRequest {
    * identity, but it is still required, because every resolution is an audit
    * event naming who asked.
    */
-  asker: string;
+  asker: Asker | null;
 }
 
 /** A federated value is a scalar. A source returning an object is telling us we asked the wrong question. */
@@ -171,7 +173,9 @@ export interface HttpConnectorOptions {
  * Filters are pushed down: one field, one key, one request. Canon never
  * fetches a plan and picks a field out of it locally.
  */
-export class HttpConnector implements Connector {
+export class HttpConnector implements Connector, CoreConnector {
+  /** Matches `source.kind`; the core's ConnectorRegistry keys on it. */
+  readonly kind = 'http';
   readonly name = 'http-lookup-v1';
   readonly requestTimeoutMs: number;
   readonly askerHeader: string;
@@ -322,7 +326,7 @@ export class HttpConnector implements Connector {
    */
   private identityFor(source: ConnectorSource, request: ResolveRequest): string | null {
     if (source.authMode === 'service') return this.serviceIdentity;
-    const asker = request.asker?.trim();
+    const asker = request.asker?.actorId?.trim();
     return asker ? asker : null;
   }
 }

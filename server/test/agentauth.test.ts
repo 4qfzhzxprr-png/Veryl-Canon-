@@ -22,6 +22,7 @@ import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { RegistryClient } from '../src/registry.js';
 import { CanonStore } from '../src/store.js';
+import { staticConnectorOf } from '../src/connectors.js';
 
 interface Rig {
   registry: RegistryStore;
@@ -738,6 +739,83 @@ test('a read-certified agent may ask, and the answer respects both sides', async
       { collectionId: open.id, type: 'note', title: 'nope' },
     );
     assert.equal(wrote.status, 403);
+  } finally {
+    r.close();
+  }
+});
+
+// The whole intersection, through the real endpoints. Neither the federation
+// stream nor the Registry stream could write this: the first had no passport
+// auth, the second had no /pages/:id/references route. It is the case
+// DATA-BACKBONE.md §6 turns on — a page an agent may read, carrying a value
+// from a source it may not reach — and the rule is that the reference comes
+// back visibly refused rather than quietly missing, because a silently absent
+// value reads as "there is no such value".
+test('a reference from an unpermitted source is refused visibly, not omitted', async () => {
+  const r = await rig();
+  try {
+    const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+    const collection = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Benefits' })).json;
+    const page = (
+      await r.call('POST', '/pages', { actor: dana.id }, { collectionId: collection.id, type: 'note', title: 'Plan summary' })
+    ).json;
+
+    staticConnectorOf(r.store.connectors).define('benefits', { deductible: { 'plan-gold': '$1,500' } });
+    const allowed = r.store.createSource(dana.id, {
+      name: 'Benefits Admin',
+      kind: 'static',
+      baseUrl: 'static:benefits',
+      authMode: 'service',
+      freshnessWindowMs: 60_000,
+      collectionIds: [collection.id],
+    });
+    const barred = r.store.createSource(dana.id, {
+      name: 'Payroll',
+      kind: 'static',
+      baseUrl: 'static:benefits',
+      authMode: 'service',
+      freshnessWindowMs: 60_000,
+      collectionIds: [collection.id],
+    });
+    r.store.addReference(dana.id, page.id, { sourceId: allowed.id, selector: 'deductible', key: 'plan-gold', label: 'Deductible' });
+    r.store.addReference(dana.id, page.id, { sourceId: barred.id, selector: 'deductible', key: 'plan-gold', label: 'Salary band' });
+
+    const agent = r.registry.register({ name: 'Benefits Assistant' });
+    r.registry.certify(agent.agentId);
+    // The Registry permits the collection and ONE of the two sources.
+    r.registry.setPermissions(agent.agentId, {
+      permittedCollections: [collection.id],
+      permittedSources: [allowed.id],
+      permittedActions: ['read'],
+    });
+    const actor = r.store.listActors().find((a) => a.kind === 'agent');
+    // First contact provisions the actor; ask once so it exists, then grant Canon's half.
+    await r.call('GET', `/pages/${page.id}`, { passport: agent.passport });
+    const agentActor = actor ?? r.store.listActors().find((a) => a.kind === 'agent')!;
+    r.store.setMember(dana.id, collection.id, agentActor.id, 'view');
+
+    const resolved = await r.call('GET', `/pages/${page.id}/references`, { passport: agent.passport });
+    assert.equal(resolved.status, 200, `expected the page's references, got ${JSON.stringify(resolved.json)}`);
+    assert.equal(resolved.json.length, 2, 'both references must be returned — refusal is data, not omission');
+
+    const ok = resolved.json.find((x: any) => x.sourceId === allowed.id);
+    const refused = resolved.json.find((x: any) => x.sourceId === barred.id);
+    assert.equal(ok.value, '$1,500', 'the permitted source resolves normally');
+    assert.equal(ok.error, undefined);
+    assert.equal(refused.value, null, 'the barred source yields no value');
+    assert.match(refused.error, /does not permit/i, 'and says why, in the reference itself');
+    assert.equal(refused.sourceName, 'Payroll', 'the reader still learns which source was refused');
+
+    // A person is unaffected: no agent scope, no refusal.
+    const asPerson = await r.call('GET', `/pages/${page.id}/references`, { actor: dana.id });
+    assert.equal(asPerson.json.filter((x: any) => x.error).length, 0);
+
+    // And the denial is on the record.
+    const denials = r.store.queryAudit(dana.id, { action: 'agent.denied' });
+    assert.ok(
+      denials.some((e) => (e.details as any).sourceId === barred.id),
+      'a refused source resolution must be audited',
+    );
   } finally {
     r.close();
   }

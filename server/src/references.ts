@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
 import { Asker, ConnectorRegistry, ResolveRequest } from './connectors.js';
 import { Source, SourceAuthMode, SourceService } from './sources.js';
+import { refuseUnpermittedSource } from './agentauth.js';
 
 // Federation, part three: reference fields and their resolution
 // (DATA-BACKBONE.md §6). A reference field is a structured field on a page
@@ -237,6 +238,38 @@ export class ReferenceService {
     const resolved: ResolvedReference[] = [];
     for (const row of references) {
       const reference = this.reference(row.id);
+      // The Registry's half of the intersection, per reference. An agent may
+      // read this page and still be barred from the source behind one of its
+      // values (DATA-BACKBONE.md §6, REGISTRY-CONTRACT.md §4). The refusal is
+      // returned as data on the reference rather than dropping it, because a
+      // silently missing value reads as "there is no such value". Returns null
+      // for people, and for agents the Registry does permit.
+      const refusal = refuseUnpermittedSource(reference.sourceId, {
+        referenceId: reference.id,
+        pageId,
+        sourceName: reference.sourceName,
+        authMode: reference.authMode,
+        selector: reference.selector,
+        key: reference.key,
+      });
+      if (refusal) {
+        const source = this.sources.row(reference.sourceId);
+        resolved.push({
+          referenceId: reference.id,
+          sourceId: source.id,
+          sourceName: source.name,
+          authMode: source.authMode,
+          selector: reference.selector,
+          key: reference.key,
+          label: reference.label,
+          value: null,
+          resolvedAt: null,
+          fromCache: false,
+          stale: false,
+          error: refusal.message,
+        });
+        continue;
+      }
       const result = await this.resolveOne(actor, page.collectionId, reference);
       resolved.push(result);
     }

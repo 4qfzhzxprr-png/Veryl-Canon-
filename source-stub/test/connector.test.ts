@@ -14,6 +14,10 @@ import {
   isConnectorError,
 } from '../../server/src/httpconnector.js';
 
+// The connector takes the core's Asker object (server/src/connectors.ts), so
+// tests name a person the same way Canon's reference layer does.
+const asker = (actorId: string) => ({ actorId, kind: 'person' as const, name: actorId, email: null, registryRef: null });
+
 const GOLD = {
   planId: 'plan-gold-2026',
   name: 'Gold PPO 2026',
@@ -81,7 +85,7 @@ test('connector: resolves a reference by key and selector', async () => {
     const resolved = await connector.resolve(source, {
       selector: 'deductible',
       key: 'plan-gold-2026',
-      asker: 'person-jo',
+      asker: asker('person-jo'),
     });
     assert.equal(resolved.value, 1500);
     assert.ok(Date.parse(resolved.resolvedAt) >= before, 'resolvedAt is when Canon resolved it');
@@ -92,13 +96,13 @@ test('connector: resolves a reference by key and selector', async () => {
     const date = await connector.resolve(source, {
       selector: 'effectiveDate',
       key: 'plan-gold-2026',
-      asker: 'person-jo',
+      asker: asker('person-jo'),
     });
     assert.equal(date.value, '2026-01-01');
     const coins = await connector.resolve(source, {
       selector: 'brandCoinsurance',
       key: 'plan-gold-2026',
-      asker: 'person-jo',
+      asker: asker('person-jo'),
     });
     assert.equal(coins.value, 30);
   } finally {
@@ -118,12 +122,12 @@ test('connector: the asker reaches the source, and the source enforces it', asyn
     const ada = await connector.resolve(source, {
       selector: 'deductible',
       key: 'plan-exec-2026',
-      asker: 'person-ada',
+      asker: asker('person-ada'),
     });
     assert.equal(ada.value, 250);
 
     const jo = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-exec-2026', asker: 'person-jo' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-exec-2026', asker: asker('person-jo') }),
     );
     assert.equal(jo.code, 'forbidden');
 
@@ -135,7 +139,7 @@ test('connector: the asker reaches the source, and the source enforces it', asyn
       return fetch(input, init);
     };
     const watcher = new HttpConnector({ fetchImpl: watching });
-    await watcher.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' });
+    await watcher.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') });
     assert.deepEqual(seen, ['person-jo']);
 
     // A `service` source presents the deployment's configured identity
@@ -148,12 +152,12 @@ test('connector: the asker reaches the source, and the source enforces it', asyn
     const value = await asService.resolve(serviceSource, {
       selector: 'deductible',
       key: 'plan-gold-2026',
-      asker: 'person-jo',
+      asker: asker('person-jo'),
     });
     assert.deepEqual([value.value, seen], [1500, ['svc-canon']]);
 
     const beyondService = await expectFailure(
-      asService.resolve(serviceSource, { selector: 'deductible', key: 'plan-exec-2026', asker: 'person-ada' }),
+      asService.resolve(serviceSource, { selector: 'deductible', key: 'plan-exec-2026', asker: asker('person-ada') }),
     );
     assert.equal(beyondService.code, 'forbidden');
   } finally {
@@ -167,7 +171,7 @@ test('connector: a refusal is a real answer, and is not retried', async () => {
     const connector = new HttpConnector();
 
     const forbidden = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-exec-2026', asker: 'person-jo' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-exec-2026', asker: asker('person-jo') }),
     );
     assert.deepEqual(
       [forbidden.kind, forbidden.code, forbidden.status, forbidden.retryable],
@@ -176,12 +180,12 @@ test('connector: a refusal is a real answer, and is not retried', async () => {
     assert.deepEqual([forbidden.sourceId, forbidden.selector, forbidden.key], ['src-benefits', 'deductible', 'plan-exec-2026']);
 
     const unknownKey = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-imaginary', asker: 'person-ada' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-imaginary', asker: asker('person-ada') }),
     );
     assert.deepEqual([unknownKey.kind, unknownKey.code, unknownKey.retryable], ['refused', 'not_found', false]);
 
     const unknownSelector = await expectFailure(
-      connector.resolve(source, { selector: 'dentalMaximum', key: 'plan-gold-2026', asker: 'person-ada' }),
+      connector.resolve(source, { selector: 'dentalMaximum', key: 'plan-gold-2026', asker: asker('person-ada') }),
     );
     assert.deepEqual([unknownSelector.kind, unknownSelector.code], ['refused', 'not_found']);
   } finally {
@@ -197,7 +201,7 @@ test('connector: a slow source times out as no answer', async () => {
 
     const started = Date.now();
     const failed = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') }),
     );
     assert.deepEqual([failed.kind, failed.code, failed.retryable], ['unanswered', 'timeout', true]);
     assert.ok(Date.now() - started < 350, 'the connector gave up rather than waiting on the source');
@@ -207,7 +211,7 @@ test('connector: a slow source times out as no answer', async () => {
     const recovered = await connector.resolve(source, {
       selector: 'deductible',
       key: 'plan-gold-2026',
-      asker: 'person-jo',
+      asker: asker('person-jo'),
     });
     assert.equal(recovered.value, 1500);
   } finally {
@@ -221,19 +225,19 @@ test('connector: a broken or unreachable source is no answer, never a value', as
   try {
     store.setBehaviour({ failStatus: 500 });
     const broken = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') }),
     );
     assert.deepEqual([broken.kind, broken.code, broken.status, broken.retryable], ['unanswered', 'source_error', 500, true]);
 
     store.setBehaviour({ failStatus: 503 });
     const unavailable = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') }),
     );
     assert.deepEqual([unavailable.kind, unavailable.code, unavailable.status], ['unanswered', 'source_error', 503]);
 
     store.setBehaviour({ failStatus: null });
     assert.equal(
-      (await connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' })).value,
+      (await connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') })).value,
       1500,
     );
   } finally {
@@ -243,7 +247,7 @@ test('connector: a broken or unreachable source is no answer, never a value', as
   // With the source gone entirely, the same discipline holds.
   await new Promise<void>((resolve) => server.close(() => resolve()));
   const down = await expectFailure(
-    connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' }),
+    connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') }),
   );
   assert.deepEqual([down.kind, down.code, down.retryable], ['unanswered', 'unreachable', true]);
 });
@@ -258,7 +262,7 @@ test('connector: an answer it cannot trust is no answer', async () => {
   await new Promise<void>((resolve) => rogue.listen(0, resolve));
   const source = sourceFor(`http://127.0.0.1:${(rogue.address() as AddressInfo).port}`);
   const connector = new HttpConnector();
-  const request = { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' };
+  const request = { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') };
 
   try {
     reply = { status: 200, body: '<html>maintenance</html>', contentType: 'text/html' };
@@ -319,24 +323,24 @@ test('connector: it refuses to ask a question it cannot ask honestly', async () 
     // No asker for a per-asker source: resolving anonymously here is exactly
     // the permission laundering the design forbids, so it does not happen.
     const anonymous = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: '  ' }),
+      connector.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('  ') }),
     );
     assert.deepEqual([anonymous.kind, anonymous.code], ['unanswered', 'misconfigured']);
 
     // A service source with no configured service identity.
     const serviceSource = sourceFor(baseUrl, 'service');
     const unconfigured = await expectFailure(
-      connector.resolve(serviceSource, { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' }),
+      connector.resolve(serviceSource, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') }),
     );
     assert.equal(unconfigured.code, 'misconfigured');
 
     const noKey = await expectFailure(
-      connector.resolve(source, { selector: 'deductible', key: '', asker: 'person-jo' }),
+      connector.resolve(source, { selector: 'deductible', key: '', asker: asker('person-jo') }),
     );
     assert.equal(noKey.code, 'misconfigured');
 
     const noSelector = await expectFailure(
-      connector.resolve(source, { selector: '', key: 'plan-gold-2026', asker: 'person-jo' }),
+      connector.resolve(source, { selector: '', key: 'plan-gold-2026', asker: asker('person-jo') }),
     );
     assert.equal(noSelector.code, 'misconfigured');
 
@@ -344,7 +348,7 @@ test('connector: it refuses to ask a question it cannot ask honestly', async () 
       connector.resolve({ ...source, baseUrl: 'not a url' }, {
         selector: 'deductible',
         key: 'plan-gold-2026',
-        asker: 'person-jo',
+        asker: asker('person-jo'),
       }),
     );
     assert.equal(badBase.code, 'misconfigured');
@@ -356,7 +360,7 @@ test('connector: it refuses to ask a question it cannot ask honestly', async () 
       return fetch(input, init);
     };
     const silent = new HttpConnector({ fetchImpl: counting });
-    await expectFailure(silent.resolve(source, { selector: 'deductible', key: '', asker: 'person-jo' }));
+    await expectFailure(silent.resolve(source, { selector: 'deductible', key: '', asker: asker('person-jo') }));
     assert.equal(calls, 0);
   } finally {
     server.close();
@@ -368,13 +372,13 @@ test('connector: no failure mode ever yields a value', async () => {
   // default, a fallback or a cached guess is ever introduced, this fails.
   const { store, server, source, baseUrl } = await startStub();
   const connector = new HttpConnector({ requestTimeoutMs: 60 });
-  const request = { selector: 'deductible', key: 'plan-gold-2026', asker: 'person-jo' };
+  const request = { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') };
   try {
     const scenarios: [string, () => Promise<unknown>][] = [
       ['not entitled', () => connector.resolve(source, { ...request, key: 'plan-exec-2026' })],
-      ['unknown key', () => connector.resolve(source, { ...request, key: 'plan-imaginary', asker: 'person-ada' })],
-      ['unknown selector', () => connector.resolve(source, { ...request, selector: 'dentalMaximum', asker: 'person-ada' })],
-      ['no asker', () => connector.resolve(source, { ...request, asker: '' })],
+      ['unknown key', () => connector.resolve(source, { ...request, key: 'plan-imaginary', asker: asker('person-ada') })],
+      ['unknown selector', () => connector.resolve(source, { ...request, selector: 'dentalMaximum', asker: asker('person-ada') })],
+      ['no asker', () => connector.resolve(source, { ...request, asker: null })],
       ['no service identity', () => connector.resolve(sourceFor(baseUrl, 'service'), request)],
       [
         'source broken',
