@@ -1,5 +1,13 @@
 import { createServer, IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { AgentAuth, AgentSession, passportAuthUnavailable, runInAgentRequestScope } from './agentauth.js';
+import {
+  devAuthEnabled,
+  devAuthRefused,
+  identifyFromHeader,
+  PersonAuth,
+  PersonIdentity,
+  visibleActors,
+} from './auth.js';
 import { KNOWLEDGE_ROUTES } from './knowledge.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
@@ -7,15 +15,22 @@ import { CanonStore } from './store.js';
 import { RawResponse } from './csv.js';
 import type { ProposalStatus } from './proposals.js';
 
-// A deliberately thin HTTP layer over the store. Actor identity arrives in
-// the X-Actor-Id header for now; people get SSO later.
+// A deliberately thin HTTP layer over the store. Three doors, never mixed:
 //
-// Agents arrive by the other door (Epic D): a request carrying X-Agent-Passport is
-// verified with the Veryl Agent Registry and resolved to an agent actor by
-// agentauth.ts, which also applies the Registry's limits before the store
-// sees the request. With no Registry configured (no CANON_REGISTRY_URL),
-// Canon runs in dev mode: X-Actor-Id only, passport authentication refused
-// with a clear message.
+//   SSO      a session cookie, issued by auth.ts after an OpenID Connect
+//            Authorization Code flow with PKCE. The people-facing door.
+//   dev      X-Actor-Id, the alpha's stand-in for SSO — now live only when a
+//            deployment sets CANON_DEV_AUTH=true, and refused outright
+//            otherwise (SECURITY.md R1).
+//   passport X-Agent-Passport, verified with the Veryl Agent Registry and
+//            resolved to an agent actor by agentauth.ts, which also applies
+//            the Registry's limits before the store sees the request. With no
+//            Registry configured (no CANON_REGISTRY_URL) passport
+//            authentication is refused with a clear message.
+//
+// A request carries one of the three. A session cookie alongside an
+// X-Actor-Id naming somebody else, or alongside a passport, is refused rather
+// than resolved in favour of one of them (REGISTRY-CONTRACT.md §2).
 
 type Handler = (ctx: {
   store: CanonStore;
@@ -48,9 +63,15 @@ interface Route {
   names: string[];
   handler: Handler;
   open?: boolean; // no actor required
+  /**
+   * Exists only while dev authentication is on. A server started without
+   * CANON_DEV_AUTH=true answers 404 here — the route is not merely refused,
+   * it is not part of that Canon's surface.
+   */
+  devOnly?: boolean;
 }
 
-function route(method: string, path: string, handler: Handler, open = false): Route {
+function route(method: string, path: string, handler: Handler, open = false, devOnly = false): Route {
   const names: string[] = [];
   const pattern = new RegExp(
     '^' +
@@ -66,14 +87,26 @@ function route(method: string, path: string, handler: Handler, open = false): Ro
         .join('/') +
       '$',
   );
-  return { method, pattern, names, handler, open };
+  return { method, pattern, names, handler, open, devOnly };
 }
 
 const routes: Route[] = [
   route('GET', '/health', () => ({ ok: true, product: 'Veryl Canon', stage: 'alpha' }), true),
 
-  route('POST', '/actors', ({ store, body }) => store.createActor(body), true),
-  route('GET', '/actors', ({ store }) => store.listActors()),
+  // Minting an identity is no longer a thing anyone can do (SECURITY.md R1).
+  // People arrive by SSO, where the actor is provisioned from a verified ID
+  // token; agents arrive by passport, where agentauth.ts creates the actor
+  // from the Registry's answer. Neither needs this route, so what is left of
+  // it is the dev door's own: open exactly as dev mode is open, and absent
+  // from a Canon that did not ask for dev mode.
+  route('POST', '/actors', ({ store, body }) => store.createActor(body), true, true),
+  // The directory, narrowed (SECURITY.md R2). `?collection=<id>` is a
+  // collection's member list, to anyone who may view it; without it, the
+  // whole directory for an operator and only actual colleagues for everyone
+  // else. See visibleActors in auth.ts for why each case is what it is.
+  route('GET', '/actors', ({ store, actorId, query }) =>
+    visibleActors(store, actorId, query.get('collection') ?? undefined),
+  ),
 
   route('POST', '/collections', ({ store, actorId, body }) => store.createCollection(actorId, body)),
   route('GET', '/collections', ({ store, actorId }) => store.listCollections(actorId)),
@@ -307,28 +340,70 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
   res.end(body);
 }
 
-export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null): Server {
+export function createApi(
+  store: CanonStore,
+  agentAuth: AgentAuth | null = null,
+  /**
+   * The people-facing door (auth.ts): SSO sessions, the dev opt-in, CSRF, and
+   * the `/auth/…` routes. Optional so an in-process test rig can boot a bare
+   * Canon; when it is absent the dev opt-in is still read from the
+   * environment, so `X-Actor-Id` is refused there too unless
+   * CANON_DEV_AUTH=true.
+   */
+  personAuth: PersonAuth | null = null,
+): Server {
+  const devAuth = personAuth ? personAuth.devAuth : devAuthEnabled();
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://canon');
+      // The door's own routes, before the record's route table: sign in, sign
+      // out, and "who am I". They are deliberately absent from agentauth's
+      // classification table, so an agent presenting a passport at one is
+      // refused by the rule that already refuses every unclassified route.
+      if (personAuth && personAuth.handles(url.pathname)) {
+        if (await personAuth.handle(req, res, url)) return;
+      }
       const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
-      if (!match) {
+      if (!match || (match.devOnly && !devAuth)) {
         send(res, 404, { error: 'not_found', message: `No route: ${req.method} ${url.pathname}` });
         return;
       }
-      // An Agent Passport, when presented, wins: it is verified with the
-      // Registry and resolved to the agent's actor (Epic D). X-Actor-Id
-      // remains the path for people (and dev mode).
+      // Who is asking. A session cookie is a person signed in through SSO;
+      // X-Actor-Id is the dev stand-in and is refused when dev mode is off.
+      const identity: PersonIdentity = personAuth
+        ? personAuth.identify(req, res)
+        : identifyFromHeader(req, devAuth);
+      // An Agent Passport, when presented, wins over the dev header: it is
+      // verified with the Registry and resolved to the agent's actor (Epic D).
+      // It never wins over a session cookie — that is two identities in one
+      // request, and the answer to that is a refusal.
       const passport = (req.headers['x-agent-passport'] as string) ?? '';
-      let actorId = (req.headers['x-actor-id'] as string) ?? '';
+      let actorId = identity.actorId;
       let session: AgentSession | null = null;
       if (passport) {
+        if (identity.viaCookie) {
+          throw new CanonError(
+            'forbidden',
+            'A request carries a person’s identity or an agent’s passport, never both',
+            { reason: 'identity_mismatch' },
+          );
+        }
         if (!agentAuth) throw passportAuthUnavailable();
         session = await agentAuth.authenticate(passport, actorId);
         actorId = session.actorId;
+      } else if (personAuth) {
+        // Cookies are ambient credentials, so an unsafe request that rode in
+        // on one has to prove it was meant. See assertCsrf in auth.ts.
+        personAuth.assertCsrf(req, identity);
       }
       if (!match.open && !actorId) {
-        send(res, 401, { error: 'unauthenticated', message: 'X-Actor-Id header required' });
+        if (!personAuth && !devAuth) throw devAuthRefused();
+        send(res, 401, {
+          error: 'unauthenticated',
+          message: devAuth
+            ? 'X-Actor-Id header required'
+            : 'Sign in at /auth/login: this request carries no session and no Agent Passport',
+        });
         return;
       }
       const groups = url.pathname.match(match.pattern)!.slice(1);

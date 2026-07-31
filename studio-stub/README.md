@@ -50,6 +50,8 @@ Node 22+, zero runtime dependencies (`node:http`, `node:test`, and the platform 
 ```sh
 npm install   # dev dependencies only (TypeScript)
 npm test      # build + drive Canon and the registry-stub in-process, end to end
+              # (runs with CANON_DEV_AUTH=true: the people the app acts for are
+              #  seeded through Canon's dev door, which is off by default)
 npm start     # serve on :3300 (PORT to override)
 ```
 

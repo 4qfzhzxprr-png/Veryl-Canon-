@@ -1,5 +1,6 @@
 import { agentAuthFromEnv } from './agentauth.js';
 import { createApi } from './api.js';
+import { personAuthFromEnv } from './auth.js';
 import { defaultConnectorRegistry } from './connectors.js';
 import { openDb } from './db.js';
 import { HttpConnector } from './httpconnector.js';
@@ -33,15 +34,49 @@ const store = new CanonStore(db, mail ?? undefined, undefined, connectors);
 // Agent Passport authentication is live only when a Registry is configured
 // (CANON_REGISTRY_URL); otherwise Canon runs in dev mode, X-Actor-Id only.
 const agentAuth = agentAuthFromEnv(db, store);
-const server = attachStatic(createApi(store, agentAuth)); // web UI from server/public, API untouched
+// The people-facing door (auth.ts): SSO when CANON_OIDC_ISSUER is set, the
+// X-Actor-Id stand-in when CANON_DEV_AUTH=true, and nothing at all otherwise.
+// Assembled here so a deployment's identity configuration is read once, at
+// start-up, and announced below rather than discovered on the first request.
+const personAuth = personAuthFromEnv(db, store);
+const server = attachStatic(createApi(store, agentAuth, personAuth)); // web UI from server/public, API untouched
 
 server.listen(port, () => {
   console.log(`Veryl Canon (alpha) listening on :${port}, record at ${dbPath}`);
+  // Which doors are open, said out loud. A deployment must never have to read
+  // the code to find out whether it is running open (SECURITY.md R1), so this
+  // is deliberately noisy and deliberately alarming when it should be.
+  if (personAuth.oidc) {
+    console.log(
+      `Single sign-on live: OpenID Connect against ${personAuth.oidc.config.issuer} ` +
+        `as client ${personAuth.oidc.config.clientId}, returning to ${personAuth.oidc.config.redirectUri}`,
+    );
+  } else {
+    console.log('No identity provider configured (CANON_OIDC_ISSUER unset): people cannot sign in with SSO');
+  }
+  if (personAuth.devAuth) {
+    console.warn(
+      '*** CANON_DEV_AUTH=true: the X-Actor-Id header is accepted and NOTHING ABOUT IT IS VERIFIED. ***\n' +
+        '*** Anyone who can reach this port is any actor they name, and POST /actors is open.        ***\n' +
+        '*** This is for local work and tests. Never run it where a real corpus lives.               ***',
+    );
+  } else {
+    console.log('Dev authentication is off (CANON_DEV_AUTH unset): X-Actor-Id is refused, POST /actors does not exist');
+  }
+  if (!personAuth.oidc && !personAuth.devAuth && !agentAuth) {
+    console.warn('No door is open: set CANON_OIDC_ISSUER, CANON_DEV_AUTH or CANON_REGISTRY_URL, or nobody can do anything');
+  }
+  if (personAuth.oidc && personAuth.ephemeralSecret) {
+    console.warn(
+      'CANON_SESSION_SECRET is unset: session cookies are signed with a key invented at start-up, ' +
+        'so every restart signs everybody out and no second instance can read this one’s cookies',
+    );
+  }
   console.log(
     agentAuth
       ? `Agent Passport authentication live against the Registry at ${agentAuth.registry.baseUrl} ` +
           `(re-verify within ${agentAuth.registry.cacheTtlMs}ms)`
-      : 'No Registry configured (CANON_REGISTRY_URL unset): dev mode, X-Actor-Id only, Agent Passports refused',
+      : 'No Registry configured (CANON_REGISTRY_URL unset): Agent Passports refused',
   );
 });
 
