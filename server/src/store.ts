@@ -30,7 +30,7 @@ import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } fr
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
-import { GraphService, KnowledgeGraph } from './graph.js';
+import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -1089,5 +1089,10 @@ export class CanonStore {
 
   collectionGraph(actorId: string, collectionId: string): KnowledgeGraph {
     return new GraphService(this.db, this).graph(actorId, collectionId);
+  }
+
+  /** The same graph at the record's altitude: every collection the asker may view. */
+  recordGraph(actorId: string, options: RecordGraphOptions = {}): RecordGraph {
+    return new GraphService(this.db, this).recordGraph(actorId, options);
   }
 }
