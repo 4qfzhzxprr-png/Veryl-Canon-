@@ -57,6 +57,7 @@ The data model, from the outside in. These are the entities every other product 
 - **Agent credentials or certification state.** Those are the Registry's record. Canon stores only the reference and checks the Registry live; a lapsed certification means lapsed access with no cleanup step in Canon.
 - **Registry's operational data.** Identities, passports, certification histories, and limits live in the Registry. Canon holds the *documents about* governance — policies, criteria, procedures — as pages like any others.
 - **Studio apps themselves.** App definitions, configuration, and run state belong to Studio. Canon holds the knowledge the apps draw on and the audit trail of every access they make.
+- **Facts owned by other systems.** Headcount, claim status, prices, ticket state. Canon holds a reference and resolves the value when it is read; it never holds the value as its own. See section 6.
 
 ## 4. How the data is organized
 
@@ -115,7 +116,78 @@ An answer without citations is never returned. `refused: true` with an empty cit
 
 If design partners turn out to ask genuinely global questions — "what themes run across all our policies," "where does the record contradict itself" — that is the shape GraphRAG is good at, and this decision should be reopened. Even then it would arrive as a clearly labelled derived layer computed per permission scope, with its summaries treated as navigation aids that point at pages, never as sources an answer may cite directly.
 
-## 6. What Registry and Studio depend on
+## 6. How other systems connect
+
+Canon holds the company's documents. It does not hold the company's every fact, and it must not try to. The HRIS owns headcount, the claims system owns claim status, the benefits administrator owns the deductible. This section fixes how Canon reaches material that lives elsewhere, because getting it wrong in either direction is fatal: copy everything and Canon becomes a stale mirror of five systems, copy nothing and the record is a library of prose that cannot answer a real question.
+
+### The question to ask of each system
+
+Not "how do we sync it" but **does that system own documents, or does it own facts?** The answer picks the pattern, and there are only three.
+
+**Migration — copy once, and Canon becomes the record.** Confluence, Google Docs, SharePoint, Notion. These hold prose a person writes and maintains, and there is no reason for two copies to exist. This is the importer, already built. The discipline that makes it honest is what happens to the source afterwards: a migrated space is retired or made read-only. Leave it live and editable and the organization now has two versions of the same policy, both writable, neither authoritative — precisely the drift Canon exists to end. An import that does not end with a retired source has not finished.
+
+**Federation — never copy, resolve when read.** Systems that own facts and will keep owning them. Canon holds a page that *references* the value, and the value is fetched when the page is read or an answer is composed. Copying here is not merely wasteful, it is a correctness bug: the moment a deductible is synced into Canon, Canon is asserting a number it does not own and cannot keep true.
+
+**Indexed reach — copy text for finding, cite outward.** A corpus that cannot be migrated yet. Canon indexes enough to retrieve it, but the material never carries the Canonical mark, and an answer drawing on it cites and links to the source system rather than claiming it. This is legitimate under principle 1 exactly because an index is derived and rebuildable; what would not be legitimate is presenting it as Canon's record.
+
+What Canon never builds is a general-purpose sync engine. There is no fourth pattern where facts are copied in on a schedule and kept fresh by effort. That is the architecture this product was created to replace.
+
+### Federation is the hard one
+
+Three problems decide whether it works, and all three are about trust rather than plumbing.
+
+**Whose permissions.** The source system has its own access model. Resolve every reference with one service account and Canon will cheerfully show a reader a figure they are not entitled to see in the system that owns it — Canon becomes a permission-laundering machine, which for a regulated buyer is worse than having no integration at all. So resolution carries the asker's identity wherever the source can accept it. Where it cannot, the reference is marked service-resolved, and a service-resolved value is treated as visible to everyone who can view its collection — stated on the page, not buried in configuration. An administrator choosing that mode is choosing to publish the value to the collection, and the product should say so in those words.
+
+**Staleness is unavoidable, so it is displayed rather than hidden.** A page that will not render because an API is down is a bad page. Canon therefore keeps the last resolved value with the time it was fetched, and shows both. That is a copy — and it is allowed, because it is labelled, timestamped, and never authoritative. Each reference carries a freshness window; past it, the value is shown as stale rather than presented as current, and an answer that would have to lean on a stale value says so or refuses. This is the same discipline as the Registry's sixty-second revocation window: bounded, stated, enforced.
+
+**Citations get stronger, not weaker.** Section 5 requires every claim to cite page and version. A federated value extends the citation rather than escaping it: *the deductible is $1,500, per the Benefits policy version 4, resolved from Benefits Admin at 09:14 today*. The page is cited for the rule, the source is cited for the number, and the reader can check both. An answer may never present a federated value without naming its source and resolution time.
+
+### Querying other systems effectively
+
+Capability decides the method, not preference. **You cannot rank what you cannot enumerate**, so semantic retrieval across an API that only answers by key is a dead end, and designing for it wastes months.
+
+- A **crawlable corpus** — documents, pages, files — is indexed and ranked like the rest of the record, under indexed reach above.
+- A **record system** is queried by structured lookup, keyed by an identifier the page already carries: a benefits policy page holds the plan id, and that id is what resolves. The page supplies the key; the connector supplies the value.
+
+Beyond that, two rules that matter in practice: push filters down to the source rather than fetching broadly and filtering inside Canon, and set each reference's freshness window from how fast that field actually changes and what the compliance owner will accept — never one global default.
+
+### Connectors are governed, like agents
+
+The Veryl promise is that rules are set once and carried everywhere. If agents reach external systems directly, the Registry's limits stop at Canon's door and that promise quietly becomes false — an agent barred from a collection could read the same facts through the source behind it.
+
+So a connection to an external system is a governed object, registered and limited the way agents are, and an agent's passport carries which sources it may reach alongside which collections it may read. Every resolution is an audit event naming who asked, which source, which reference, and whether the value came from the source or from cache. That log is what makes federation defensible to a compliance lead, and it is the same log that already covers page edits.
+
+### The shapes
+
+Concretely, three additions to the model in section 3:
+
+**Source** — a registered external system: `id`, `name`, `kind`, `baseUrl`, `authMode` (`per_asker` | `service`), `freshnessWindowMs`, owner, and the collections it may be referenced from. Canon stores no secret material for a source beyond what a deployment's configuration supplies, and never stores a per-asker credential.
+
+**Reference field** — a structured field on a page whose value is not stored but resolved:
+
+```
+{ sourceId, selector, key }        // what to ask, and the page-held identifier to ask it with
+```
+
+resolving to:
+
+```
+{ value, resolvedAt, fromCache, stale, sourceName, error? }
+```
+
+**Connector** — the seam an integration plugs into, parallel to the embedding provider in section 5:
+
+```
+resolve(source, request: { selector, key, asker }) -> { value, resolvedAt }
+```
+
+with the same discipline: a hermetic default so the system runs and tests run with no external calls, a real connector configured per deployment, and failure that degrades visibly rather than silently substituting a guess. The API surface is `POST /sources`, `GET /sources`, `GET /pages/:id/references` (resolve this page's references for the asking actor), and references travel inside the page payload the UI already fetches.
+
+### When we would revisit this
+
+If a design partner needs a fact to be *governed* rather than merely read — reviewed, approved, carrying the Canonical mark — then it is not a federated value at all; it is a page, and it belongs in the record with an owner. The test is whether the organization wants to argue about the number. Facts nobody argues about federate; facts that need an approver are documents wearing a number's clothing.
+
+## 7. What Registry and Studio depend on
 
 These are the contracts. They name what each product may assume about Canon, and what Canon assumes in return.
 
@@ -135,7 +207,7 @@ These are the contracts. They name what each product may assume about Canon, and
 
 The Knowledge API lands in the Next tier ([FEATURES.md](FEATURES.md), what ships first). The contract is stated now so nothing in Core forecloses it — which is Core's standing rule for all deferred work.
 
-## 7. What this means for build order
+## 8. What this means for build order
 
 The Core plan already sequences the product correctly for this role; the backbone framing changes emphasis, not order.
 
@@ -143,10 +215,11 @@ The Core plan already sequences the product correctly for this role; the backbon
 - **The Registry contract comes first among integrations.** Core's plan already requires agreeing the Passport and certification-check contract before M1 ends. This document adds the reason: it is the suite's trust boundary, not just a Canon feature.
 - **The Knowledge API is the third product's foundation.** It ships in the Next tier, but its shape — actor on every call, permission per call, Canonical-only grounding — is fixed now. Studio's timeline depends on it, so the Next tier should open with it.
 
-## 8. Open questions
+## 9. Open questions
 
 Beyond the Core plan's open questions, the backbone role raises four of its own:
 
+- Do design partners accept service-resolved references at all, or must every federated value carry the asker's own identity into the source system? The answer decides how much of a partner's integration surface is reachable in the alpha, since per-asker resolution needs identity mapping the partner may not have.
 - Which embedding provider, and does a regulated design partner accept their record's text being sent to it at all? If not, retrieval runs lexical-plus-graph until a self-hosted model is available — which is one reason semantic retrieval is optional rather than assumed.
 
 - Does Studio need read access to any non-Canonical material — for example, an app that helps a team work on drafts — or is the Canonical-only boundary absolute for apps? Leaning absolute for answers, permitted-with-attribution for working tools.

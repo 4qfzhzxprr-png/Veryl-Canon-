@@ -2,7 +2,7 @@
 
 Veryl Canon does not decide which agents to trust. Veryl Agent Registry does. This document is the contract between them: how an agent proves who it is at Canon's door, how Canon keeps checking that the proof still holds, what the Registry tells Canon the agent may touch, and what happens when any part of that fails.
 
-[DATA-BACKBONE.md](DATA-BACKBONE.md) (section 6) states the contract's principles; [CORE-PLAN.md](CORE-PLAN.md) names it the risk to retire first: Epic D depends on this integration, so the contract is agreed before M1 ends and Epic D is built against a stub until the live Registry is ready. That stub lives in [registry-stub/](registry-stub/). It implements exactly the endpoints below, no more, so that the day the live Registry arrives, Canon changes one base URL and nothing else. The M3 exit — "revoking it in the Registry cuts its access within a minute, demonstrated live" — is demonstrated against this contract, whichever side of it is real.
+[DATA-BACKBONE.md](DATA-BACKBONE.md) (section 7) states the contract's principles; [CORE-PLAN.md](CORE-PLAN.md) names it the risk to retire first: Epic D depends on this integration, so the contract is agreed before M1 ends and Epic D is built against a stub until the live Registry is ready. That stub lives in [registry-stub/](registry-stub/). It implements exactly the endpoints below, no more, so that the day the live Registry arrives, Canon changes one base URL and nothing else. The M3 exit — "revoking it in the Registry cuts its access within a minute, demonstrated live" — is demonstrated against this contract, whichever side of it is real.
 
 ---
 
