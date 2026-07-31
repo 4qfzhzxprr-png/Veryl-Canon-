@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { AgentAuth, AgentSession, passportAuthUnavailable } from './agentauth.js';
 import { CanonError } from './model.js';
+import { flushNotifications } from './notify.js';
 import { CanonStore } from './store.js';
 
 // A deliberately thin HTTP layer over the store. Actor identity arrives in
@@ -133,6 +134,10 @@ const routes: Route[] = [
   route('POST', '/comments/:id/resolve', ({ store, actorId, params }) => store.resolveComment(actorId, params.id!)),
   route('POST', '/comments/:id/reopen', ({ store, actorId, params }) => store.reopenComment(actorId, params.id!)),
   route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
+  // Delivery pass over the notification outbox; a deployment runs it on a timer.
+  route('POST', '/notifications/flush', ({ store, actorId, body }) =>
+    flushNotifications(store, actorId, body?.limit === undefined ? undefined : Number(body.limit)),
+  ),
 
   route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
   route('GET', '/pages/:id/related', ({ store, actorId, params, query }) =>
@@ -192,8 +197,9 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       // The Registry's half of the intersection, applied before the store
       // applies Canon's own permissions. Neither side can widen the other.
       const limits = session ? agentAuth!.enforce(session, { method: req.method ?? '', pathname: url.pathname, body }) : null;
-      // Awaited: retrieval and grounded answers are async (the embedding
-      // provider interface is), so a bare value would serialize as {}.
+      // Awaited: grounded answers are async (the embedding provider interface
+      // is) and so is the outbox flush, which waits on a mail relay. Awaiting
+      // a plain value changes nothing for every other handler.
       const result = await match.handler({ store, actorId, params, query: url.searchParams, body });
       const payload = result ?? { ok: true };
       send(res, 200, limits ? limits.narrow(payload) : payload);
