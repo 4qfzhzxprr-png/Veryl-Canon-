@@ -1,5 +1,6 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { CanonError } from './model.js';
+import { flushNotifications } from './notify.js';
 import { CanonStore } from './store.js';
 
 // A deliberately thin HTTP layer over the store. Actor identity arrives in
@@ -126,6 +127,10 @@ const routes: Route[] = [
   route('POST', '/comments/:id/resolve', ({ store, actorId, params }) => store.resolveComment(actorId, params.id!)),
   route('POST', '/comments/:id/reopen', ({ store, actorId, params }) => store.reopenComment(actorId, params.id!)),
   route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
+  // Delivery pass over the notification outbox; a deployment runs it on a timer.
+  route('POST', '/notifications/flush', ({ store, actorId, body }) =>
+    flushNotifications(store, actorId, body?.limit === undefined ? undefined : Number(body.limit)),
+  ),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -164,7 +169,9 @@ export function createApi(store: CanonStore): Server {
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
-      const result = match.handler({ store, actorId, params, query: url.searchParams, body });
+      // Awaited: handlers are synchronous today except the outbox flush, which
+      // waits on a mail relay. Awaiting a plain value changes nothing else.
+      const result = await match.handler({ store, actorId, params, query: url.searchParams, body });
       send(res, 200, result ?? { ok: true });
     } catch (err) {
       if (err instanceof CanonError) {
