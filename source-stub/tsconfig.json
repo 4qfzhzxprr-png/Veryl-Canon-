@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    // Rooted a level up so this stub's tests can drive Canon's real HTTP
+    // connector in-process, exactly as registry-stub's tests compile Canon's
+    // RegistryClient. Output therefore lands in dist/source-stub/…
+    "rootDir": "..",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "../server/src/httpconnector.ts"]
+}
