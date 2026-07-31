@@ -3,6 +3,7 @@ import { COMMENTS_SCHEMA } from './comments.js';
 import { EMBEDDINGS_SCHEMA } from './embeddings.js';
 import { IMPORTS_SCHEMA } from './import.js';
 import { NOTIFICATIONS_SCHEMA } from './notify.js';
+import { PROPOSALS_SCHEMA } from './proposals.js';
 import { REFERENCES_SCHEMA } from './references.js';
 import { SOURCES_SCHEMA } from './sources.js';
 
@@ -123,5 +124,6 @@ export function openDb(path: string): DatabaseSync {
   db.exec(IMPORTS_SCHEMA); // import runs and their per-file outcomes (Epic E, M4); DDL in import.ts
   db.exec(SOURCES_SCHEMA); // federated sources (DATA-BACKBONE.md §6); DDL in sources.ts
   db.exec(REFERENCES_SCHEMA); // reference fields and their labelled cache; DDL in references.ts
+  db.exec(PROPOSALS_SCHEMA); // agent proposals (FEATURES.md §5, Next tier); DDL in proposals.ts
   return db;
 }

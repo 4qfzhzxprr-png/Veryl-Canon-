@@ -57,7 +57,17 @@ function ensureDeliveryColumns(db: DatabaseSync): void {
   }
 }
 
-export type NotificationKind = 'mention' | 'review_requested' | 'draft_approved' | 'draft_sent_back';
+export type NotificationKind =
+  | 'mention'
+  | 'review_requested'
+  | 'draft_approved'
+  | 'draft_sent_back'
+  // Agent proposals (proposals.ts, Next tier). The triggers live there, next
+  // to the logic, exactly as the mention trigger lives in comments.ts.
+  | 'proposal_opened'
+  | 'proposal_accepted'
+  | 'proposal_rejected'
+  | 'proposal_superseded';
 
 export interface Notification {
   id: string;

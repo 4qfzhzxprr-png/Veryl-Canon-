@@ -27,6 +27,7 @@ import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './im
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
+import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -58,6 +59,10 @@ export class CanonStore {
   readonly connectors: ConnectorRegistry;
   private readonly sources: SourceService;
   private readonly references: ReferenceService;
+  // Agent proposals (FEATURES.md §5, Next tier) live in proposals.ts. A
+  // proposal is held apart from the draft on purpose, so it never takes the
+  // page lock; see the model note at the top of that file.
+  private readonly proposals: ProposalService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -74,6 +79,7 @@ export class CanonStore {
     this.connectors = connectors;
     this.sources = new SourceService(db, this);
     this.references = new ReferenceService(db, this, this.sources, this.connectors);
+    this.proposals = new ProposalService(db, this, this.notifier);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -504,11 +510,16 @@ export class CanonStore {
   // page's structured fields, clears the draft, and settles status: a Note
   // stays a working note; a reviewed type returns to Draft because the
   // Canonical mark applies to reviewed content, not to whatever came after.
+  //
+  // `opts.authorId` exists for exactly one caller: an accepted proposal, whose
+  // version is authored by the agent that proposed it while the acting actor
+  // is the person who accepted it (proposals.ts). Everywhere else author and
+  // actor are the same, which is why it defaults to actorId.
   private writeVersion(
     actorId: string,
     page: Page,
     content: { title: string; body: string; fields: PageFields; note: string | null },
-    opts: { toStatus?: Page['status'] } = {},
+    opts: { toStatus?: Page['status']; authorId?: string } = {},
   ): Page {
     const next =
       (
@@ -522,7 +533,16 @@ export class CanonStore {
         `INSERT INTO page_versions (page_id, number, title, body, fields_json, author_id, note, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(page.id, next, content.title, content.body, JSON.stringify(content.fields), actorId, content.note, at);
+      .run(
+        page.id,
+        next,
+        content.title,
+        content.body,
+        JSON.stringify(content.fields),
+        opts.authorId ?? actorId,
+        content.note,
+        at,
+      );
     this.db
       .prepare(
         `UPDATE pages SET title = ?, owner_id = ?, approver_id = ?, effective_date = ?,
@@ -543,7 +563,13 @@ export class CanonStore {
     this.audit(actorId, 'page.publish', {
       collectionId: page.collectionId,
       pageId: page.id,
-      details: { version: next, status: opts.toStatus ?? 'draft' },
+      details: {
+        version: next,
+        status: opts.toStatus ?? 'draft',
+        // Named only when it differs from the actor, so the log answers "who
+        // wrote this" as well as "who published it".
+        ...(opts.authorId && opts.authorId !== actorId ? { authorId: opts.authorId } : {}),
+      },
     });
     return this.getPage(actorId, page.id);
   }
@@ -856,5 +882,49 @@ export class CanonStore {
 
   resolveReferences(actorId: string, pageId: string): Promise<ResolvedReference[]> {
     return this.references.resolveReferences(actorId, pageId);
+  }
+
+  // ---- agent proposals (FEATURES.md §5; the Next tier) ------------------
+  // Thin delegates; the logic and the model note live in proposals.ts. A
+  // proposal is held in its own table, never in `drafts`, so it cannot take
+  // the page lock: a page carries any number of open proposals while a person
+  // edits it normally.
+
+  createProposal(actorId: string, pageId: string, input: ProposalInput): Proposal {
+    return this.proposals.create(actorId, pageId, input);
+  }
+
+  listProposals(actorId: string, pageId: string, filter: { status?: ProposalStatus } = {}): Proposal[] {
+    return this.proposals.list(actorId, pageId, filter);
+  }
+
+  acceptProposal(actorId: string, proposalId: string, input: { note?: string } = {}): ProposalDecision {
+    return this.proposals.accept(actorId, proposalId, input);
+  }
+
+  rejectProposal(actorId: string, proposalId: string, input: { comment: string }): Proposal {
+    return this.proposals.reject(actorId, proposalId, input);
+  }
+
+  /**
+   * The one seam proposals.ts needs: publish accepted proposal content as a
+   * new version authored by `authorId` — the proposer, typically an agent —
+   * on the accepting person's behalf. It runs the type's rules and the same
+   * version-writing path `publish()` uses, so an accepted proposal on a
+   * reviewed type lands at Draft and still reaches Canonical only through
+   * `submitForReview` and its named approver. Not part of the HTTP surface;
+   * acceptance is reached through `acceptProposal`, which is where the
+   * proposal's own guards (lock, base version, person-only) live.
+   */
+  publishAcceptedProposal(
+    actorId: string,
+    authorId: string,
+    pageId: string,
+    content: { title: string; body: string; fields: PageFields; note: string | null },
+  ): Page {
+    const page = this.toPage(this.pageRow(pageId));
+    this.requireRole(actorId, page.collectionId, 'edit');
+    this.validateReadyToPublish(page.type, content.fields);
+    return this.writeVersion(actorId, page, content, { authorId });
   }
 }

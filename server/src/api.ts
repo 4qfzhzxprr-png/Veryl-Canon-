@@ -4,6 +4,7 @@ import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
 import { CanonStore } from './store.js';
 import { RawResponse } from './csv.js';
+import type { ProposalStatus } from './proposals.js';
 
 // A deliberately thin HTTP layer over the store. Actor identity arrives in
 // the X-Actor-Id header for now; people get SSO later.
@@ -195,6 +196,25 @@ const routes: Route[] = [
     store.removeReference(actorId, params.id!);
     return { ok: true };
   }),
+
+  // Agent proposals (FEATURES.md §5, the Next tier). Proposing is an edit act
+  // and available to agents; accepting and rejecting are a person's act and
+  // are deliberately absent from agentauth.ts's route table, so an agent
+  // presenting a passport is refused at the door.
+  route('POST', '/pages/:id/proposals', ({ store, actorId, params, body }) =>
+    store.createProposal(actorId, params.id!, body),
+  ),
+  route('GET', '/pages/:id/proposals', ({ store, actorId, params, query }) =>
+    store.listProposals(actorId, params.id!, {
+      status: (query.get('status') as ProposalStatus | null) ?? undefined,
+    }),
+  ),
+  route('POST', '/proposals/:id/accept', ({ store, actorId, params, body }) =>
+    store.acceptProposal(actorId, params.id!, body ?? {}),
+  ),
+  route('POST', '/proposals/:id/reject', ({ store, actorId, params, body }) =>
+    store.rejectProposal(actorId, params.id!, body ?? {}),
+  ),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
