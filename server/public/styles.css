@@ -1046,8 +1046,22 @@ label.check input { width: auto; display: inline; margin: 0; }
 /* The map borrows the whole visual language rather than inventing one: the
    surface, border and radius of a panel, the status badge colours for standing,
    and the accent for the one thing the accent already means — Canon's own mark.
-   Provenance is a fill tint, standing is the bar down a node's left edge, and
-   both are spelled out in the legend, because a map has to teach itself. */
+
+   Colour carries three things at once, on three channels that never collide:
+
+     HUE           which community. One hue per collection (or per tree root,
+                   when there is only one collection on the map), drawn from an
+                   arc either side of Canon's own 163° green at the low
+                   saturation the rest of the product keeps to. No primaries,
+                   no rainbow — forty clusters still look like this product.
+     LIGHTNESS     which tree root inside that collection, in three steps.
+     RING / STROKE provenance and standing, which are never hues, so they stay
+                   readable whatever community a node is in.
+
+   The saturations and lightnesses are variables, so the entire palette
+   re-renders for dark mode without a line of JavaScript: each gradient carries
+   a --h custom property from the markup, and its stops resolve it against the
+   theme-aware values below. */
 
 .map-lede { margin: 0.35rem 0 0; max-width: 52rem; }
 .map-summary { margin: 0.15rem 0 0.7rem; font-size: 0.84rem; }
@@ -1077,6 +1091,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+.map-filter-collections { max-width: min(100%, 34rem); }
 .map-filter legend {
   font-size: 0.7rem;
   font-weight: 650;
@@ -1098,18 +1113,61 @@ label.check input { width: auto; display: inline; margin: 0; }
 .map-check input { width: auto; display: inline; margin: 0; }
 .map-check:hover { color: var(--accent); }
 
+/* The stage. A considered ground rather than a blank one: two very soft washes
+   in the accent and the amber the product already uses, over a faint plotted
+   grid. It does not move when the map pans, so it reads as the paper the record
+   is drawn on rather than as part of the drawing. */
 .map-stage {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
   margin: 0 0 1.25rem;
 }
-.map-stage.is-graph { position: relative; height: min(68vh, 640px); overflow: hidden; }
+.map-stage.is-graph {
+  position: relative;
+  height: min(72vh, 700px);
+  overflow: hidden;
+  background:
+    radial-gradient(88% 74% at 46% 4%, var(--accent-soft) 0%, transparent 58%),
+    radial-gradient(64% 58% at 92% 100%, var(--amber-soft) 0%, transparent 56%),
+    var(--surface);
+}
+.map-stage.is-graph::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(var(--border-strong) 0.75px, transparent 0.75px);
+  background-size: 26px 26px;
+  opacity: 0.36;
+}
+.map-stage.is-graph::after {
+  /* An inner shadow at the rim, so the picture sits inside the panel rather
+     than on top of it. */
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 12px;
+  box-shadow: inset 0 0 44px -14px rgba(20, 24, 28, 0.24);
+}
+@media (prefers-color-scheme: dark) {
+  /* The same two washes, pulled in and softened: on a dark ground a tint that
+     reads as "barely there" in light reads as a coloured spotlight. */
+  .map-stage.is-graph {
+    background:
+      radial-gradient(72% 58% at 44% 0%, var(--accent-soft) 0%, transparent 52%),
+      radial-gradient(52% 46% at 96% 104%, var(--amber-soft) 0%, transparent 50%),
+      var(--surface);
+  }
+  .map-stage.is-graph::after { box-shadow: inset 0 0 54px -12px rgba(0, 0, 0, 0.6); }
+  .map-stage.is-graph::before { opacity: 0.22; }
+}
 .map-stage.is-list { padding: 1.1rem 1.25rem; }
 .map-stage.is-empty { border-style: dashed; border-color: var(--border-strong); padding: 0.5rem; }
 .map-stage.is-empty .empty-state { border: none; background: none; margin: 0; }
 
-.map-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.map-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; position: relative; }
 .map-svg.is-panning { cursor: grabbing; }
 .map-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
@@ -1124,6 +1182,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.15rem;
+  box-shadow: var(--shadow);
 }
 
 .map-detail {
@@ -1143,31 +1202,153 @@ label.check input { width: auto; display: inline; margin: 0; }
 .map-detail-line { margin: 0.2rem 0; display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
 .map-detail p:last-child { margin-bottom: 0; }
 
-/* nodes */
+/* ---- the palette, as variables ---------------------------------------- */
+
+.map-svg, .map-legend {
+  --map-s: 30%;
+  --map-s-hi: 38%;
+  --map-edge-s: 32%;
+  --map-edge-l: 44%;
+  --map-halo: rgba(46, 110, 92, 0.5);
+}
+.mg-s0 { --l: 36%; --l-hi: 52%; }
+.mg-s1 { --l: 44%; --l-hi: 60%; }
+.mg-s2 { --l: 53%; --l-hi: 68%; }
+@media (prefers-color-scheme: dark) {
+  .map-svg, .map-legend {
+    --map-s: 34%;
+    --map-s-hi: 42%;
+    --map-edge-s: 34%;
+    --map-edge-l: 52%;
+    --map-halo: rgba(79, 154, 132, 0.55);
+  }
+  .mg-s0 { --l: 40%; --l-hi: 55%; }
+  .mg-s1 { --l: 48%; --l-hi: 63%; }
+  .mg-s2 { --l: 56%; --l-hi: 71%; }
+}
+.map-grad-hi { stop-color: hsl(var(--h, 163) var(--map-s-hi) var(--l-hi, 60%)); }
+.map-grad-lo { stop-color: hsl(var(--h, 163) var(--map-s) var(--l, 44%)); }
+/* A source is not a page and is not coloured like one: cool steel, and drawn
+   square with a dashed accent edge. */
+.map-grad-source-hi { stop-color: hsl(210 12% 88%); }
+.map-grad-source-lo { stop-color: hsl(210 11% 74%); }
+.map-grad-mute-hi { stop-color: hsl(210 6% 82%); }
+.map-grad-mute-lo { stop-color: hsl(210 5% 70%); }
+@media (prefers-color-scheme: dark) {
+  .map-grad-source-hi { stop-color: hsl(210 12% 44%); }
+  .map-grad-source-lo { stop-color: hsl(210 12% 31%); }
+  .map-grad-mute-hi { stop-color: hsl(210 5% 40%); }
+  .map-grad-mute-lo { stop-color: hsl(210 5% 29%); }
+}
+
+/* ---- constellation nodes ----------------------------------------------- */
+
 .map-node { cursor: pointer; }
+.map-node:focus { outline: none; }
+
+.map-svg-force .mn-body {
+  stroke: rgba(24, 28, 32, 0.32);
+  stroke-width: 1;
+  transition: stroke-width 120ms ease;
+}
+@media (prefers-color-scheme: dark) {
+  .map-svg-force .mn-body { stroke: rgba(0, 0, 0, 0.42); }
+}
+
+/* Provenance, on the node's own edge — never a hue, so it survives whatever
+   community the node is in. Authored is the plain node: nothing added, because
+   nothing came from anywhere else. */
+.map-svg-force .pv-imported .mn-body {
+  stroke: var(--surface);
+  stroke-width: 1.7;
+  stroke-dasharray: 2.5 2.5;
+}
+.map-svg-force .pv-federated .mn-body { stroke: var(--accent); stroke-width: 1.9; }
+.map-svg-force .mn-halo { fill: var(--map-halo); opacity: 0.17; }
+
+/* Standing. Canonical carries a lit core; Needs Update wears the only amber
+   ring on the map; In Review wears a dotted one; a draft and an archived page
+   are drawn faint, because they are not the record yet, or not any more. */
+.map-svg-force .mn-core { fill: rgba(255, 255, 255, 0.82); pointer-events: none; }
+.map-svg-force .mn-ring { fill: none; stroke: var(--border-strong); stroke-width: 1.4; stroke-dasharray: 2 2.5; }
+.map-svg-force .st-needs_update .mn-ring { stroke: var(--amber); stroke-width: 2.4; stroke-dasharray: none; }
+.map-svg-force .st-draft .mn-body { opacity: 0.62; }
+.map-svg-force .st-archived .mn-body { opacity: 0.42; }
+.map-svg-force .st-archived .mn-label { opacity: 0.5; }
+
+.map-svg-force .map-node-source .mn-body { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 4 3; }
+.map-svg-force .is-external .mn-body { stroke-dasharray: 5 3; }
+
+/* Labels. The hubs are named at every zoom; each step in brings another band
+   with it, and hovering or focusing always names the one node in question.
+   A stroke of the stage colour under the glyphs keeps them off the edges. */
+.mn-label {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--text);
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+  transition: opacity 140ms ease;
+}
+/* A hub is named at every zoom, so its name is set a step larger and a shade
+   heavier: at a whole-record fit it is the one thing that must still read. */
+.map-svg-force .lt-0 > .mn-in > .mn-label { font-size: 13.5px; font-weight: 700; stroke-width: 4px; }
+.map-svg[data-labels="0"] .lt-1 .mn-label,
+.map-svg[data-labels="0"] .lt-2 .mn-label,
+.map-svg[data-labels="0"] .lt-3 .mn-label,
+.map-svg[data-labels="1"] .lt-2 .mn-label,
+.map-svg[data-labels="1"] .lt-3 .mn-label,
+.map-svg[data-labels="2"] .lt-3 .mn-label { opacity: 0; }
+/* While the wheel is actually turning. See the comment on the wheel handler:
+   labels are the whole cost of a continuous zoom, and they are back before the
+   reader has stopped moving. */
+.map-svg.is-scaling .mn-label { visibility: hidden; }
+/* …except the one being read. */
+.map-svg .map-node:hover .mn-label,
+.map-svg .map-node.is-active .mn-label,
+.map-svg .map-node:focus-visible .mn-label { opacity: 1; }
+
+/* Hover feels alive: the neighbourhood lifts, the rest of the record recedes.
+   The dimming is one class on the <svg>; only the neighbourhood's own elements
+   are touched, so this is a handful of DOM writes at any size. */
+.map-svg.is-focusing .map-node { opacity: 0.16; transition: opacity 130ms ease; }
+.map-svg.is-focusing .map-edge { opacity: 0.07; transition: opacity 130ms ease; }
+.map-svg.is-focusing .map-node.is-near { opacity: 1; }
+.map-svg.is-focusing .map-edge.is-near { opacity: 1; stroke-opacity: 0.95; stroke-width: 2; }
+.map-svg-force .map-node.is-active .mn-body { stroke: var(--accent); stroke-width: 2.6; stroke-dasharray: none; }
+.map-svg-force .map-node.is-active .mn-in { filter: drop-shadow(0 3px 7px rgba(20, 24, 28, 0.4)); }
+.map-svg-force .map-node:focus-visible .mn-body { stroke: var(--accent); stroke-width: 3; }
+.map-svg-force .map-node:hover .mn-in { filter: drop-shadow(0 3px 7px rgba(20, 24, 28, 0.35)); }
+
+/* ---- tree nodes (the layered layout) ----------------------------------- */
+
 .map-node-box {
   fill: var(--surface-2);
   stroke: var(--border-strong);
   stroke-width: 1;
-  transition: stroke 0.12s ease;
 }
+.map-svg-tree .map-node-box { filter: drop-shadow(0 1px 2px rgba(20, 24, 28, 0.16)); }
 .map-node-title { font-family: var(--sans); font-size: 12.5px; font-weight: 600; fill: var(--text); }
 .map-node-meta { font-family: var(--sans); font-size: 10.5px; fill: var(--muted); }
-.map-node:hover .map-node-box, .map-node.is-active .map-node-box { stroke: var(--accent); stroke-width: 1.6; }
-.map-node:focus { outline: none; }
-.map-node:focus-visible .map-node-box { stroke: var(--accent); stroke-width: 2.4; }
+.map-svg-tree .map-node:hover .map-node-box,
+.map-svg-tree .map-node.is-active .map-node-box { stroke: var(--accent); stroke-width: 1.6; }
+.map-svg-tree .map-node:focus-visible .map-node-box { stroke: var(--accent); stroke-width: 2.4; }
 
-/* provenance: a tint, never a new hue */
-.map-node.pv-authored .map-node-box { fill: var(--surface-2); }
-.map-node.pv-imported .map-node-box { fill: var(--amber-soft); }
-.map-node.pv-federated .map-node-box { fill: var(--accent-soft); }
-/* a page held in another collection: same tint, dashed edge */
-.map-node.is-external .map-node-box { stroke-dasharray: 5 3; }
-/* a source is not a page: pill-shaped, dashed, and never carries a status bar */
-.map-node-source .map-node-box { stroke: var(--accent); stroke-dasharray: 4 3; }
-.map-node-source .map-node-stripe { display: none; }
+/* Provenance is a fill tint; the community's hue tints it further, so the tree
+   and the constellation are recognisably the same map. */
+.map-svg-tree .map-node.pv-authored .map-node-box { fill: var(--surface-2); }
+.map-svg-tree .map-node.pv-imported .map-node-box { fill: var(--amber-soft); }
+.map-svg-tree .map-node.pv-federated .map-node-box { fill: var(--accent-soft); }
+.map-svg-tree .map-node.is-external .map-node-box { stroke-dasharray: 5 3; }
+.map-svg-tree .map-node-source .map-node-box { stroke: var(--accent); stroke-dasharray: 4 3; }
+.map-svg-tree .map-node-source .map-node-stripe { display: none; }
 
-/* standing: the badge palette, as a bar down the left edge */
+/* Standing is the bar down a node's left edge, in the badge colours. */
 .map-node-stripe { fill: var(--border-strong); }
 .map-node.st-draft .map-node-stripe { fill: var(--border-strong); }
 .map-node.st-in_review .map-node-stripe { fill: var(--amber); }
@@ -1175,96 +1356,172 @@ label.check input { width: auto; display: inline; margin: 0; }
 .map-node.st-needs_update .map-node-stripe { fill: var(--amber); }
 .map-node.st-archived .map-node-stripe { fill: var(--muted); }
 
-/* edges: three kinds, three weights */
+/* ---- edges -------------------------------------------------------------- */
+
 .map-edge { fill: none; stroke-width: 1.4; }
 .map-edge-child { stroke: var(--border-strong); }
 .map-edge-link { stroke: var(--accent); stroke-dasharray: 6 4; opacity: 0.85; }
 .map-edge-reference { stroke: var(--amber); stroke-dasharray: 2 3; }
 .map-edge.is-active { stroke-width: 2.4; opacity: 1; }
+/* In the constellation a tree edge takes the hue of the community it runs
+   inside, which is what makes the picture read as communities rather than as a
+   grey mesh. Thin and low-opacity, so five hundred of them stay a web. */
+.map-svg-force .map-edge-child {
+  stroke: hsl(var(--h, 210) var(--map-edge-s) var(--map-edge-l));
+  stroke-width: 1.15;
+  stroke-opacity: 0.62;
+}
+/* A link across the record is the long stroke in the picture; it is drawn
+   quieter than a tree edge so it reads as a thread between communities rather
+   than as the structure. */
+.map-svg-force .map-edge-link { stroke-width: 1.1; stroke-opacity: 0.4; stroke-dasharray: 5 5; opacity: 1; }
+.map-svg-force .map-edge-reference { stroke-width: 1.3; stroke-opacity: 0.72; }
 .map-arrow path { stroke: none; }
 .map-arrow-child path { fill: var(--border-strong); }
 .map-arrow-link path { fill: var(--accent); }
 .map-arrow-reference path { fill: var(--amber); }
 
-/* legend */
+/* ---- the settle-in reveal ---------------------------------------------- */
+
+/* The layout is final before the first frame; what this animates is arrival.
+   A stagger from the middle of the picture outwards, capped so the whole
+   thing is over inside about half a second however many nodes there are. */
+@keyframes map-node-in {
+  from { opacity: 0; transform: scale(0.35); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes map-edge-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.map-nodes.is-revealing .mn-in {
+  animation: map-node-in 340ms cubic-bezier(0.2, 0.85, 0.3, 1) both;
+  animation-delay: var(--d, 0ms);
+}
+.map-edges.is-revealing {
+  animation: map-edge-in 420ms ease 160ms both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .map-nodes.is-revealing .mn-in,
+  .map-edges.is-revealing { animation: none; }
+  .map-svg .map-node, .map-svg .map-edge, .mn-label { transition: none; }
+}
+
+/* ---- legend -------------------------------------------------------------- */
+
 .map-legend-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 0.5rem 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.9rem 1.5rem;
 }
+.map-legend-wide { grid-column: 1 / -1; }
 .map-legend-h {
-  font-size: 0.78rem;
-  font-weight: 650;
   margin: 0 0 0.35rem;
-  color: var(--text);
-}
-/* The swatch sits in the text flow rather than in a flex row, so a long
-   explanation wraps under itself instead of pushing the swatch onto its own
-   line — the legend has to read as prose, not as a broken table. */
-.map-legend-item {
-  margin: 0.3rem 0;
-  font-size: 0.84rem;
-  line-height: 1.5;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
   color: var(--muted);
 }
+/* Prose, not a flex row: a badge or a swatch sits in the line of the sentence
+   that explains it, and the sentence wraps like a sentence. Laying these out as
+   flex items made every word its own line in the narrowest column. */
+.map-legend-item {
+  margin: 0.25rem 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.map-legend-item .badge { vertical-align: 1px; }
 .map-legend-item strong { color: var(--text); font-weight: 600; }
 .map-legend-note { font-size: 0.8rem; margin: 0.5rem 0 0; }
 .map-legend-edge { width: 42px; height: 10px; vertical-align: -1px; margin-right: 0.35rem; }
 .map-chip {
   display: inline-block;
-  width: 1.5rem;
-  height: 0.85rem;
+  width: 15px;
+  height: 15px;
+  vertical-align: -3px;
+  margin-right: 0.15rem;
   border-radius: 4px;
   border: 1px solid var(--border-strong);
   background: var(--surface-2);
-  vertical-align: -1px;
-  margin-right: 0.35rem;
 }
 .map-chip.pv-authored { background: var(--surface-2); }
-.map-chip.pv-imported { background: var(--amber-soft); }
-.map-chip.pv-federated { background: var(--accent-soft); }
-.map-chip-page { background: var(--surface-2); }
-.map-chip-source { background: var(--accent-soft); border: 1px dashed var(--accent); border-radius: 99px; }
-.map-chip-external { background: var(--surface-2); border-style: dashed; }
+.map-chip.pv-imported { background: var(--amber-soft); border-style: dotted; border-color: var(--muted); }
+.map-chip.pv-federated { background: var(--accent-soft); border-color: var(--accent); border-width: 2px; }
+.map-chip-page { background: var(--surface-2); border-radius: 99px; }
+.map-chip-source { background: hsl(210 11% 78%); border: 1px dashed var(--accent); border-radius: 4px; }
+.map-chip-external { background: var(--surface-2); border-style: dashed; border-radius: 99px; }
+.map-chip-canonical {
+  border-radius: 99px;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.95) 0 30%, var(--accent) 32%);
+  border-color: var(--accent);
+}
+.map-chip-needs { border-radius: 99px; border: 2.5px solid var(--amber); background: var(--surface-2); }
+.map-chip-review { border-radius: 99px; border: 1.5px dotted var(--border-strong); background: var(--surface-2); }
+.map-chip-draft { border-radius: 99px; background: var(--surface-2); opacity: 0.5; }
+.map-chip-cluster {
+  border-radius: 99px;
+  border-color: rgba(24, 28, 32, 0.28);
+  background: radial-gradient(circle at 34% 28%,
+    hsl(var(--h, 163) var(--map-s-hi) var(--l-hi, 60%)) 0%,
+    hsl(var(--h, 163) var(--map-s) var(--l, 44%)) 100%);
+}
+@media (prefers-color-scheme: dark) {
+  .map-chip-source { background: hsl(210 12% 38%); }
+}
+.map-communities { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; margin-top: 0.4rem; }
+.map-community {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
 
-/* the list fallback: the same data, and never less of it */
+/* ---- the list, which is the same data ----------------------------------- */
+
 .map-list, .map-list ul { list-style: none; margin: 0; padding: 0; }
 .map-list ul { padding-left: 1rem; border-left: 1px solid var(--border); margin-left: 0.5rem; }
 .map-list li { margin: 0.1rem 0; }
 .map-list-wrap .h-small { margin: 1.1rem 0 0.5rem; }
 .map-list-wrap .h-small:first-child { margin-top: 0; }
+.map-list-collection {
+  margin: 0.9rem 0 0.3rem;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--text);
+}
 .map-row {
   display: flex;
-  align-items: center;
-  gap: 0.45rem;
   flex-wrap: wrap;
-  padding: 0.22rem 0.35rem;
+  align-items: center;
+  gap: 0.15rem 0.5rem;
+  padding: 0.2rem 0.4rem;
   border-radius: 6px;
 }
 .map-row:hover { background: var(--surface-2); }
 .map-row-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .map-row-type { font-size: 0.82rem; }
+.map-row-degree { font-size: 0.78rem; }
 .map-row-edges { font-size: 0.8rem; color: var(--muted); }
 .map-row-edges a { color: var(--accent); }
 .map-source-name { font-weight: 600; overflow-wrap: anywhere; }
 .map-origin { font-size: 0.78rem; }
 
 .map-prov {
-  font-size: 0.68rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  border-radius: 99px;
-  padding: 0.04rem 0.5rem;
-  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 600;
   color: var(--muted);
   border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.04rem 0.45rem;
+  white-space: nowrap;
 }
 .map-prov-imported { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
 .map-prov-federated { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
 .map-external-tag {
-  font-size: 0.68rem;
-  font-weight: 600;
+  font-size: 0.72rem;
   color: var(--muted);
   border: 1px dashed var(--border-strong);
   border-radius: 99px;
@@ -1346,9 +1603,17 @@ label.check input { width: auto; display: inline; margin: 0; }
   .field-pair label:last-child { flex: 1 1 auto; }
   .source-mode { max-width: none; }
   /* On a narrow screen the drawing gets shorter and the detail card gets out of
-     its own way: the map stays usable rather than becoming a peephole. */
-  .map-stage.is-graph { height: min(56vh, 420px); }
+     its own way: the map stays usable rather than becoming a peephole. The
+     three layout buttons and the scope picker drop onto their own lines rather
+     than pushing the page sideways — nothing here may scroll horizontally. */
+  .map-stage.is-graph { height: min(60vh, 460px); }
   .map-detail { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; max-width: none; font-size: 0.8rem; }
   .map-filters { gap: 0.5rem; }
   .map-filter { padding: 0.3rem 0.6rem 0.45rem; }
+  .map-page .page-head { flex-wrap: wrap; }
+  .map-page .actions { justify-content: flex-start; max-width: 100%; }
+  .map-modes { flex-wrap: wrap; }
+  .map-scope { min-width: 0; max-width: 100%; }
+  .map-scope select { max-width: 100%; }
+  .map-legend-grid { gap: 0.7rem 1rem; }
 }

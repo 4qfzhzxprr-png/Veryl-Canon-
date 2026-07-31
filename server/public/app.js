@@ -62,16 +62,28 @@ const state = {
   auth: null,
   actors: null, // cached GET /actors
   // null = not yet probed
-  features: { search: null, comments: null, ask: null, related: null, references: null, sources: null },
+  features: {
+    search: null, comments: null, ask: null, related: null, references: null, sources: null,
+    // The knowledge map, and separately the whole-record map: two endpoints,
+    // two probes. See detectMap / detectWholeGraph.
+    map: null, wholeGraph: null,
+  },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
   sourcesById: null, // cached GET /sources, keyed by id, for reference provenance
 };
 
 function resetFeatures() {
-  state.features = { search: null, comments: null, ask: null, related: null, references: null, sources: null };
+  state.features = {
+    search: null, comments: null, ask: null, related: null, references: null, sources: null,
+    map: null, wholeGraph: null,
+  };
   askProbe = null;
   sourcesProbe = null;
+  mapProbe = null;
+  wholeGraphProbe = null;
+  wholeGraphCache = null;
+  state.map = null;
   state.sourcesById = null;
 }
 
@@ -2588,8 +2600,9 @@ async function viewAsk(collectionId = null) {
 // ---------------------------------------------------------------------------
 // Knowledge map
 //
-// The contract (server/src/graph.ts):
-//   GET /collections/:id/graph
+// Two contracts, one screen.
+//
+//   GET /collections/:id/graph  — one collection.
 //     -> { collectionId, generatedAt, counts, truncated,
 //          nodes: [ { id, kind: 'page', title, type, status, collectionId,
 //                     parentId, external, provenance, origin, references, version }
@@ -2597,41 +2610,95 @@ async function viewAsk(collectionId = null) {
 //                     freshnessWindowMs, provenance, references } ],
 //          edges: [ { from, to, kind: 'child' | 'link' | 'reference' } ] }
 //
+//   GET /graph — the whole record this asker may see. Feature-detected the way
+//     /ask and /sources are: where the server does not serve it, the
+//     whole-record entry is simply not there.
+//     -> { collections: [ { id, name } ],
+//          nodes: [ { id, kind, title, collectionId, type, status, provenance,
+//                     importSource?, importFile?, degree, rootId } ],
+//          edges: [ ... ],
+//          truncated?: { limit, total } }
+//
 // Two questions, one screen. HOW IS THIS KNOWLEDGE RELATED — and the edges are
 // only ever the explicit graph Canon maintains: the tree, the links people
 // wrote in published bodies, and the reference fields pages carry. Nothing here
-// draws a similarity edge, because Canon does not have one to draw
-// (DATA-BACKBONE.md §5). WHERE DOES ITS MATERIAL COME FROM — authored here,
-// imported from another system, or federated from a source that still owns the
-// fact (§6). Status is on every node, because standing is what separates the
-// record from notes.
+// draws a similarity edge, and nothing here infers a cluster from one: the
+// communities the picture shows are the tree roots and collections the record
+// already has, which is why they can be named in a legend rather than
+// described as "topics" (DATA-BACKBONE.md §5). WHERE DOES ITS MATERIAL COME
+// FROM — authored here, imported from another system, or federated from a
+// source that still owns the fact (§6). Status is on every node, because
+// standing is what separates the record from notes.
 //
-// The picture is drawn as inline SVG with a deterministic layered layout: a
-// tidy tree seeded by the page tree, linked pages from other collections in the
-// column past its deepest branch, and sources in a column of their own on the
-// right. The same record therefore maps the same way every time — no jitter, no
-// re-randomising, nothing to re-read on every reload. A force simulation would
-// have been fewer lines and a worse answer: a map a reader cannot recognise
-// twice is a map they cannot trust.
+// TWO LAYOUTS, BOTH DETERMINISTIC
+//
+//   Constellation — a seeded force-directed layout, clustered by tree root and
+//     by collection. This is the default for the whole record and for anything
+//     with more than one root, because that shape is a web and drawing a web as
+//     columns flattens exactly the thing worth seeing: which pages everything
+//     hangs off, and which parts of the record barely touch each other.
+//   Tree — the tidy layered layout, one column per depth. This stays the
+//     default for a single collection with a single root, because a small tree
+//     genuinely reads better as a tree: the parent relation is the whole
+//     structure, and a column layout states it without the reader having to
+//     trace an edge. Both are always one click apart.
+//
+// The physics is run to a FIXED iteration count before the first paint and
+// never animated frame by frame, and every random draw comes from a PRNG seeded
+// off the node's own id (see mulberry32 below) — never Math.random(), and never
+// a sequential stream whose values would depend on iteration order. Reload the
+// page and the same record lands in the same place, pixel for pixel. What is
+// animated is the REVEAL, not the settling: the layout is already final when
+// the first node fades in.
 //
 // And a picture nobody can read is worse than a list, so the same data renders
 // as a nested list on demand, and by default past MAP_GRAPH_CAP nodes.
 
+// --- tree layout geometry ---
 const MAP_NODE_W = 178;
 const MAP_NODE_H = 48;
 const MAP_COL_GAP = 86;
 const MAP_ROW_GAP = 16;
 const MAP_ROOT_GAP = 28;
 const MAP_PAD = 28;
-const MAP_ZOOM_MIN = 0.25;
-const MAP_ZOOM_MAX = 2.5;
-// The zoom below which a node's label is no longer readable. Fit never starts
-// below it; a reader may still zoom out past it deliberately.
+
+const MAP_ZOOM_MIN = 0.18;
+const MAP_ZOOM_MAX = 3.2;
+// The zoom below which a TREE node's label is no longer readable. Fit never
+// starts below it; a reader may still zoom out past it deliberately. The
+// constellation has no such floor, because its labels are tiered — zoomed out
+// it shows the hubs' names and the shape, which is a true reading of it.
 const MAP_ZOOM_READABLE = 0.55;
 // Past this many nodes the picture stops being legible at any zoom that still
 // shows a label, so the list — which never stops being legible — is what a
-// reader gets unless they ask for the drawing.
-const MAP_GRAPH_CAP = 140;
+// reader gets unless they ask for the drawing. The constellation raised this a
+// long way above what the column layout could carry.
+const MAP_GRAPH_CAP = 600;
+
+// --- constellation geometry and physics ---
+const MAP_R_MIN = 5.5; // a page nothing hangs off
+const MAP_R_K = 3.7; // × √degree — compressive, so one huge hub cannot dominate
+const MAP_R_MAX = 26;
+const MAP_FORCE_PAD = 56;
+// A child sits close to its parent; a link across the record is long and weak,
+// because it is a relation between two communities rather than inside one — let
+// it pull hard and every community dissolves into one grey ball.
+const MAP_LINK_GAP = { child: 13, link: 88, reference: 38 };
+const MAP_LINK_STRENGTH = { child: 1, link: 0.2, reference: 0.5 };
+const MAP_CLUSTER_PULL = 0.19;
+const MAP_GRAVITY = 0.012;
+const MAP_VELOCITY_KEEP = 0.62;
+const MAP_COLLIDE_PAD = 3;
+
+// Hues for cluster identity. Deliberately not a rainbow of primaries: one arc
+// through the neutrals either side of Canon's own accent (a 163° green), every
+// one of them used at the low saturation and mid lightness the rest of the UI
+// keeps to, so a map of forty clusters still looks like this product. The
+// accent's own hue comes first, so a single-collection map is drawn in Canon's
+// colour rather than an arbitrary one.
+const MAP_HUES = [163, 199, 221, 252, 288, 331, 14, 36, 74, 128];
+
+const MAP_LABEL_TIERS = 4; // 0 = hubs, always drawn; 3 = only at full zoom
 
 const PROVENANCE_LABELS = {
   authored: 'Authored in Canon',
@@ -2650,8 +2717,38 @@ const EDGE_HELP = {
   reference: 'A reference field on a page, resolving against a registered external source.',
 };
 
-// Feature detection, exactly as /ask and /sources are detected — with one
-// wrinkle: the map lives under a collection, and `GET /collections/<unknown>/graph`
+// ---- deterministic pseudo-randomness ---------------------------------------
+//
+// mulberry32, seeded per node off a hash of its id. Two properties matter and
+// both are load-bearing: the stream is reproducible, so the same record settles
+// into the same picture on every reload; and because each node draws from its
+// OWN seed rather than from one shared sequence, the picture does not change
+// when the payload's order does. Math.random() appears nowhere in this file.
+
+function mapHash32(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i += 1) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ---- feature detection -----------------------------------------------------
+//
+// The per-collection map is detected exactly as /ask and /sources are — with
+// one wrinkle: it lives under a collection, and `GET /collections/<unknown>/graph`
 // answers 404 whether the ROUTE is missing or the COLLECTION is. Only a
 // collection this actor really has tells the two apart, so the probe asks for
 // one first. No collections at all means nothing to map and nothing to
@@ -2691,6 +2788,43 @@ async function detectMap() {
   return state.features.map === true;
 }
 
+// The whole record — every collection the asker may see — is a separate
+// endpoint and therefore a separate probe. It is deliberately NOT probed from
+// the chrome: the answer is the whole graph, and downloading it on every page
+// load to decide whether to show a nav entry would be a rude way to learn one
+// boolean. It is asked for the first time the map view needs it, and the
+// payload that answered the probe is the payload the view draws, so the cost is
+// one request either way. Where it 404s, the whole-record entry is absent —
+// never greyed out, never a link that explains itself with an error.
+let wholeGraphProbe = null;
+let wholeGraphCache = null; // { at, raw } — reused only by the render that probed
+
+async function detectWholeGraph() {
+  if (state.features.wholeGraph === true || state.features.wholeGraph === false) {
+    return state.features.wholeGraph;
+  }
+  wholeGraphProbe ??= api('GET', '/graph')
+    .then((raw) => {
+      wholeGraphCache = { at: Date.now(), raw };
+      return true;
+    })
+    .catch((err) => (err.status === 404 || err.status === 405 ? false : err.status === 0 ? null : true));
+  const found = await wholeGraphProbe;
+  wholeGraphProbe = null;
+  if (found !== null) state.features.wholeGraph = found;
+  return found === true;
+}
+
+async function fetchWholeGraph() {
+  if (wholeGraphCache && Date.now() - wholeGraphCache.at < 15000) {
+    const { raw } = wholeGraphCache;
+    wholeGraphCache = null;
+    return raw;
+  }
+  wholeGraphCache = null;
+  return api('GET', '/graph');
+}
+
 // The collection view's entry to the map: simply not there when the endpoint
 // is not, like every other detected affordance.
 async function renderMapAffordance(hostId, collectionId) {
@@ -2701,11 +2835,24 @@ async function renderMapAffordance(hostId, collectionId) {
     title="See how this collection hangs together, and where its material comes from">Knowledge map</a>`;
 }
 
-// ---- payload normalisation ------------------------------------------------
+// ---- payload normalisation -------------------------------------------------
+//
+// One normaliser for both contracts. The whole-record payload names an import
+// with two flat fields where the per-collection one nests an origin object, and
+// carries `degree` and `rootId` the per-collection one leaves to the client;
+// everything downstream sees a single shape.
 
 function normalizeGraphNode(n) {
   const kind = n?.kind === 'source' ? 'source' : 'page';
   const provenance = PROVENANCE_LABELS[n?.provenance] ? n.provenance : kind === 'source' ? 'federated' : 'authored';
+  // Provenance precedence loses the IMPORTED label for a page that also reads
+  // from a live source, but never loses where it came from: origin is read
+  // whatever the label says, so a federated page still names its migration.
+  const origin = n?.origin && n.origin.system
+    ? { system: n.origin.system, file: n.origin.file ?? '', runId: n.origin.runId ?? null, at: n.origin.at ?? null }
+    : n?.importSource
+      ? { system: n.importSource, file: n.importFile ?? '', runId: null, at: null }
+      : null;
   return {
     id: String(n?.id ?? ''),
     kind,
@@ -2716,12 +2863,29 @@ function normalizeGraphNode(n) {
     parentId: n?.parentId ?? null,
     external: n?.external === true,
     provenance,
-    origin: n?.origin ?? null,
+    origin,
     references: Number(n?.references ?? 0) || 0,
     version: n?.version ?? null,
     authMode: n?.authMode ?? null,
     freshnessWindowMs: n?.freshnessWindowMs ?? null,
+    // The server's own view of how connected a node is, where it offers one.
+    // Sizing uses the VISIBLE degree instead (see mapAnnotate) so a filtered
+    // map never draws a hub whose edges are not on the screen.
+    payloadDegree: Number.isFinite(Number(n?.degree)) ? Number(n.degree) : null,
+    rootId: n?.rootId ? String(n.rootId) : null,
   };
+}
+
+// `truncated` is a boolean in the per-collection payload and an object in the
+// whole-record one. Both mean the same thing and both are stated; only the
+// second can say by how much.
+function normalizeTruncated(t) {
+  if (t && typeof t === 'object') {
+    const limit = Number(t.limit);
+    const total = Number(t.total);
+    return { limit: Number.isFinite(limit) ? limit : null, total: Number.isFinite(total) ? total : null };
+  }
+  return t === true ? {} : null;
 }
 
 function normalizeGraph(g) {
@@ -2733,17 +2897,21 @@ function normalizeGraph(g) {
     // to a placeholder — the server already does this, and the client does not
     // undo it. A box saying "something you may not see, here" is a disclosure.
     .filter((e) => EDGE_LABELS[e.kind] && known.has(e.from) && known.has(e.to));
+  const collections = (Array.isArray(g?.collections) ? g.collections : [])
+    .map((c) => ({ id: String(c?.id ?? ''), name: String(c?.name ?? c?.id ?? '') }))
+    .filter((c) => c.id);
   return {
     collectionId: g?.collectionId ?? null,
     generatedAt: g?.generatedAt ?? null,
-    truncated: g?.truncated === true,
+    truncated: normalizeTruncated(g?.truncated),
     counts: g?.counts ?? {},
+    collections,
     nodes,
     edges,
   };
 }
 
-// ---- filtering ------------------------------------------------------------
+// ---- filtering -------------------------------------------------------------
 
 // "Show me only what's federated" and "show me what's past review" are one
 // click each, and the graph and the list are both drawn from THIS — so they
@@ -2754,8 +2922,9 @@ function mapVisible(graph, filters) {
     // A page that was imported AND carries a live reference reads as federated,
     // so "imported" would otherwise hide part of the migration's own trail.
     (filters.provenance.has('imported') && !!n.origin);
+  const collOk = (n) => !filters.collections || !n.collectionId || filters.collections.has(n.collectionId);
   const pages = graph.nodes.filter(
-    (n) => n.kind === 'page' && provOk(n) && filters.status.has(n.status),
+    (n) => n.kind === 'page' && provOk(n) && filters.status.has(n.status) && collOk(n),
   );
   const visible = new Map(pages.map((n) => [n.id, n]));
 
@@ -2778,18 +2947,487 @@ function mapVisible(graph, filters) {
     edges.push(e);
   }
   const nodes = [...pages, ...sources.values()];
-  return { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])) };
+  return mapAnnotate({ nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])) });
 }
 
-// ---- layout ---------------------------------------------------------------
+// Everything the drawing and the list both need, derived once from what is
+// actually visible: how connected each node is, which community it belongs to,
+// and who its neighbours are.
 //
-// A tidy layered tree, written here rather than imported: one column per depth,
+// A node's CLUSTER is the tree root it hangs from — the server's `rootId` where
+// it gives one, otherwise the root of the visible parent chain. Its GROUP is
+// its collection. Neither is inferred: both are structures a person made, which
+// is the only reason a map that draws communities is allowed to exist here.
+function mapAnnotate(visible) {
+  const { nodes, edges } = visible;
+  const parentOf = new Map();
+  const neighbors = new Map();
+  const degree = new Map();
+  for (const n of nodes) {
+    neighbors.set(n.id, new Set());
+    degree.set(n.id, 0);
+  }
+  for (const e of edges) {
+    if (e.kind === 'child' && !parentOf.has(e.to)) parentOf.set(e.to, e.from);
+    neighbors.get(e.from)?.add(e.to);
+    neighbors.get(e.to)?.add(e.from);
+  }
+  for (const [id, near] of neighbors) degree.set(id, near.size);
+
+  const rootOf = new Map();
+  const resolveRoot = (id) => {
+    if (rootOf.has(id)) return rootOf.get(id);
+    let cur = id;
+    const seen = new Set([id]);
+    for (let i = 0; i < 64; i += 1) {
+      const p = parentOf.get(cur);
+      if (!p || seen.has(p)) break;
+      seen.add(p);
+      cur = p;
+    }
+    for (const seenId of seen) rootOf.set(seenId, cur);
+    return cur;
+  };
+
+  const cluster = new Map();
+  const group = new Map();
+  for (const n of nodes) {
+    if (n.kind === 'source') {
+      // A source belongs to no tree and to no collection — the server sends
+      // `collectionId: null`, and a `rootId` that is the source's own id so
+      // that clustering by root does not drop it. Here it is given no community
+      // at all on purpose: a singleton cluster would be shoved around by the
+      // cluster-separation force, whereas a source with no community is pulled
+      // only by the pages that read it, and settles beside them. Nothing
+      // downstream may assume a source has a collection or a status.
+      cluster.set(n.id, null);
+      group.set(n.id, null);
+      continue;
+    }
+    const root = n.rootId || resolveRoot(n.id);
+    cluster.set(n.id, root);
+    group.set(n.id, n.collectionId || root);
+  }
+  return { ...visible, parentOf, neighbors, degree, cluster, group };
+}
+
+// ---- palette ----------------------------------------------------------------
+//
+// Colour carries three things at once, on three channels that cannot be
+// confused for one another:
+//
+//   HUE          which community — the collection, or the tree root when there
+//                is only one collection on the map.
+//   LIGHTNESS    which tree root inside that collection, in three steps. Close
+//                enough to read as one family, far enough to separate branches.
+//   RING / STROKE provenance and standing, which are never hues, so they stay
+//                legible whatever community a node is in. A Needs Update page
+//                wears an amber ring, and it is the only amber ring on the map.
+//
+// The actual saturations and lightnesses live in CSS so the whole palette
+// re-renders in dark mode without a line of JavaScript: the gradient carries a
+// --h custom property, and the stops resolve it against theme-aware variables.
+
+function mapPalette(visible, scope) {
+  const groups = [...new Set([...visible.group.values()].filter(Boolean))].sort();
+  // One collection on the map means the collection is not the interesting
+  // division; the tree roots are, so they take the hues instead.
+  const byRoot = scope !== 'all' || groups.length <= 1;
+  const keyOf = byRoot
+    ? (id) => visible.cluster.get(id)
+    : (id) => visible.group.get(id);
+  const keys = [...new Set(visible.nodes.map((n) => keyOf(n.id)).filter(Boolean))].sort();
+  const hueIndex = new Map(keys.map((k, i) => [k, i]));
+
+  // Inside a collection, each tree root takes one of three lightness steps.
+  const shadeIndex = new Map();
+  if (!byRoot) {
+    const perGroup = new Map();
+    for (const key of [...new Set(visible.nodes.map((n) => visible.cluster.get(n.id)).filter(Boolean))].sort()) {
+      const owner = visible.nodes.find((n) => visible.cluster.get(n.id) === key);
+      const g = owner ? visible.group.get(owner.id) : null;
+      const seen = perGroup.get(g) ?? 0;
+      perGroup.set(g, seen + 1);
+      shadeIndex.set(key, seen % 3);
+    }
+  }
+
+  const hueOf = (index) =>
+    (MAP_HUES[index % MAP_HUES.length] + Math.floor(index / MAP_HUES.length) * 13) % 360;
+  const swatch = new Map(); // node id -> { hue, shade, key }
+  for (const n of visible.nodes) {
+    if (n.kind === 'source') continue;
+    const key = keyOf(n.id);
+    const index = hueIndex.get(key) ?? 0;
+    const shade = byRoot ? 1 : (shadeIndex.get(visible.cluster.get(n.id)) ?? 1);
+    swatch.set(n.id, { hue: hueOf(index), shade, key });
+  }
+  const gradients = new Map(); // "hue-shade" -> { id, hue, shade }
+  for (const s of swatch.values()) {
+    const key = `${s.hue}-${s.shade}`;
+    if (!gradients.has(key)) gradients.set(key, { id: `mg-${key}`, hue: s.hue, shade: s.shade });
+  }
+  return { byRoot, swatch, gradients, keys, hueOf, hueIndex };
+}
+
+// ---- the constellation: a seeded force layout ------------------------------
+//
+// Velocity Verlet, run to a fixed iteration count and then stopped. Four forces:
+//
+//   LINK      every explicit edge is a spring, at a rest length that says what
+//             kind of edge it is — a child sits close to its parent, a link
+//             reaches further, a source further still. Its stiffness falls with
+//             the degree of the sparser endpoint, which is what stops a hub from
+//             dragging its whole neighbourhood into a knot.
+//   CHARGE    every node repels every other, harder the bigger it is. O(n²), and
+//             deliberately so: at the sizes this map draws (the list takes over
+//             past MAP_GRAPH_CAP) a Barnes–Hut tree costs more to build than the
+//             pairs cost to walk, and an exact sum is one less approximation to
+//             explain.
+//   CLUSTER   each node is pulled to its community's centre, and the centres
+//             push each other apart. This is where the communities come from —
+//             and they are the record's own tree roots and collections, not
+//             anything this file inferred.
+//   GRAVITY   a weak pull to the origin so nothing drifts off the canvas.
+//
+// Collisions are resolved positionally each step, and again in a few relaxation
+// passes at the end, so no two nodes overlap in the picture that is finally
+// drawn.
+
+function mapForceIterations(n) {
+  // A function of n alone, so it is as deterministic as everything else here.
+  if (n <= 60) return 460;
+  if (n <= 150) return 400;
+  if (n <= 400) return 300;
+  return 230;
+}
+
+function mapNodeRadius(deg, kind) {
+  const r = MAP_R_MIN + MAP_R_K * Math.sqrt(Math.max(0, deg));
+  // A source is an object rather than a page, and it is drawn as one, so it
+  // gets a floor that keeps its square readable at any degree.
+  return Math.min(MAP_R_MAX, kind === 'source' ? Math.max(r, 9) : r);
+}
+
+function mapForceLayout(visible) {
+  const t0 = performance.now();
+  const nodes = visible.nodes;
+  const n = nodes.length;
+  const index = new Map(nodes.map((node, i) => [node.id, i]));
+
+  const x = new Float64Array(n);
+  const y = new Float64Array(n);
+  const vx = new Float64Array(n);
+  const vy = new Float64Array(n);
+  const rad = new Float64Array(n);
+  const charge = new Float64Array(n);
+  const deg = new Int32Array(n);
+  const clusterOf = new Int32Array(n).fill(-1);
+
+  // Communities, ordered by key so the numbering is stable across reloads.
+  const clusterKeys = [...new Set(nodes.map((node) => visible.cluster.get(node.id)).filter(Boolean))].sort();
+  const clusterIndex = new Map(clusterKeys.map((k, i) => [k, i]));
+  const groupKeys = [...new Set(nodes.map((node) => visible.group.get(node.id)).filter(Boolean))].sort();
+  const groupIndex = new Map(groupKeys.map((k, i) => [k, i]));
+  const cCount = clusterKeys.length;
+  const clusterGroup = new Int32Array(Math.max(1, cCount)).fill(-1);
+  const clusterSize = new Int32Array(Math.max(1, cCount));
+
+  let area = 0;
+  for (let i = 0; i < n; i += 1) {
+    const node = nodes[i];
+    const d = visible.degree.get(node.id) ?? 0;
+    deg[i] = d;
+    rad[i] = mapNodeRadius(d, node.kind);
+    charge[i] = -(12 + rad[i] * rad[i] * 0.72);
+    area += (rad[i] + 11) * (rad[i] + 11) * Math.PI;
+    const ck = visible.cluster.get(node.id);
+    if (ck && clusterIndex.has(ck)) {
+      const ci = clusterIndex.get(ck);
+      clusterOf[i] = ci;
+      clusterSize[ci] += 1;
+      const gk = visible.group.get(node.id);
+      if (gk && groupIndex.has(gk)) clusterGroup[ci] = groupIndex.get(gk);
+    }
+  }
+  // How big the finished picture wants to be, from how much ink is in it.
+  const span = Math.sqrt(area / Math.PI) * 2.15;
+
+  // Cluster anchors: groups on a golden-angle spiral, and each group's tree
+  // roots on a smaller spiral of their own around it. This is the seed the
+  // physics starts from, not the answer it gives.
+  const gx = new Float64Array(Math.max(1, groupKeys.length));
+  const gy = new Float64Array(Math.max(1, groupKeys.length));
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < groupKeys.length; i += 1) {
+    const a = i * GOLDEN;
+    const rr = groupKeys.length === 1 ? 0 : span * 0.62 * Math.sqrt((i + 0.5) / groupKeys.length);
+    gx[i] = Math.cos(a) * rr * 1.4;
+    gy[i] = Math.sin(a) * rr * 0.8;
+  }
+  const cx = new Float64Array(Math.max(1, cCount));
+  const cy = new Float64Array(Math.max(1, cCount));
+  const cRad = new Float64Array(Math.max(1, cCount));
+  const perGroupSeen = new Int32Array(Math.max(1, groupKeys.length));
+  const perGroupTotal = new Int32Array(Math.max(1, groupKeys.length));
+  for (let ci = 0; ci < cCount; ci += 1) {
+    const g = clusterGroup[ci];
+    if (g >= 0) perGroupTotal[g] += 1;
+  }
+  for (let ci = 0; ci < cCount; ci += 1) {
+    const g = clusterGroup[ci];
+    const rng = mulberry32(mapHash32(`cluster:${clusterKeys[ci]}`));
+    const seat = g >= 0 ? perGroupSeen[g]++ : ci;
+    const total = g >= 0 ? Math.max(1, perGroupTotal[g]) : Math.max(1, cCount);
+    const a = seat * GOLDEN + rng() * 0.4;
+    const local = span * (groupKeys.length > 1 ? 0.3 : 0.72) * Math.sqrt((seat + 0.5) / total);
+    cx[ci] = (g >= 0 ? gx[g] : 0) + Math.cos(a) * local;
+    cy[ci] = (g >= 0 ? gy[g] : 0) + Math.sin(a) * local;
+    cRad[ci] = Math.sqrt(Math.max(1, clusterSize[ci])) * 13 + 13;
+  }
+
+  // Initial positions: each node near its community's seat, offset by a draw
+  // from a PRNG seeded off its own id.
+  for (let i = 0; i < n; i += 1) {
+    const rng = mulberry32(mapHash32(nodes[i].id));
+    const ci = clusterOf[i];
+    const spreadR = ci >= 0 ? cRad[ci] * 0.85 : span * 0.75;
+    const a = rng() * Math.PI * 2;
+    const rr = Math.sqrt(rng()) * spreadR;
+    x[i] = (ci >= 0 ? cx[ci] : 0) + Math.cos(a) * rr;
+    y[i] = (ci >= 0 ? cy[ci] : 0) + Math.sin(a) * rr;
+  }
+
+  // Springs, prepared once.
+  const eFrom = new Int32Array(visible.edges.length);
+  const eTo = new Int32Array(visible.edges.length);
+  const eDist = new Float64Array(visible.edges.length);
+  const eStr = new Float64Array(visible.edges.length);
+  const eBias = new Float64Array(visible.edges.length);
+  let eCount = 0;
+  for (const e of visible.edges) {
+    const a = index.get(e.from);
+    const b = index.get(e.to);
+    if (a === undefined || b === undefined || a === b) continue;
+    eFrom[eCount] = a;
+    eTo[eCount] = b;
+    eDist[eCount] = rad[a] + rad[b] + (MAP_LINK_GAP[e.kind] ?? 40);
+    const weakest = Math.max(1, Math.min(deg[a], deg[b]));
+    eStr[eCount] = Math.min(1, 1 / weakest) * (MAP_LINK_STRENGTH[e.kind] ?? 0.7);
+    eBias[eCount] = deg[a] / Math.max(1, deg[a] + deg[b]);
+    eCount += 1;
+  }
+
+  const iterations = mapForceIterations(n);
+  const alphaDecay = 1 - Math.pow(0.001, 1 / iterations);
+  let alpha = 1;
+
+  const sumX = new Float64Array(Math.max(1, cCount));
+  const sumY = new Float64Array(Math.max(1, cCount));
+  const sumN = new Int32Array(Math.max(1, cCount));
+  const gSumX = new Float64Array(Math.max(1, groupKeys.length));
+  const gSumY = new Float64Array(Math.max(1, groupKeys.length));
+  const gSumN = new Int32Array(Math.max(1, groupKeys.length));
+
+  for (let step = 0; step < iterations; step += 1) {
+    alpha += (0 - alpha) * alphaDecay;
+
+    // --- charge and collision, one pass over the pairs ---
+    for (let i = 0; i < n; i += 1) {
+      const xi = x[i];
+      const yi = y[i];
+      const qi = charge[i];
+      const ri = rad[i];
+      let ax = 0;
+      let ay = 0;
+      for (let j = i + 1; j < n; j += 1) {
+        let dx = x[j] - xi;
+        let dy = y[j] - yi;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1e-6) {
+          // Two nodes exactly on top of each other have no direction to
+          // separate along; take one from each node's own seeded stream.
+          const rng = mulberry32(mapHash32(`${nodes[i].id}~${nodes[j].id}`));
+          dx = (rng() - 0.5) * 0.01;
+          dy = (rng() - 0.5) * 0.01;
+          d2 = dx * dx + dy * dy;
+        }
+        const w = alpha / Math.max(d2, 36);
+        ax += dx * charge[j] * w;
+        ay += dy * charge[j] * w;
+        vx[j] -= dx * qi * w;
+        vy[j] -= dy * qi * w;
+        const want = ri + rad[j] + MAP_COLLIDE_PAD;
+        if (d2 < want * want) {
+          const d = Math.sqrt(d2);
+          const push = ((want - d) / d) * 0.35;
+          const px = dx * push;
+          const py = dy * push;
+          x[j] += px;
+          y[j] += py;
+          x[i] -= px;
+          y[i] -= py;
+        }
+      }
+      vx[i] += ax;
+      vy[i] += ay;
+    }
+
+    // --- links ---
+    for (let k = 0; k < eCount; k += 1) {
+      const a = eFrom[k];
+      const b = eTo[k];
+      const dx = x[b] + vx[b] - x[a] - vx[a];
+      const dy = y[b] + vy[b] - y[a] - vy[a];
+      const d = Math.sqrt(dx * dx + dy * dy) || 1e-3;
+      const l = ((d - eDist[k]) / d) * alpha * eStr[k];
+      const bias = eBias[k];
+      vx[b] -= dx * l * bias;
+      vy[b] -= dy * l * bias;
+      vx[a] += dx * l * (1 - bias);
+      vy[a] += dy * l * (1 - bias);
+    }
+
+    // --- communities: centres follow their members, and shove each other off ---
+    if (cCount) {
+      sumX.fill(0);
+      sumY.fill(0);
+      sumN.fill(0);
+      for (let i = 0; i < n; i += 1) {
+        const ci = clusterOf[i];
+        if (ci < 0) continue;
+        sumX[ci] += x[i];
+        sumY[ci] += y[i];
+        sumN[ci] += 1;
+      }
+      for (let ci = 0; ci < cCount; ci += 1) {
+        if (!sumN[ci]) continue;
+        cx[ci] += (sumX[ci] / sumN[ci] - cx[ci]) * 0.16;
+        cy[ci] += (sumY[ci] / sumN[ci] - cy[ci]) * 0.16;
+      }
+      // Two levels of community, because the record has two: a page's tree root
+      // inside its collection, and the collection itself. Without this second
+      // pull the roots of one collection drift apart under the cross-record
+      // links and the colours stop meaning a place on the map.
+      if (groupKeys.length > 1) {
+        gSumX.fill(0);
+        gSumY.fill(0);
+        gSumN.fill(0);
+        for (let ci = 0; ci < cCount; ci += 1) {
+          const g = clusterGroup[ci];
+          if (g < 0) continue;
+          gSumX[g] += cx[ci] * clusterSize[ci];
+          gSumY[g] += cy[ci] * clusterSize[ci];
+          gSumN[g] += clusterSize[ci];
+        }
+        for (let ci = 0; ci < cCount; ci += 1) {
+          const g = clusterGroup[ci];
+          if (g < 0 || !gSumN[g]) continue;
+          cx[ci] += (gSumX[g] / gSumN[g] - cx[ci]) * 0.055;
+          cy[ci] += (gSumY[g] / gSumN[g] - cy[ci]) * 0.055;
+        }
+      }
+      for (let a = 0; a < cCount; a += 1) {
+        for (let b = a + 1; b < cCount; b += 1) {
+          const dx = cx[b] - cx[a];
+          const dy = cy[b] - cy[a];
+          const want = (cRad[a] + cRad[b]) * 0.94;
+          const d2 = dx * dx + dy * dy;
+          if (d2 >= want * want || d2 < 1e-6) continue;
+          const d = Math.sqrt(d2);
+          const push = ((want - d) / d) * 0.3;
+          cx[b] += dx * push;
+          cy[b] += dy * push;
+          cx[a] -= dx * push;
+          cy[a] -= dy * push;
+        }
+      }
+      for (let i = 0; i < n; i += 1) {
+        const ci = clusterOf[i];
+        if (ci < 0) continue;
+        vx[i] += (cx[ci] - x[i]) * MAP_CLUSTER_PULL * alpha;
+        vy[i] += (cy[ci] - y[i]) * MAP_CLUSTER_PULL * alpha;
+      }
+    }
+
+    // --- gravity, then integrate ---
+    // Gravity is deliberately anisotropic: a map is read in a landscape frame,
+    // so the pull inwards is weaker across than down and the finished picture
+    // settles wide rather than round. The ratio is a constant, not the
+    // viewport — the layout must not depend on the window it is drawn in, or
+    // two readers on two screens would be looking at two different maps.
+    for (let i = 0; i < n; i += 1) {
+      vx[i] += (0 - x[i]) * MAP_GRAVITY * 0.62 * alpha;
+      vy[i] += (0 - y[i]) * MAP_GRAVITY * 1.5 * alpha;
+      vx[i] *= MAP_VELOCITY_KEEP;
+      vy[i] *= MAP_VELOCITY_KEEP;
+      x[i] += vx[i];
+      y[i] += vy[i];
+    }
+  }
+
+  // A few purely positional passes so the drawing has no overlaps left in it.
+  for (let pass = 0; pass < 5; pass += 1) {
+    for (let i = 0; i < n; i += 1) {
+      for (let j = i + 1; j < n; j += 1) {
+        const dx = x[j] - x[i];
+        const dy = y[j] - y[i];
+        const want = rad[i] + rad[j] + MAP_COLLIDE_PAD;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= want * want) continue;
+        const d = Math.sqrt(d2) || 1e-3;
+        const push = ((want - d) / d) * 0.5;
+        x[j] += dx * push;
+        y[j] += dy * push;
+        x[i] -= dx * push;
+        y[i] -= dy * push;
+      }
+    }
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < n; i += 1) {
+    minX = Math.min(minX, x[i] - rad[i]);
+    minY = Math.min(minY, y[i] - rad[i]);
+    maxX = Math.max(maxX, x[i] + rad[i]);
+    maxY = Math.max(maxY, y[i] + rad[i]);
+  }
+  if (!Number.isFinite(minX)) { minX = 0; minY = 0; maxX = 1; maxY = 1; }
+
+  const pos = new Map();
+  for (let i = 0; i < n; i += 1) {
+    pos.set(nodes[i].id, {
+      // Rounded, so the DOM a test compares is the same string twice over and
+      // a last-bit difference can never read as a moved map.
+      x: Math.round((x[i] - minX + MAP_FORCE_PAD) * 100) / 100,
+      y: Math.round((y[i] - minY + MAP_FORCE_PAD) * 100) / 100,
+      r: Math.round(rad[i] * 100) / 100,
+      degree: deg[i],
+    });
+  }
+  return {
+    mode: 'force',
+    pos,
+    width: maxX - minX + MAP_FORCE_PAD * 2,
+    height: maxY - minY + MAP_FORCE_PAD * 2,
+    offset: 0,
+    iterations,
+    ms: Math.round(performance.now() - t0),
+  };
+}
+
+// ---- the tidy tree ---------------------------------------------------------
+//
+// A layered tree, written here rather than imported: one column per depth,
 // siblings stacked in the order the tree shows them, and a parent centred on
 // its children. Everything below is a pure function of the server's payload,
 // and the server orders that payload deterministically — so the same record
 // lands in the same place every time it is drawn.
 
-function mapLayout(visible) {
+function mapTreeLayout(visible) {
   const { nodes, edges } = visible;
   const pos = new Map();
   const kids = new Map();
@@ -2869,7 +3507,7 @@ function mapLayout(visible) {
     width = Math.max(width, p.x + MAP_NODE_W);
     height = Math.max(height, p.y + MAP_NODE_H);
   }
-  return { pos, width: width + MAP_PAD * 2, height: height + MAP_PAD * 2, offset: MAP_PAD };
+  return { mode: 'tree', pos, width: width + MAP_PAD * 2, height: height + MAP_PAD * 2, offset: MAP_PAD };
 }
 
 // ---- drawing ---------------------------------------------------------------
@@ -2887,14 +3525,183 @@ function mapNodeMeta(n) {
   return `${type} · ${STATUS_LABELS[n.status] ?? n.status}`;
 }
 
-function mapNodeLabel(n) {
+function mapNodeLabel(n, degree) {
+  const reach = typeof degree === 'number' ? `, ${degree} connection${degree === 1 ? '' : 's'} on this map` : '';
   if (n.kind === 'source') {
-    return `${n.title}. External source${n.type ? `, kind ${n.type}` : ''}, referenced by ${n.references} page${n.references === 1 ? '' : 's'}.`;
+    return `${n.title}. External source${n.type ? `, kind ${n.type}` : ''}, referenced by ${n.references} page${n.references === 1 ? '' : 's'}${reach}.`;
   }
-  return `${n.title}. ${mapNodeMeta(n)}. ${PROVENANCE_LABELS[n.provenance]}${n.external ? ', in another collection' : ''}.`;
+  return `${n.title}. ${mapNodeMeta(n)}. ${PROVENANCE_LABELS[n.provenance]}${n.external ? ', in another collection' : ''}${reach}.`;
 }
 
-function mapEdgePath(a, b) {
+// The reveal: a stagger from the middle of the picture outwards, capped so the
+// whole thing is over inside ~520ms however many nodes there are. It animates
+// arrival, never position — the layout was final before the first frame.
+function mapRevealDelay(rank, total) {
+  const span = 260;
+  return Math.round((rank / Math.max(1, total - 1)) * span);
+}
+
+// ---- constellation drawing --------------------------------------------------
+
+function mapForceEdgePath(a, b, kind, seed) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // Parallel edges between the same two clusters would otherwise stack into one
+  // stroke; a curve whose side and depth come from the pair's own hash pulls
+  // them apart, and does it the same way on every reload.
+  const bend = { child: 0.05, link: 0.13, reference: 0.1 }[kind] ?? 0.08;
+  const side = seed & 1 ? 1 : -1;
+  const amt = len * bend * side * (0.75 + ((seed >>> 8) & 0xff) / 512);
+  const mx = (a.x + b.x) / 2 - (dy / len) * amt;
+  const my = (a.y + b.y) / 2 + (dx / len) * amt;
+  return `M ${a.x} ${a.y} Q ${Math.round(mx * 100) / 100} ${Math.round(my * 100) / 100} ${b.x} ${b.y}`;
+}
+
+function mapGradientDefs(palette) {
+  const stops = (id, cls, style) => `
+    <radialGradient id="${id}" class="${cls}" style="${style}" cx="34%" cy="28%" r="78%">
+      <stop offset="0" class="map-grad-hi"></stop>
+      <stop offset="1" class="map-grad-lo"></stop>
+    </radialGradient>`;
+  const cluster = [...palette.gradients.values()]
+    .map((g) => stops(g.id, `mg-s${g.shade}`, `--h: ${g.hue}`))
+    .join('');
+  return `
+    ${cluster}
+    <radialGradient id="mg-source" cx="34%" cy="26%" r="80%">
+      <stop offset="0" class="map-grad-source-hi"></stop>
+      <stop offset="1" class="map-grad-source-lo"></stop>
+    </radialGradient>
+    <radialGradient id="mg-mute" cx="34%" cy="28%" r="78%">
+      <stop offset="0" class="map-grad-mute-hi"></stop>
+      <stop offset="1" class="map-grad-mute-lo"></stop>
+    </radialGradient>`;
+}
+
+function mapForceSvgHTML(visible, layout, palette) {
+  const { pos } = layout;
+  const marker = (kind) => `
+    <marker id="map-arrow-${kind}" class="map-arrow map-arrow-${kind}" viewBox="0 0 8 8"
+      refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 8 4 L 0 8 z"></path>
+    </marker>`;
+
+  const edges = visible.edges
+    .map((e) => {
+      const a = pos.get(e.from);
+      const b = pos.get(e.to);
+      if (!a || !b) return '';
+      const seed = mapHash32(`${e.kind}:${e.from}>${e.to}`);
+      const hue = palette.swatch.get(e.from)?.hue ?? palette.swatch.get(e.to)?.hue;
+      // Only the reaching edges keep an arrowhead in this layout. The tree's
+      // direction is carried by the shape itself — a parent is the bigger node
+      // its children hang off — and five hundred arrowheads on child edges is
+      // a texture, not information. Hovering names the relation either way, and
+      // the list states every one of them in words.
+      const head = e.kind === 'child' ? '' : ` marker-end="url(#map-arrow-${esc(e.kind)})"`;
+      return `<path class="map-edge map-edge-${esc(e.kind)}"${hue === undefined ? '' : ` style="--h: ${hue}"`}
+        d="${mapForceEdgePath(a, b, e.kind, seed)}"${head}
+        data-from="${esc(e.from)}" data-to="${esc(e.to)}"></path>`;
+    })
+    .join('');
+
+  // Label tiers by how connected a node is: the hubs are named at every zoom,
+  // and each step in gives another band its names. Ranked deterministically —
+  // degree first, then id — so the same page is always in the same tier.
+  const ranked = [...visible.nodes].sort((a, b) => {
+    const da = visible.degree.get(a.id) ?? 0;
+    const db = visible.degree.get(b.id) ?? 0;
+    return db - da || a.id.localeCompare(b.id);
+  });
+  const total = ranked.length;
+  const hubCount = Math.max(4, Math.min(22, Math.round(total * 0.05)));
+  const tierOf = new Map();
+  ranked.forEach((n, i) => {
+    if (i < hubCount) tierOf.set(n.id, 0);
+    else if (i < hubCount + total * 0.14) tierOf.set(n.id, 1);
+    else if (i < total * 0.45) tierOf.set(n.id, 2);
+    else tierOf.set(n.id, 3);
+  });
+  // Sources are few and they are the map's answer to "where does this come
+  // from"; they are never demoted past the second tier.
+  for (const n of visible.nodes) {
+    if (n.kind === 'source') tierOf.set(n.id, Math.min(tierOf.get(n.id) ?? 3, 1));
+  }
+
+  // The reveal order runs outward from the centre of the picture.
+  const cxm = layout.width / 2;
+  const cym = layout.height / 2;
+  const byDistance = [...visible.nodes].sort((a, b) => {
+    const pa = pos.get(a.id);
+    const pb = pos.get(b.id);
+    const da = Math.hypot(pa.x - cxm, pa.y - cym);
+    const db = Math.hypot(pb.x - cxm, pb.y - cym);
+    return da - db || a.id.localeCompare(b.id);
+  });
+  const delayOf = new Map(byDistance.map((n, i) => [n.id, mapRevealDelay(i, byDistance.length)]));
+
+  const nodes = visible.nodes
+    .map((n) => {
+      const p = pos.get(n.id);
+      if (!p) return '';
+      const degree = visible.degree.get(n.id) ?? 0;
+      const href = n.kind === 'source' ? '#/sources' : `#/pages/${encodeURIComponent(n.id)}`;
+      const sw = palette.swatch.get(n.id);
+      const fill = n.kind === 'source'
+        ? 'url(#mg-source)'
+        : n.status === 'archived' || !sw
+          ? 'url(#mg-mute)'
+          : `url(#mg-${sw.hue}-${sw.shade})`;
+      const cls = [
+        'map-node',
+        `map-node-${n.kind}`,
+        `pv-${esc(n.provenance)}`,
+        n.kind === 'page' ? `st-${esc(n.status)}` : 'st-source',
+        n.external ? 'is-external' : '',
+        `lt-${tierOf.get(n.id) ?? 3}`,
+      ].join(' ');
+      const r = p.r;
+      // Standing that needs finding gets a ring outside the node; the Canonical
+      // mark gets a lit core inside it. Both are drawn only where they mean
+      // something, so a five-hundred-node map is not five hundred haloes.
+      const ring = n.status === 'needs_update' || n.status === 'in_review'
+        ? `<circle class="mn-ring" r="${Math.round((r + 3.6) * 100) / 100}"></circle>`
+        : '';
+      const halo = n.provenance === 'federated' && n.kind === 'page'
+        ? `<circle class="mn-halo" r="${Math.round((r + 5.2) * 100) / 100}"></circle>`
+        : '';
+      const core = n.status === 'canonical'
+        ? `<circle class="mn-core" r="${Math.round(Math.max(1.8, r * 0.3) * 100) / 100}"></circle>`
+        : '';
+      const body = n.kind === 'source'
+        ? `<rect class="mn-body" x="${-r}" y="${-r}" width="${r * 2}" height="${r * 2}" rx="${Math.round(r * 0.42 * 100) / 100}" fill="${fill}"></rect>`
+        : `<circle class="mn-body" r="${r}" fill="${fill}"></circle>`;
+      return `<a class="${cls}" href="${esc(href)}" tabindex="0" data-node="${esc(n.id)}"
+        transform="translate(${p.x} ${p.y})" style="--d: ${delayOf.get(n.id) ?? 0}ms"
+        aria-label="${esc(mapNodeLabel(n, degree))}">
+        <title>${esc(mapNodeLabel(n, degree))}</title>
+        <g class="mn-in">${halo}${ring}${body}${core}
+        <text class="mn-label" y="${Math.round((r + 12) * 100) / 100}">${esc(mapClip(n.title, 30))}</text>
+        </g>
+      </a>`;
+    })
+    .join('');
+
+  return `
+    <svg class="map-svg map-svg-force" id="map-svg" tabindex="0" role="application" data-labels="1"
+      aria-label="Knowledge map, constellation view. Drag to pan, scroll or use the buttons to zoom, Tab to move between pages.">
+      <defs>${marker('link')}${marker('reference')}${mapGradientDefs(palette)}</defs>
+      <g id="map-canvas">
+        <g class="map-edges">${edges}</g>
+        <g class="map-nodes" id="map-nodes">${nodes}</g>
+      </g>
+    </svg>`;
+}
+
+// ---- tree drawing ------------------------------------------------------------
+
+function mapTreeEdgePath(a, b) {
   const forward = b.x >= a.x + MAP_NODE_W;
   const x1 = forward ? a.x + MAP_NODE_W : a.x;
   const x2 = forward ? b.x : b.x + MAP_NODE_W;
@@ -2906,7 +3713,7 @@ function mapEdgePath(a, b) {
   return `M ${x1} ${y1} C ${c1} ${y1} ${c2} ${y2} ${x2} ${y2}`;
 }
 
-function mapSvgHTML(visible, layout) {
+function mapTreeSvgHTML(visible, layout) {
   const { pos, offset } = layout;
   const marker = (kind) => `
     <marker id="map-arrow-${kind}" class="map-arrow map-arrow-${kind}" viewBox="0 0 8 8"
@@ -2918,11 +3725,18 @@ function mapSvgHTML(visible, layout) {
       const a = pos.get(e.from);
       const b = pos.get(e.to);
       if (!a || !b) return '';
-      return `<path class="map-edge map-edge-${esc(e.kind)}" d="${mapEdgePath(a, b)}"
+      return `<path class="map-edge map-edge-${esc(e.kind)}" d="${mapTreeEdgePath(a, b)}"
         marker-end="url(#map-arrow-${esc(e.kind)})"
         data-from="${esc(e.from)}" data-to="${esc(e.to)}"></path>`;
     })
     .join('');
+  const ordered = [...visible.nodes].sort((a, b) => {
+    const pa = pos.get(a.id);
+    const pb = pos.get(b.id);
+    if (!pa || !pb) return 0;
+    return pa.x - pb.x || pa.y - pb.y || a.id.localeCompare(b.id);
+  });
+  const delayOf = new Map(ordered.map((n, i) => [n.id, mapRevealDelay(i, ordered.length)]));
   const nodes = visible.nodes
     .map((n) => {
       const p = pos.get(n.id);
@@ -2936,22 +3750,25 @@ function mapSvgHTML(visible, layout) {
         n.external ? 'is-external' : '',
       ].join(' ');
       return `<a class="${cls}" href="${esc(href)}" tabindex="0" data-node="${esc(n.id)}"
-        transform="translate(${p.x} ${p.y})" aria-label="${esc(mapNodeLabel(n))}">
-        <title>${esc(mapNodeLabel(n))}</title>
-        <rect class="map-node-box" width="${MAP_NODE_W}" height="${MAP_NODE_H}" rx="${n.kind === 'source' ? 22 : 10}"></rect>
-        <rect class="map-node-stripe" x="0" y="0" width="4" height="${MAP_NODE_H}" rx="2"></rect>
-        <text class="map-node-title" x="15" y="21">${esc(mapClip(n.title))}</text>
-        <text class="map-node-meta" x="15" y="37">${esc(mapClip(mapNodeMeta(n), 28))}</text>
+        transform="translate(${p.x} ${p.y})" style="--d: ${delayOf.get(n.id) ?? 0}ms"
+        aria-label="${esc(mapNodeLabel(n, visible.degree.get(n.id) ?? 0))}">
+        <title>${esc(mapNodeLabel(n, visible.degree.get(n.id) ?? 0))}</title>
+        <g class="mn-in">
+          <rect class="map-node-box" width="${MAP_NODE_W}" height="${MAP_NODE_H}" rx="${n.kind === 'source' ? 22 : 10}"></rect>
+          <rect class="map-node-stripe" x="0" y="0" width="4" height="${MAP_NODE_H}" rx="2"></rect>
+          <text class="map-node-title" x="15" y="21">${esc(mapClip(n.title))}</text>
+          <text class="map-node-meta" x="15" y="37">${esc(mapClip(mapNodeMeta(n), 28))}</text>
+        </g>
       </a>`;
     })
     .join('');
   return `
-    <svg class="map-svg" id="map-svg" tabindex="0" role="application"
-      aria-label="Knowledge map. Drag to pan, scroll or use the buttons to zoom, Tab to move between pages.">
+    <svg class="map-svg map-svg-tree" id="map-svg" tabindex="0" role="application"
+      aria-label="Knowledge map, tree view. Drag to pan, scroll or use the buttons to zoom, Tab to move between pages.">
       <defs>${marker('child')}${marker('link')}${marker('reference')}</defs>
       <g id="map-canvas">
         <g class="map-edges" transform="translate(${offset} ${offset})">${edges}</g>
-        <g class="map-nodes" transform="translate(${offset} ${offset})">${nodes}</g>
+        <g class="map-nodes" id="map-nodes" transform="translate(${offset} ${offset})">${nodes}</g>
       </g>
     </svg>`;
 }
@@ -2969,10 +3786,10 @@ function mapProvTag(n) {
 
 function mapOriginNote(n) {
   if (!n.origin) return '';
-  return `<span class="map-origin muted" title="A migrated source should be retired; this page still traces to one.">migrated from ${esc(n.origin.system)} · ${esc(n.origin.file)}</span>`;
+  return `<span class="map-origin muted" title="A migrated source should be retired; this page still traces to one.">migrated from ${esc(n.origin.system)}${n.origin.file ? ` · ${esc(n.origin.file)}` : ''}</span>`;
 }
 
-function mapListHTML(visible) {
+function mapListHTML(visible, collectionNames, grouped) {
   const { nodes, edges } = visible;
   const byId = visible.byId;
   const kids = new Map();
@@ -2996,6 +3813,7 @@ function mapListHTML(visible) {
   const row = (n) => {
     const links = (linksFrom.get(n.id) ?? []).map((id) => byId.get(id)).filter(Boolean);
     const refs = (refsFrom.get(n.id) ?? []).map((id) => byId.get(id)).filter(Boolean);
+    const degree = visible.degree.get(n.id) ?? 0;
     return `
       <div class="map-row">
         <a class="map-row-title" href="#/pages/${esc(n.id)}">${esc(n.title)}</a>
@@ -3004,6 +3822,7 @@ function mapListHTML(visible) {
         ${mapProvTag(n)}
         ${n.external ? '<span class="map-external-tag" title="Linked from this collection, but held in another">other collection</span>' : ''}
         ${mapOriginNote(n)}
+        <span class="muted map-row-degree" title="How many edges on this map touch this page — the same number that sizes its node in the drawing.">${degree} connection${degree === 1 ? '' : 's'}</span>
         ${links.length ? `<span class="map-row-edges">links to ${links.map((t) => `<a href="#/pages/${esc(t.id)}">${esc(t.title)}</a>`).join(', ')}</span>` : ''}
         ${refs.length ? `<span class="map-row-edges">reads from ${refs.map((t) => `<span class="map-source-name">${esc(t.title)}</span>`).join(', ')}</span>` : ''}
       </div>`;
@@ -3021,21 +3840,44 @@ function mapListHTML(visible) {
   };
 
   const pages = nodes.filter((n) => n.kind === 'page');
-  const roots = pages.filter((n) => !n.external && !parentOf.has(n.id)).map((n) => n.id);
+  const rootIds = pages.filter((n) => !n.external && !parentOf.has(n.id)).map((n) => n.id);
   const external = pages.filter((n) => n.external);
   const sources = nodes.filter((n) => n.kind === 'source');
   const referencedBy = (sourceId) =>
     edges.filter((e) => e.kind === 'reference' && e.to === sourceId).map((e) => byId.get(e.from)).filter(Boolean);
 
+  // Whole-record: the same trees, under the collection headings the drawing
+  // colours by. One reading of the data, two presentations of it. A single
+  // collection's map is one tree set and gets no headings, even though the
+  // client knows every collection's name.
+  let treeHTML;
+  if (grouped) {
+    const buckets = new Map();
+    for (const id of rootIds) {
+      const key = byId.get(id)?.collectionId ?? '';
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(id);
+    }
+    const order = [...buckets.keys()].sort((a, b) =>
+      (collectionNames.get(a) ?? a).localeCompare(collectionNames.get(b) ?? b));
+    treeHTML = order
+      .map((key) => `
+        <h3 class="map-list-collection">${esc(collectionNames.get(key) ?? key ?? 'Uncollected')}</h3>
+        ${branch(buckets.get(key), 0)}`)
+      .join('');
+  } else {
+    treeHTML = branch(rootIds, 0);
+  }
+
   return `
     <div class="map-list-wrap">
-      <h2 class="h-small">The tree${roots.length ? '' : ' — nothing matches these filters'}</h2>
-      ${branch(roots, 0)}
+      <h2 class="h-small">${grouped ? 'The record' : 'The tree'}${rootIds.length ? '' : ' — nothing matches these filters'}</h2>
+      ${treeHTML}
       ${external.length ? `
         <h2 class="h-small">Linked from elsewhere in the record</h2>
         <ul class="map-list">${external.map((n) => `<li>${row(n)}</li>`).join('')}</ul>` : ''}
       ${sources.length ? `
-        <h2 class="h-small">Sources this collection reads from</h2>
+        <h2 class="h-small">Sources ${grouped ? 'the record' : 'this collection'} reads from</h2>
         <ul class="map-list map-source-list">
           ${sources.map((s) => `
             <li>
@@ -3053,7 +3895,7 @@ function mapListHTML(visible) {
 
 // ---- legend and filters ------------------------------------------------------
 
-function mapLegendHTML() {
+function mapLegendHTML(palette, collectionNames, scope) {
   // The swatch carries its own arrowhead rather than borrowing the map's: the
   // legend is shown beside the list too, where the map's <defs> do not exist.
   const swatch = (kind) => `<svg class="map-legend-edge" viewBox="0 0 42 10" aria-hidden="true">
@@ -3061,20 +3903,40 @@ function mapLegendHTML() {
       refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 8 4 L 0 8 z"></path></marker></defs>
     <path class="map-edge map-edge-${kind}" d="M 1 5 L 34 5" marker-end="url(#map-legend-arrow-${kind})"></path></svg>`;
+
+  // Which community each colour is. Named, because a colour that stands for
+  // something nobody can look up is decoration.
+  const communities = palette
+    ? palette.keys.slice(0, 14).map((key, i) => {
+        const name = palette.byRoot
+          ? (state.map?.graph?.nodes?.find((n) => n.id === key)?.title ?? 'Tree root')
+          : (collectionNames?.get(key) ?? key);
+        return `<span class="map-community" style="--h: ${palette.hueOf(i)}">
+          <span class="map-chip map-chip-cluster mg-s1"></span>${esc(mapClip(name, 26))}</span>`;
+      }).join('')
+    : '';
+  const more = palette && palette.keys.length > 14 ? `<span class="muted">and ${palette.keys.length - 14} more</span>` : '';
+
   return `
     <section class="panel map-legend">
       <h2 class="h-small">How to read this map</h2>
       <div class="map-legend-grid">
         <div>
           <h3 class="map-legend-h">Nodes</h3>
-          <p class="map-legend-item"><span class="map-chip map-chip-page"></span> A page in the record.</p>
-          <p class="map-legend-item"><span class="map-chip map-chip-source"></span> A registered external source. Canon never copies what it owns.</p>
-          <p class="map-legend-item"><span class="map-chip map-chip-external"></span> A page in another collection, reached by a link.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-page"></span> A page in the record. It is drawn as
+            big as it is connected — √(edges on this map) — so the pages everything hangs off are the ones you see first.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-source"></span> A registered external source, drawn
+            square because it is a different kind of thing. Canon never copies what it owns.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-external"></span> A page in another collection,
+            reached by a link.</p>
         </div>
         <div>
           <h3 class="map-legend-h">Edges — the explicit graph, never an inferred one</h3>
           ${['child', 'link', 'reference'].map((k) => `
             <p class="map-legend-item">${swatch(k)} <strong>${esc(EDGE_LABELS[k])}</strong> — ${esc(EDGE_HELP[k])}</p>`).join('')}
+          <p class="map-legend-note muted">In the constellation, tree edges carry no arrowhead: the parent is the node
+            its children hang off, and five hundred arrowheads would be a texture rather than information. Hover any
+            node to light its neighbourhood, or read the list, where every relation is written out.</p>
         </div>
         <div>
           <h3 class="map-legend-h">Where the material comes from</h3>
@@ -3086,16 +3948,32 @@ function mapLegendHTML() {
         </div>
         <div>
           <h3 class="map-legend-h">Standing</h3>
-          <p class="map-legend-item">The bar down a node's left edge is its status, in the badges the rest of Canon uses:
-            ${['draft', 'in_review', 'canonical', 'needs_update'].map((s) => badge(s, 'sm')).join(' ')}.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-canonical"></span>
+            ${badge('canonical', 'sm')} carries a lit core.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-needs"></span>
+            ${badge('needs_update', 'sm')} wears an amber ring — the only amber ring on the map, so a page past its
+            review date is findable at a glance, at any zoom.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-review"></span>
+            ${badge('in_review', 'sm')} wears a dotted one.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-draft"></span>
+            ${badge('draft', 'sm')} and ${badge('archived', 'sm')} are drawn faint: they are not the record yet, or
+            not any more. In the tree layout, standing is the bar down a node's left edge instead.</p>
           <p class="map-legend-note muted">Sources carry no status: standing belongs to the record, and a source is
             not part of it.</p>
         </div>
+        ${communities ? `
+          <div class="map-legend-wide">
+            <h3 class="map-legend-h">Communities — ${scope === 'all' && !palette.byRoot ? 'one hue per collection, one shade per tree root inside it' : 'one hue per tree root'}</h3>
+            <p class="map-legend-note muted">The clusters are the record's own structure: the collection a page is in
+              and the tree root it hangs from. Nothing here is inferred from similarity — Canon has no such edge, and a
+              map that invented one would be believed, because it is a picture.</p>
+            <div class="map-communities">${communities}${more}</div>
+          </div>` : ''}
       </div>
     </section>`;
 }
 
-function mapFiltersHTML(graph, filters) {
+function mapFiltersHTML(graph, filters, collectionNames) {
   const count = (fn) => graph.nodes.filter(fn).length;
   const box = (group, value, label, n, help) => `
     <label class="map-check" title="${esc(help ?? '')}">
@@ -3105,8 +3983,19 @@ function mapFiltersHTML(graph, filters) {
   const statuses = ['draft', 'in_review', 'canonical', 'needs_update', 'archived'].filter((s) =>
     graph.nodes.some((n) => n.kind === 'page' && n.status === s),
   );
+  const collectionsFilter = filters.collections && collectionNames && collectionNames.size > 1
+    ? `<fieldset class="map-filter map-filter-collections">
+        <legend>Collections</legend>
+        ${[...collectionNames.entries()]
+          .sort((a, b) => a[1].localeCompare(b[1]))
+          .map(([id, name]) => box('collections', id, esc(name),
+            count((n) => n.kind === 'page' && n.collectionId === id)))
+          .join('')}
+      </fieldset>`
+    : '';
   return `
     <div class="map-filters">
+      ${collectionsFilter}
       <fieldset class="map-filter">
         <legend>Provenance</legend>
         ${['authored', 'imported', 'federated']
@@ -3142,7 +4031,20 @@ function mapUnavailableHTML() {
     </div>`;
 }
 
-async function viewMap(collectionId) {
+function mapTruncatedNotice(truncated) {
+  if (!truncated) return '';
+  const both = Number.isFinite(truncated.limit) && Number.isFinite(truncated.total);
+  // What the server sends and nothing more. It caps by whole collections from
+  // the tail, so the client does not know WHICH nodes are missing and does not
+  // guess: it says how many, and where the whole record still is.
+  return `<div class="notice">${both
+    ? `This record is larger than one map can hold, so the picture is partial: it stops at the
+       server's cap, and ${truncated.limit} of ${truncated.total} nodes are drawn.`
+    : 'This is larger than one map can hold, so the picture is partial: it stops at the server\'s cap.'}
+    The tree and search still reach every page.</div>`;
+}
+
+async function viewMap(scopeParam) {
   if (!(await detectMap())) {
     app.innerHTML = `<div class="page-wide">${mapUnavailableHTML()}</div>`;
     return;
@@ -3151,11 +4053,20 @@ async function viewMap(collectionId) {
 
   const collections = await api('GET', '/collections').catch(() => []);
   const list = Array.isArray(collections) ? collections : [];
-  if (!collectionId) {
-    if (list.length === 1) {
+
+  // No scope in the hash: the whole record when the server serves it, and
+  // otherwise exactly what this view has always done.
+  let scope = scopeParam;
+  if (!scope) {
+    if (await detectWholeGraph()) scope = 'all';
+    else if (list.length === 1) {
       location.replace(`#/collections/${encodeURIComponent(list[0].id)}/map`);
       return;
     }
+  }
+  if (scope === 'all' && !(await detectWholeGraph())) scope = null;
+
+  if (!scope) {
     app.innerHTML = `
       <div class="page-wide">
         <div class="page-head"><div>
@@ -3178,15 +4089,24 @@ async function viewMap(collectionId) {
     return;
   }
 
-  let collection;
+  let collection = null;
   let raw;
   try {
-    [collection, raw] = await Promise.all([
-      api('GET', `/collections/${collectionId}`),
-      api('GET', `/collections/${collectionId}/graph`),
-    ]);
+    if (scope === 'all') {
+      raw = await fetchWholeGraph();
+    } else {
+      [collection, raw] = await Promise.all([
+        api('GET', `/collections/${scope}`),
+        api('GET', `/collections/${scope}/graph`),
+      ]);
+    }
   } catch (err) {
     if (err.status === 404 || err.status === 405) {
+      if (scope === 'all') {
+        state.features.wholeGraph = false;
+        location.replace('#/map');
+        return;
+      }
       state.features.map = false;
       const link = document.getElementById('nav-map');
       if (link) link.hidden = true;
@@ -3197,67 +4117,105 @@ async function viewMap(collectionId) {
   }
 
   const graph = normalizeGraph(raw);
-  const keep = state.map && state.map.collectionId === collectionId ? state.map : null;
+  // Collection names: the whole-record payload carries them; a single
+  // collection's map knows its own.
+  const collectionNames = new Map(graph.collections.map((c) => [c.id, c.name]));
+  if (!collectionNames.size) {
+    for (const c of list) collectionNames.set(c.id, c.name);
+  }
+
+  const keep = state.map && state.map.scope === scope ? state.map : null;
+  // How many separate trees are on this map. Counted from the child edges
+  // rather than from `rootId`, because only one of the two payloads carries
+  // that field and both carry the edges.
+  const hasParent = new Set(graph.edges.filter((e) => e.kind === 'child').map((e) => e.to));
+  const rootCount = graph.nodes.filter(
+    (n) => n.kind === 'page' && !n.external && !hasParent.has(n.id),
+  ).length;
+  const defaultView = graph.nodes.length > MAP_GRAPH_CAP
+    ? 'list'
+    // The constellation is the default wherever the shape is a web: the whole
+    // record, and any collection with more than one tree in it. A single tree
+    // opens as a tree, because that is genuinely the better reading of it.
+    : scope === 'all' || rootCount > 1
+      ? 'force'
+      : 'tree';
   state.map = {
-    collectionId,
+    scope,
+    collectionId: scope === 'all' ? null : scope,
     collection,
     graph,
+    collectionNames,
     filters: keep?.filters ?? {
       provenance: new Set(['authored', 'imported', 'federated']),
       status: new Set(['draft', 'in_review', 'canonical', 'needs_update', 'archived']),
       edges: new Set(['child', 'link', 'reference']),
+      collections: scope === 'all' ? new Set(collectionNames.keys()) : null,
     },
-    // A picture nobody can read is worse than a list: past the cap the list is
-    // what a reader gets, and the toggle says so rather than hiding it.
-    view: keep?.view ?? (graph.nodes.length > MAP_GRAPH_CAP ? 'list' : 'graph'),
+    view: keep?.view ?? defaultView,
     transform: { x: 0, y: 0, k: 1 },
     layout: null,
+    layoutCache: null,
+    revealed: null,
   };
 
   const total = graph.nodes.length;
+  const whole = scope === 'all';
+  const scopeOptions = [
+    state.features.wholeGraph === true
+      ? `<option value="all" ${whole ? 'selected' : ''}>Whole record</option>`
+      : '',
+    ...list.map((c) => `<option value="${esc(c.id)}" ${c.id === scope ? 'selected' : ''}>${esc(c.name)}</option>`),
+  ].join('');
+
   app.innerHTML = `
     <div class="page-wide map-page">
-      <p class="breadcrumb"><a href="#/collections/${esc(collectionId)}">${esc(collection.name)}</a></p>
+      ${whole ? '' : `<p class="breadcrumb"><a href="#/collections/${esc(scope)}">${esc(collection?.name ?? scope)}</a></p>`}
       <div class="page-head">
         <div>
           <h1>Knowledge map</h1>
-          <p class="muted map-lede">How <strong>${esc(collection.name)}</strong> hangs together, and where its
-            material comes from. Every edge here is one Canon actually holds — the page tree, the links people
-            wrote, and the reference fields pages carry. Nothing is inferred.</p>
+          <p class="muted map-lede">${whole
+            ? `Every collection you can see, at once — <strong>${total} node${total === 1 ? '' : 's'}</strong> of it.`
+            : `How <strong>${esc(collection?.name ?? scope)}</strong> hangs together, and where its material comes from.`}
+            Every edge here is one Canon actually holds — the page tree, the links people wrote, and the reference
+            fields pages carry. Nothing is inferred, including the clusters: they are the collections and tree roots
+            the record already has.</p>
         </div>
         <div class="actions">
           <div class="map-modes" role="group" aria-label="How to show the map">
-            <button class="btn subtle" id="map-mode-graph" aria-pressed="false">Graph</button>
-            <button class="btn subtle" id="map-mode-list" aria-pressed="false">List</button>
+            <button class="btn subtle" id="map-mode-force" aria-pressed="false"
+              title="A seeded force layout, clustered by collection and tree root">Constellation</button>
+            <button class="btn subtle" id="map-mode-tree" aria-pressed="false"
+              title="The tidy layered tree — one column per depth">Tree</button>
+            <button class="btn subtle" id="map-mode-list" aria-pressed="false"
+              title="The same data as a nested list, which never stops being legible">List</button>
           </div>
-          ${list.length > 1 ? `
-            <label class="map-scope"><span class="sr-only">Collection</span>
-              <select id="map-collection">
-                ${list.map((c) => `<option value="${esc(c.id)}" ${c.id === collectionId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-              </select>
+          ${scopeOptions ? `
+            <label class="map-scope"><span class="sr-only">What to map</span>
+              <select id="map-collection">${scopeOptions}</select>
             </label>` : ''}
         </div>
       </div>
 
-      ${graph.truncated ? `<div class="notice">This collection is larger than one map can hold, so the picture is
-        partial: it stops at the server's cap. The tree and search still reach every page.</div>` : ''}
+      ${mapTruncatedNotice(graph.truncated)}
       ${total > MAP_GRAPH_CAP ? `<div class="notice">${total} nodes is more than a drawing can show legibly, so the
-        list is what opens by default. The graph is still one click away.</div>` : ''}
+        list is what opens by default. The picture is still one click away.</div>` : ''}
 
-      ${mapFiltersHTML(graph, state.map.filters)}
+      ${mapFiltersHTML(graph, state.map.filters, collectionNames)}
       <p class="map-summary muted" id="map-summary"></p>
       <div class="map-stage" id="map-stage"></div>
-      ${mapLegendHTML()}
+      <div id="map-legend-host"></div>
     </div>`;
 
   app.querySelector('#map-collection')?.addEventListener('change', (e) => {
-    location.hash = `#/collections/${encodeURIComponent(e.target.value)}/map`;
+    location.hash = e.target.value === 'all' ? '#/map/all' : `#/collections/${encodeURIComponent(e.target.value)}/map`;
   });
-  app.querySelector('#map-mode-graph').addEventListener('click', () => setMapView('graph'));
+  app.querySelector('#map-mode-force').addEventListener('click', () => setMapView('force'));
+  app.querySelector('#map-mode-tree').addEventListener('click', () => setMapView('tree'));
   app.querySelector('#map-mode-list').addEventListener('click', () => setMapView('list'));
   app.querySelector('.map-filters').addEventListener('change', (e) => {
     const group = e.target?.dataset?.filter;
-    if (!group) return;
+    if (!group || !state.map.filters[group]) return;
     const set = state.map.filters[group];
     if (e.target.checked) set.add(e.target.value);
     else set.delete(e.target.value);
@@ -3272,19 +4230,37 @@ function setMapView(view) {
   renderMapStage();
 }
 
+// The layout is expensive enough to be worth not repeating, and pure enough
+// that caching it is safe: it depends on nothing but the nodes, the edges and
+// the layout mode.
+function mapLayoutFor(visible, mode) {
+  const key = `${mode}|${visible.nodes.map((n) => n.id).join(',')}|${visible.edges.map((e) => `${e.kind}${e.from}>${e.to}`).join(',')}`;
+  const cached = state.map.layoutCache;
+  if (cached && cached.key === key) return cached.layout;
+  const layout = mode === 'tree' ? mapTreeLayout(visible) : mapForceLayout(visible);
+  state.map.layoutCache = { key, layout };
+  return layout;
+}
+
 function renderMapStage() {
   const stage = document.getElementById('map-stage');
   const summary = document.getElementById('map-summary');
   if (!stage || !state.map) return;
-  const { graph, filters, view } = state.map;
+  const { graph, filters, view, scope, collectionNames } = state.map;
   const visible = mapVisible(graph, filters);
   const pages = visible.nodes.filter((n) => n.kind === 'page').length;
   const sources = visible.nodes.length - pages;
 
-  document.getElementById('map-mode-graph')?.setAttribute('aria-pressed', String(view === 'graph'));
-  document.getElementById('map-mode-list')?.setAttribute('aria-pressed', String(view === 'list'));
-  document.getElementById('map-mode-graph')?.classList.toggle('is-on', view === 'graph');
-  document.getElementById('map-mode-list')?.classList.toggle('is-on', view === 'list');
+  for (const mode of ['force', 'tree', 'list']) {
+    const btn = document.getElementById(`map-mode-${mode}`);
+    if (!btn) continue;
+    btn.setAttribute('aria-pressed', String(view === mode));
+    btn.classList.toggle('is-on', view === mode);
+  }
+
+  const palette = mapPalette(visible, scope);
+  const legendHost = document.getElementById('map-legend-host');
+  if (legendHost) legendHost.innerHTML = mapLegendHTML(palette, collectionNames, scope);
 
   if (summary) {
     const parts = [
@@ -3305,13 +4281,13 @@ function renderMapStage() {
 
   if (view === 'list') {
     stage.className = 'map-stage is-list';
-    stage.innerHTML = mapListHTML(visible);
+    stage.innerHTML = mapListHTML(visible, collectionNames, scope === 'all' && collectionNames.size > 1);
     return;
   }
 
-  const layout = mapLayout(visible);
+  const layout = mapLayoutFor(visible, view);
   state.map.layout = layout;
-  stage.className = 'map-stage is-graph';
+  stage.className = `map-stage is-graph is-${layout.mode}`;
   stage.innerHTML = `
     <div class="map-controls">
       <button class="btn subtle" id="map-zoom-out" aria-label="Zoom out">−</button>
@@ -3319,8 +4295,26 @@ function renderMapStage() {
       <button class="btn subtle" id="map-fit">Fit</button>
     </div>
     <div class="map-detail" id="map-detail" aria-live="polite"></div>
-    ${mapSvgHTML(visible, layout)}`;
-  wireMapStage(visible);
+    ${layout.mode === 'tree' ? mapTreeSvgHTML(visible, layout) : mapForceSvgHTML(visible, layout, palette)}`;
+  wireMapStage(visible, layout);
+
+  // The settle-in reveal, played when the picture is new rather than on every
+  // filter tick: the layout was already final before the first frame, so what
+  // this animates is arrival, not physics.
+  const revealKey = `${scope}|${view}`;
+  if (state.map.revealed !== revealKey) {
+    state.map.revealed = revealKey;
+    const group = document.getElementById('map-nodes');
+    const edgesG = stage.querySelector('.map-edges');
+    if (group) {
+      group.classList.add('is-revealing');
+      edgesG?.classList.add('is-revealing');
+      setTimeout(() => {
+        group.classList.remove('is-revealing');
+        edgesG?.classList.remove('is-revealing');
+      }, 900);
+    }
+  }
 }
 
 function applyMapTransform() {
@@ -3328,18 +4322,28 @@ function applyMapTransform() {
   if (!canvas || !state.map) return;
   const { x, y, k } = state.map.transform;
   canvas.setAttribute('transform', `translate(${x} ${y}) scale(${k})`);
+  // Labels are tiered: the hubs are named at every zoom, and each step in
+  // brings another band of names with it. A poster has no labels; a tool has
+  // as many as it can show without becoming one.
+  const svg = document.getElementById('map-svg');
+  if (svg && state.map.layout?.mode === 'force') {
+    const tier = k < 0.55 ? 0 : k < 0.95 ? 1 : k < 1.6 ? 2 : 3;
+    if (svg.dataset.labels !== String(tier)) svg.dataset.labels = String(tier);
+  }
 }
 
 function fitMap() {
   const svg = document.getElementById('map-svg');
   if (!svg || !state.map?.layout) return;
-  const { width, height } = state.map.layout;
+  const { width, height, mode } = state.map.layout;
   const w = svg.clientWidth || 900;
   const h = svg.clientHeight || 520;
-  // Fit, but never below the zoom at which a label stops being a label: past
-  // that, "fitting" fits a blur, and the honest move is to show the top-left of
-  // the map at a readable size and let the reader pan — or read the list.
-  const k = Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, MAP_ZOOM_READABLE, Math.min(w / width, h / height, 1)));
+  // The tree fits, but never below the zoom at which its label stops being a
+  // label: past that, "fitting" fits a blur. The constellation has no such
+  // floor — its labels are tiered, so zoomed out it still shows the hubs' names
+  // and the true shape of the record.
+  const floor = mode === 'tree' ? MAP_ZOOM_READABLE : MAP_ZOOM_MIN;
+  const k = Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, floor, Math.min(w / width, h / height, 1)));
   state.map.transform = {
     k,
     x: width * k <= w ? (w - width * k) / 2 : 0,
@@ -3352,6 +4356,7 @@ function mapDetailHTML(n, visible) {
   if (!n) {
     return `<p class="muted">Hover or tab to a node for its detail. Click one to open it.</p>`;
   }
+  const degree = visible.degree.get(n.id) ?? 0;
   if (n.kind === 'source') {
     const readers = visible.edges.filter((e) => e.kind === 'reference' && e.to === n.id).length;
     return `
@@ -3362,35 +4367,69 @@ function mapDetailHTML(n, visible) {
   }
   const links = visible.edges.filter((e) => e.kind === 'link' && e.from === n.id).length;
   const backlinks = visible.edges.filter((e) => e.kind === 'link' && e.to === n.id).length;
+  const children = visible.edges.filter((e) => e.kind === 'child' && e.from === n.id).length;
+  const parent = visible.parentOf.get(n.id);
+  const parentNode = parent ? visible.byId.get(parent) : null;
+  const collectionName = state.map?.collectionNames?.get(n.collectionId);
   return `
     <h3 class="map-detail-title">${esc(n.title)}</h3>
     <p class="map-detail-line">${badge(n.status, 'sm')}
       <span class="muted">${esc(TYPE_LABELS[n.type] ?? n.type ?? '')}</span>
       ${n.version ? `<span class="citation-version">v${esc(n.version)}</span>` : '<span class="muted">never published</span>'}
       ${n.external ? '<span class="map-external-tag">other collection</span>' : ''}</p>
-    <p class="map-detail-line">${mapProvTag(n)}</p>
-    ${n.origin ? `<p class="map-detail-line muted">Migrated from ${esc(n.origin.system)} · ${esc(n.origin.file)}${n.origin.at ? ` · ${esc(fmtDateTime(n.origin.at))}` : ''}. A migrated source should have been retired.</p>` : ''}
+    <p class="map-detail-line">${mapProvTag(n)}${collectionName && state.map?.scope === 'all'
+      ? `<span class="role-tag">${esc(collectionName)}</span>` : ''}</p>
+    ${n.origin ? `<p class="map-detail-line muted">Migrated from ${esc(n.origin.system)}${n.origin.file ? ` · ${esc(n.origin.file)}` : ''}${n.origin.at ? ` · ${esc(fmtDateTime(n.origin.at))}` : ''}. A migrated source should have been retired.</p>` : ''}
     ${n.references ? `<p class="map-detail-line muted">Reads ${n.references} value${n.references === 1 ? '' : 's'} from outside Canon.</p>` : ''}
+    <p class="map-detail-line muted">${degree} connection${degree === 1 ? '' : 's'} here${parentNode ? ` · under ${esc(mapClip(parentNode.title, 22))}` : ''}${children ? ` · ${children} child${children === 1 ? '' : 'ren'}` : ''}</p>
     <p class="map-detail-line muted">${links} link${links === 1 ? '' : 's'} out · ${backlinks} in</p>`;
 }
 
 function wireMapStage(visible) {
   const svg = document.getElementById('map-svg');
   const detail = document.getElementById('map-detail');
+  const nodesG = document.getElementById('map-nodes');
   if (!svg) return;
   fitMap();
   if (detail) detail.innerHTML = mapDetailHTML(null, visible);
 
+  // Hovering lights a neighbourhood and dims the rest. Only the neighbourhood's
+  // own classes are touched — the dimming is one class on the container — so
+  // this stays a handful of DOM writes however many nodes are on the screen.
+  const nodeEls = new Map();
+  svg.querySelectorAll('.map-node').forEach((el) => nodeEls.set(el.dataset.node, el));
+  const edgeEls = [...svg.querySelectorAll('.map-edge')];
+  const edgesByNode = new Map();
+  for (const el of edgeEls) {
+    for (const id of [el.dataset.from, el.dataset.to]) {
+      if (!edgesByNode.has(id)) edgesByNode.set(id, []);
+      edgesByNode.get(id).push(el);
+    }
+  }
+  let lit = [];
+  const clear = () => {
+    for (const el of lit) el.classList.remove('is-near', 'is-active');
+    lit = [];
+    svg.classList.remove('is-focusing');
+  };
   const show = (id) => {
-    if (!detail) return;
-    detail.innerHTML = mapDetailHTML(visible.byId.get(id) ?? null, visible);
-    svg.querySelectorAll('.map-node.is-active').forEach((el) => el.classList.remove('is-active'));
-    svg.querySelectorAll('.map-edge.is-active').forEach((el) => el.classList.remove('is-active'));
-    const node = svg.querySelector(`[data-node="${cssEscape(id)}"]`);
-    if (node) node.classList.add('is-active');
-    svg.querySelectorAll('.map-edge').forEach((el) => {
-      if (el.dataset.from === id || el.dataset.to === id) el.classList.add('is-active');
-    });
+    clear();
+    const node = nodeEls.get(id);
+    if (detail) detail.innerHTML = mapDetailHTML(visible.byId.get(id) ?? null, visible);
+    if (!node) return;
+    svg.classList.add('is-focusing');
+    node.classList.add('is-near', 'is-active');
+    lit.push(node);
+    for (const near of visible.neighbors.get(id) ?? []) {
+      const el = nodeEls.get(near);
+      if (!el) continue;
+      el.classList.add('is-near');
+      lit.push(el);
+    }
+    for (const el of edgesByNode.get(id) ?? []) {
+      el.classList.add('is-near');
+      lit.push(el);
+    }
   };
   const over = (e) => {
     const node = e.target.closest?.('[data-node]');
@@ -3398,6 +4437,10 @@ function wireMapStage(visible) {
   };
   svg.addEventListener('mouseover', over);
   svg.addEventListener('focusin', over);
+  svg.addEventListener('mouseleave', () => {
+    clear();
+    if (detail) detail.innerHTML = mapDetailHTML(null, visible);
+  });
 
   // Pan: drag anywhere that is not a node. A drag that moved is not a click,
   // so dragging across a node never navigates.
@@ -3430,9 +4473,19 @@ function wireMapStage(visible) {
     state.map.transform = { k, x: cx - (cx - t.x) * ratio, y: cy - (cy - t.y) * ratio };
     applyMapTransform();
   };
+  // Text is the one thing on this map that has to be re-rasterised on every
+  // scale step, and at five hundred labels that is the whole cost of a wheel
+  // zoom — measured: 34ms a frame with them, 17ms without. So a CONTINUOUS
+  // zoom hides them for as long as the wheel is turning and brings them back
+  // a beat after it stops; a single click of + or − changes scale once and
+  // never needs it. Nothing is hidden at rest, which is when labels are read.
+  let scaling = null;
   svg.addEventListener('wheel', (e) => {
     e.preventDefault();
     const box = svg.getBoundingClientRect();
+    svg.classList.add('is-scaling');
+    clearTimeout(scaling);
+    scaling = setTimeout(() => svg.classList.remove('is-scaling'), 140);
     zoomAbout(Math.exp(-e.deltaY * 0.0015), e.clientX - box.left, e.clientY - box.top);
   }, { passive: false });
 
@@ -3460,8 +4513,12 @@ function wireMapStage(visible) {
     } else if (e.key === '0') {
       e.preventDefault();
       fitMap();
+    } else if (e.key === 'Escape') {
+      clear();
+      if (detail) detail.innerHTML = mapDetailHTML(null, visible);
     }
   });
+  if (nodesG) nodesG.setAttribute('data-count', String(visible.nodes.length));
   // The layout is a pure function of the data, so a resize only re-fits it —
   // the picture itself never moves under the reader. One listener at a time,
   // and it no-ops once the map has been navigated away from.
