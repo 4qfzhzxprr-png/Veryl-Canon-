@@ -22,6 +22,8 @@ import { Notification, NotificationTransport, Notifier } from './notify.js';
 import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
 import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
+import { AUDIT_CSV_MAX_ROWS, RawResponse, auditCsvResponse } from './csv.js';
+import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './import.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -775,5 +777,31 @@ export class CanonStore {
     opts: { canonicalOnly?: boolean; limit?: number } = {},
   ): RetrievalCandidate[] {
     return this.retrieval.related(actorId, pageId, opts);
+  }
+
+  // ---- audit export and import (Epic E, M4) ----------------------------
+  // Thin delegates; the logic lives in csv.ts and import.ts. The importer is
+  // stateless apart from the record it writes to, so it is built per call.
+
+  // The CSV export answers the same filters as queryAudit and is bounded by
+  // the same hard row cap (see AUDIT_CSV_MAX_ROWS in csv.ts).
+  auditCsv(
+    actorId: string,
+    filter: { actorId?: string; action?: string; from?: string; to?: string; limit?: number } = {},
+  ): RawResponse {
+    const limit = Math.min(filter.limit ?? AUDIT_CSV_MAX_ROWS, AUDIT_CSV_MAX_ROWS);
+    return auditCsvResponse(this.queryAudit(actorId, { ...filter, limit }));
+  }
+
+  runImport(actorId: string, input: ImportInput): ImportSummary {
+    return new ImportService(this.db, this).run(actorId, input);
+  }
+
+  getImportRun(actorId: string, runId: string): ImportRunRecord {
+    return new ImportService(this.db, this).getRun(actorId, runId);
+  }
+
+  listImportRuns(actorId: string): Omit<ImportRunRecord, 'items' | 'files'>[] {
+    return new ImportService(this.db, this).listRuns(actorId);
   }
 }

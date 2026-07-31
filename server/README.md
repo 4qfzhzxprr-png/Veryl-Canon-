@@ -14,7 +14,8 @@ The first running slice of Veryl Canon: the data storage and organization backbo
 - **Comments and notifications.** Inline comments anchored to a quoted passage (plus optional context) and page-level comments, resolve and reopen, `@<actorId>` mentions, and an outbox-pattern notifications table with a pluggable transport (the dev transport logs to the console and marks sent). Review requests, approvals, and send-backs notify the people involved; mentions notify the mentioned.
 - **Agents at the door.** Approved agents authenticate with an Agent Passport verified against the Veryl Agent Registry, resolve to their own Canon actor, and act only inside the intersection of the Registry's limits and Canon's collection permissions. See "Two ways in" below.
 - **Email delivery.** A real SMTP client written on `node:net` and `node:tls` — STARTTLS or direct TLS, `AUTH PLAIN` and `AUTH LOGIN`, dot-stuffed `DATA` — sends the notifications the outbox holds. Messages are RFC 5322 with a plain-text and an HTML part, and each one carries a deep link straight to the page or its review, which is what CORE-PLAN.md section 7 names as the answer to review friction. Delivery is retried with backoff and bounded attempts; a permanently refused message (5xx, no address on record) is marked dead rather than retried forever, with the reason kept on the row. Configured entirely by environment variables (below); with none set, behaviour is exactly as it was — the dev transport logs to the console.
-- **Trust.** Every write attributed to its actor; agents are actors that require a Registry reference (Agent Passport) and carry their kind into history and audit. The append-only audit log records all writes, plus page views on restricted collections, filterable by actor, action, and date.
+- **Trust.** Every write attributed to its actor; agents are actors that require a Registry reference (Agent Passport) and carry their kind into history and audit. The append-only audit log records all writes, plus page views on restricted collections, filterable by actor, action, and date, and exportable as RFC 4180 CSV (`GET /audit.csv`, same filters). The export is bounded by construction: at most 1000 records, newest first, with `x-canon-truncated: true` when the cap was reached — narrow with `from`/`to` to walk a longer log.
+- **Import.** Confluence HTML space exports and Google Docs (Takeout) exports, read from an unpacked directory on disk. The Confluence importer recovers the page tree from the export's index and falls back to page breadcrumbs, then to a flat import. Both share a tolerant, dependency-free HTML → structured-text converter (headings, bold, italics, lists, tables, links, code blocks, images as links) that never emits HTML into a page body and never chokes on malformed markup. Everything arrives as a Draft attributed to the importing actor; nothing is ever Canonical on arrival. See [Importing](#importing).
 - **The web UI.** A zero-dependency static SPA served from [public/](public/) at the server root: collections and page trees with status badges, the draft editor with the page-lock screen, the full review flow, version history with side-by-side compare and restore, search, comments, and the audit view. Safe-subset markdown rendering (escape-first). Identity via a dev "who are you" screen until SSO lands. The Ask view (grounded answers — question box, cited answer, refusal state) is built against the `POST /ask` contract in [DATA-BACKBONE.md](../DATA-BACKBONE.md) §5 and feature-detects it: while the endpoint returns 404, the whole experience stays hidden, exactly as search and comments do.
 
 ## Two ways in: people and agents
@@ -45,7 +46,6 @@ How an agent request is handled ([`src/agentauth.ts`](src/agentauth.ts), per [RE
 
 - **Identity.** People arrive via the `X-Actor-Id` header until SSO lands. Agents authenticate with their Agent Passport (above); the Registry behind it is the stub in [registry-stub/](../registry-stub/) until the live service is ready.
 - **The embedding provider and the answer generator.** Both are interfaces with hermetic defaults: a hashed bag of words and an extractive generator. A hosted or self-hosted embedding model and a real language model plug into the same seams, and nothing else in retrieval changes. Until then the vector channel catches partial term overlap rather than paraphrase, and answers quote rather than compose prose.
-- **Audit CSV export and import** (Epic E, M4).
 
 ## Running it
 
@@ -92,7 +92,11 @@ POST   /pages/:id/archive
 GET    /pages/:id/versions | /versions/:n
 POST   /pages/:id/restore                   { version }
 GET    /search?q=&collection=&type=&status=&owner=&limit=
-GET    /audit?actor=&action=&from=&to=
+GET    /audit?actor=&action=&from=&to=&limit=
+GET    /audit.csv?actor=&action=&from=&to=&limit=   same filters, RFC 4180 CSV download
+POST   /imports                                    { source, path, collectionId, type?, runId? } -> run summary
+GET    /imports                                    runs in collections the caller belongs to
+GET    /imports/:id                                one run, with a per-file outcome for each file
 POST   /pages/:id/comments                  { body, anchor? { quote, context? } } — @<actorId> mentions notify
 GET    /pages/:id/comments
 POST   /comments/:id/resolve | /reopen
@@ -103,3 +107,77 @@ POST   /ask                                 { question, collectionId?, limit? }
 GET    /pages/:id/related?canonical=&limit=  parent, children, and linked pages, permission-filtered
 POST   /notifications/flush                 { limit? } — deliver queued notifications (requires admin somewhere)
 ```
+
+## Importing
+
+Import is how a partner's existing material becomes the record. Everything it produces is a **Draft** attributed to the person who ran it; nothing arrives Canonical, and nothing skips review.
+
+### 1. Get the export, and unpack it yourself
+
+Canon reads a directory, never an archive. The operator unzips first. This is deliberate: one less format to get wrong between a partner's corpus and the record.
+
+**Confluence** — in Confluence, *Space settings → Content tools → Export → HTML → Normal export*. You get `<SPACEKEY>.html.zip`. Unpack it:
+
+```sh
+unzip MB.html.zip -d ~/exports/member-benefits
+ls ~/exports/member-benefits          # index.html, <Page+Title>_<id>.html, attachments/, images/, styles/
+```
+
+The importer wants the directory that directly contains `index.html`. Some zips nest one level (`MB/index.html`); point the import at the inner directory.
+
+**Google Docs** — from [Google Takeout](https://takeout.google.com), select Drive, choose **HTML** as the document format, and download. Unpack it and point the import at the folder holding the `.html` documents:
+
+```sh
+unzip takeout-20260730.zip -d ~/exports/takeout
+ls ~/exports/takeout/Takeout/Drive    # Benefits Enrolment Guide.html, Pharmacy Notes/, images/
+```
+
+Sub-folders are walked (up to six levels), so a whole Drive folder can be imported in one run. `images/` and `assets/` directories are skipped.
+
+The directory must be readable by the Canon server process, on the server's own filesystem — `path` is a server-side path, not an upload.
+
+### 2. Choose a collection and a type
+
+Create (or pick) the collection the material belongs in; the importer requires **edit** access to it. Then choose the document type every imported page will carry. `note` is the default and the right answer for a bulk first import: Notes publish directly, so each page arrives with its body as version 1 and is immediately readable and searchable. Types that require a named approver (Policy, Spec) cannot publish without one, so their imported body waits in the page's draft and the run summary says so, per file.
+
+### 3. Run it
+
+```sh
+curl -sS -X POST http://localhost:3000/imports \
+  -H 'content-type: application/json' \
+  -H "x-actor-id: $ACTOR" \
+  -d '{"source":"confluence","path":"/home/ops/exports/member-benefits","collectionId":"'"$COLLECTION"'","type":"note"}'
+```
+
+`source` is `confluence` or `google-docs`. `type` defaults to `note`. The response is the run summary:
+
+```jsonc
+{
+  "runId": "9f1c…",
+  "source": "confluence",
+  "hierarchy": "tree",                 // how the page tree was recovered
+  "counts": { "found": 7, "imported": 6, "updated": 0, "skipped": 0, "failed": 1 },
+  "files": [
+    { "file": "Benefits+Overview_65601.html", "outcome": "imported", "pageId": "…",
+      "title": "Benefits Overview", "parentFile": null, "published": true, "reason": null },
+    { "file": "Broken+Export_65607.html", "outcome": "failed", "pageId": null,
+      "reason": "no readable content: the file parsed to an empty document" }
+  ]
+}
+```
+
+`GET /imports/:id` recalls a run and its per-file outcomes later; `GET /imports` lists the runs in collections you belong to. Every run also writes `import.start`, one `import.page` per file, and `import.finish` to the audit log, naming the source system, the file, and the resulting page — so `GET /audit.csv?action=import.page` is a complete, exportable record of what arrived and from where.
+
+### What the importer guarantees
+
+- **Draft on arrival, always.** Imported pages are created as Draft and published (where the type allows) in the state that keeps them Draft. An import cannot produce a Canonical page.
+- **Attribution.** The actor who ran the import is the creator of every page and the author of every version it writes. For types that require an owner, the importer is set as the initial owner; the approver is never assumed.
+- **Structure where the export has it.** Confluence hierarchy comes from the nested list in `index.html`; pages the index does not mention fall back to their breadcrumb trail; anything still unplaced lands at the root. The summary's `hierarchy` field says which of `tree`, `breadcrumbs`, or `flat` the run used. Google Docs has no page tree, so its imports are always flat.
+- **A bad file never stops the run.** A file that parses to nothing is reported as `failed` with a reason and the run continues. Files over 4 MB are `skipped`. A run reads at most 2000 documents; the rest are reported as skipped so nothing disappears silently.
+- **Re-running is safe, per run id.** Pass the `runId` of an earlier run to resume or retry it: files whose content is byte-for-byte unchanged are skipped, and files whose content changed become a **new version of the same page** — never a duplicate. Omitting `runId` starts a new run, which is a fresh import and will create new pages. So: retry with the run id, start over without it.
+
+### What survives, and what does not
+
+Carried over: headings, paragraphs and reading order, bold and italics (including Google Docs' class-based and inline-style emphasis), ordered and unordered lists with nesting, tables (as GFM pipe tables), links (with Google's redirect wrapper unwrapped), inline code, fenced code blocks with their language where the export names it, blockquotes, Confluence info/note/warning macros (as blockquotes), and images as links to where the file sat in the export.
+
+Not carried over: attachment and image **files** (the link records what was there; the bytes stay in the export directory), Confluence macros beyond the info family (they arrive as their rendered text), comments, labels, page restrictions, version history from the source system, and anything the export itself did not write. Cell merges in tables are padded out rather than merged, and inline code containing a backtick degrades to plain text because the editor's safe subset cannot express it.

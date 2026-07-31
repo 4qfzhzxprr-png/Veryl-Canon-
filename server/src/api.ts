@@ -3,6 +3,7 @@ import { AgentAuth, AgentSession, passportAuthUnavailable } from './agentauth.js
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
 import { CanonStore } from './store.js';
+import { RawResponse } from './csv.js';
 
 // A deliberately thin HTTP layer over the store. Actor identity arrives in
 // the X-Actor-Id header for now; people get SSO later.
@@ -146,6 +147,22 @@ const routes: Route[] = [
       limit: query.get('limit') ? Number(query.get('limit')) : undefined,
     }),
   ),
+
+  // Epic E, M4: the audit log as a CSV download, same filters as GET /audit,
+  // and the Confluence and Google Docs importers.
+  route('GET', '/audit.csv', ({ store, actorId, query }) =>
+    store.auditCsv(actorId, {
+      actorId: query.get('actor') ?? undefined,
+      action: query.get('action') ?? undefined,
+      from: query.get('from') ?? undefined,
+      to: query.get('to') ?? undefined,
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
+
+  route('POST', '/imports', ({ store, actorId, body }) => store.runImport(actorId, body)),
+  route('GET', '/imports', ({ store, actorId }) => store.listImportRuns(actorId)),
+  route('GET', '/imports/:id', ({ store, actorId, params }) => store.getImportRun(actorId, params.id!)),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -201,8 +218,15 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       // is) and so is the outbox flush, which waits on a mail relay. Awaiting
       // a plain value changes nothing for every other handler.
       const result = await match.handler({ store, actorId, params, query: url.searchParams, body });
-      const payload = result ?? { ok: true };
-      send(res, 200, limits ? limits.narrow(payload) : payload);
+      // Almost everything here is JSON; a handler that needs another content
+      // type (the audit CSV download) returns a RawResponse and writes itself.
+      // An agent's narrowing never applies to it: the CSV routes are not in
+      // the agent action vocabulary, so agentauth refuses them outright.
+      if (result instanceof RawResponse) result.writeTo(res);
+      else {
+        const payload = result ?? { ok: true };
+        send(res, 200, limits ? limits.narrow(payload) : payload);
+      }
     } catch (err) {
       if (err instanceof CanonError) {
         send(res, err.httpStatus, { error: err.code, message: err.message, ...err.details });

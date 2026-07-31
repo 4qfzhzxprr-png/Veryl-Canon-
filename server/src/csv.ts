@@ -1,0 +1,99 @@
+import type { ServerResponse } from 'node:http';
+import type { AuditEvent } from './model.js';
+
+// CSV export of the audit log (CORE-PLAN.md Epic E, M4: "Filterable by actor,
+// action, and date. Exportable as CSV").
+//
+// The reader on the other end is a compliance officer with Excel, so the
+// escaping follows RFC 4180 exactly rather than "good enough": a field is
+// quoted when it contains a quote, a comma, a CR, an LF, or leading/trailing
+// whitespace, and an embedded quote is doubled. Records end with CRLF. The
+// details column carries the event's JSON verbatim inside one field, which is
+// the case that breaks naive exporters, so it is tested.
+
+/** RFC 4180 field escaping. */
+export function csvField(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const text = typeof value === 'string' ? value : String(value);
+  const needsQuotes = /["',\r\n]/.test(text) || text !== text.trim();
+  // A comma or quote always forces quoting; a bare apostrophe does not, but the
+  // test above is cheap and quoting more than required is still valid CSV.
+  if (!needsQuotes) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+/** One RFC 4180 record, CRLF-terminated. */
+export function csvRow(values: unknown[]): string {
+  return values.map(csvField).join(',') + '\r\n';
+}
+
+export const AUDIT_CSV_COLUMNS = [
+  'id',
+  'at',
+  'actor_id',
+  'actor_kind',
+  'action',
+  'collection_id',
+  'page_id',
+  'details',
+] as const;
+
+// The export is bounded by construction: it asks the audit query for at most
+// this many rows and builds exactly that many records, so a log of any size
+// produces a response of a known maximum size. It is the same hard cap the
+// JSON audit query applies. To walk a longer log, narrow with from/to and
+// export the windows in turn — the `at` column is what you page on.
+export const AUDIT_CSV_MAX_ROWS = 1000;
+
+export function auditCsv(events: AuditEvent[]): string {
+  let out = csvRow([...AUDIT_CSV_COLUMNS]);
+  for (const event of events) {
+    out += csvRow([
+      event.id,
+      event.at,
+      event.actorId,
+      event.actorKind,
+      event.action,
+      event.collectionId,
+      event.pageId,
+      JSON.stringify(event.details ?? {}),
+    ]);
+  }
+  return out;
+}
+
+// A response that is not JSON. The api.ts `send()` helper writes JSON and stays
+// that way; a handler returning one of these writes itself instead. This is the
+// whole of the non-JSON response path.
+export class RawResponse {
+  constructor(
+    readonly status: number,
+    readonly headers: Record<string, string>,
+    readonly body: string,
+  ) {}
+
+  writeTo(res: ServerResponse): void {
+    res.writeHead(this.status, { ...this.headers, 'content-length': String(Buffer.byteLength(this.body)) });
+    res.end(this.body);
+  }
+}
+
+function stamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '');
+}
+
+/** The audit CSV as a downloadable file response. */
+export function auditCsvResponse(events: AuditEvent[]): RawResponse {
+  return new RawResponse(
+    200,
+    {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': `attachment; filename="canon-audit-${stamp()}.csv"`,
+      'x-canon-row-cap': String(AUDIT_CSV_MAX_ROWS),
+      // An export that exactly fills the cap may have more behind it; say so
+      // rather than let an auditor assume they hold the whole log.
+      'x-canon-truncated': events.length >= AUDIT_CSV_MAX_ROWS ? 'true' : 'false',
+    },
+    auditCsv(events),
+  );
+}
