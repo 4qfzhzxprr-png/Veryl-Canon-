@@ -307,6 +307,25 @@ const RULES: Rule[] = [
   { method: 'PUT', pattern: /^\/knowledge\/pages\/([^/]+)\/draft$/, action: 'write', scope: PAGE },
   { method: 'POST', pattern: /^\/knowledge\/pages\/([^/]+)\/(?:publish|submit)$/, action: 'write', scope: PAGE },
   { method: 'POST', pattern: /^\/knowledge\/pages\/([^/]+)\/comments$/, action: 'comment', scope: PAGE },
+
+  // The knowledge map (GET /collections/:id/graph). `read`, scoped to the
+  // collection in the path: a map is a read of that collection's tree, its
+  // links, and the sources its pages reference, and REGISTRY-CONTRACT.md §4
+  // puts "viewing pages, trees, versions" under `read`. It gets a rule of its
+  // own rather than joining the `tree|members|health` alternation above so this
+  // classification is additive — but the effect is the same one that
+  // alternation has, and the day they merge, nothing changes.
+  //
+  // No narrowing is needed on the way out. The map's nodes are selected with
+  // the asking actor's own membership join, and the Registry's collection limit
+  // is checked here against the one collection the map is of, so an agent
+  // barred from it never reaches the handler at all.
+  {
+    method: 'GET',
+    pattern: /^\/collections\/([^/]+)\/graph$/,
+    action: 'read',
+    scope: (g) => ({ kind: 'collection', id: g[0] ?? '' }),
+  },
 ];
 
 function classify(method: string, pathname: string): { action: AgentAction; scope: Scope } | null {

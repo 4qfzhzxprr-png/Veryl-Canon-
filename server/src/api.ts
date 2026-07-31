@@ -264,6 +264,15 @@ const routes: Route[] = [
     return { ok: true };
   }),
 
+  // The knowledge map: one collection's explicit graph — the tree, the links
+  // people wrote, and the sources its pages reference — with each node's
+  // provenance (DATA-BACKBONE.md §5 and §6). Read-only, and permission-filtered
+  // in the SQL that selects its nodes, so a page the asker cannot see is absent
+  // rather than redacted.
+  route('GET', '/collections/:id/graph', ({ store, actorId, params }) =>
+    store.collectionGraph(actorId, params.id!),
+  ),
+
   // Record health (FEATURES.md §8), built on the query surface above.
   route('GET', '/collections/:id/health', ({ store, actorId, params, query }) =>
     store.collectionHealth(actorId, params.id!, {
