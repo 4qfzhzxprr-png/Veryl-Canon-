@@ -1,6 +1,8 @@
 import { agentAuthFromEnv } from './agentauth.js';
 import { createApi } from './api.js';
+import { defaultConnectorRegistry } from './connectors.js';
 import { openDb } from './db.js';
+import { HttpConnector } from './httpconnector.js';
 import { smtpTransportFromEnv } from './email.js';
 import { notifierFor } from './notify.js';
 import { attachStatic } from './static.js';
@@ -14,7 +16,20 @@ const db = openDb(dbPath);
 // notifications go out by SMTP; without it the dev transport logs them,
 // exactly as before. See server/README.md for the environment variables.
 const mail = smtpTransportFromEnv();
-const store = new CanonStore(db, mail ?? undefined);
+// Federation (DATA-BACKBONE.md §6). The registry ships with the hermetic
+// static connector only, so without this a deployment could federate against
+// nothing real. The HTTP connector handles sources of kind 'http': a record
+// system queried by key, with the asking actor carried in a header for
+// per_asker sources. CANON_SOURCE_SERVICE_IDENTITY is what a `service` source
+// presents; absent, a service source fails visibly rather than resolving
+// anonymously, which is the correct refusal.
+const connectors = defaultConnectorRegistry().register(
+  new HttpConnector({
+    serviceIdentity: process.env.CANON_SOURCE_SERVICE_IDENTITY,
+    requestTimeoutMs: Number(process.env.CANON_SOURCE_TIMEOUT_MS ?? 3000),
+  }),
+);
+const store = new CanonStore(db, mail ?? undefined, undefined, connectors);
 // Agent Passport authentication is live only when a Registry is configured
 // (CANON_REGISTRY_URL); otherwise Canon runs in dev mode, X-Actor-Id only.
 const agentAuth = agentAuthFromEnv(db, store);
