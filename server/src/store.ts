@@ -30,6 +30,7 @@ import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } fr
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
+import { GraphService, KnowledgeGraph } from './graph.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -1044,5 +1045,14 @@ export class CanonStore {
     options: { staleDraftDays?: number; on?: string } = {},
   ): CollectionHealth {
     return this.queries.health(actorId, collectionId, options);
+  }
+
+  // ---- the knowledge map ------------------------------------------------
+  // A thin delegate; the logic lives in graph.ts. Built per call, like the
+  // importer: the service holds nothing between requests, and a map is one
+  // read of the record as the asking actor may see it.
+
+  collectionGraph(actorId: string, collectionId: string): KnowledgeGraph {
+    return new GraphService(this.db, this).graph(actorId, collectionId);
   }
 }

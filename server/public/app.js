@@ -419,6 +419,7 @@ function renderChrome() {
     detectSearch();
     detectAsk();
     detectSources();
+    detectMap();
   } else {
     nav.hidden = true;
     chip.innerHTML = '';
@@ -566,6 +567,10 @@ async function route() {
     if (parts[0] === 'audit') return await render(viewAudit);
     if (parts[0] === 'sources') return await render(viewSources);
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
+    if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
+    if (parts[0] === 'collections' && parts[1] && parts[2] === 'map') {
+      return await render(() => viewMap(parts[1]));
+    }
     if (parts[0] === 'collections' && parts[1]) return await render(() => viewCollection(parts[1]));
     if (parts[0] === 'pages' && parts[1]) {
       const id = parts[1];
@@ -837,6 +842,7 @@ async function viewCollection(id) {
             <p class="muted">${esc(collection.description || 'No description.')}</p>
           </div>
           <div class="actions">
+            <span id="map-affordance"></span>
             <span id="ask-affordance"></span>
             <button class="btn primary" id="main-new-page">New page</button>
           </div>
@@ -881,6 +887,7 @@ async function viewCollection(id) {
 
   wireSidebar(collection, tree);
   app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
+  renderMapAffordance('map-affordance', collection.id);
   renderAskAffordance('ask-affordance', collection.id);
 
   app.querySelector('#add-member-form').addEventListener('submit', async (e) => {
@@ -2489,6 +2496,891 @@ async function viewAsk(collectionId = null) {
     location.hash = e.target.value ? `#/ask/${e.target.value}` : '#/ask';
   });
   input.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge map
+//
+// The contract (server/src/graph.ts):
+//   GET /collections/:id/graph
+//     -> { collectionId, generatedAt, counts, truncated,
+//          nodes: [ { id, kind: 'page', title, type, status, collectionId,
+//                     parentId, external, provenance, origin, references, version }
+//                 | { id, kind: 'source', name, type, status: null, authMode,
+//                     freshnessWindowMs, provenance, references } ],
+//          edges: [ { from, to, kind: 'child' | 'link' | 'reference' } ] }
+//
+// Two questions, one screen. HOW IS THIS KNOWLEDGE RELATED — and the edges are
+// only ever the explicit graph Canon maintains: the tree, the links people
+// wrote in published bodies, and the reference fields pages carry. Nothing here
+// draws a similarity edge, because Canon does not have one to draw
+// (DATA-BACKBONE.md §5). WHERE DOES ITS MATERIAL COME FROM — authored here,
+// imported from another system, or federated from a source that still owns the
+// fact (§6). Status is on every node, because standing is what separates the
+// record from notes.
+//
+// The picture is drawn as inline SVG with a deterministic layered layout: a
+// tidy tree seeded by the page tree, linked pages from other collections in the
+// column past its deepest branch, and sources in a column of their own on the
+// right. The same record therefore maps the same way every time — no jitter, no
+// re-randomising, nothing to re-read on every reload. A force simulation would
+// have been fewer lines and a worse answer: a map a reader cannot recognise
+// twice is a map they cannot trust.
+//
+// And a picture nobody can read is worse than a list, so the same data renders
+// as a nested list on demand, and by default past MAP_GRAPH_CAP nodes.
+
+const MAP_NODE_W = 178;
+const MAP_NODE_H = 48;
+const MAP_COL_GAP = 86;
+const MAP_ROW_GAP = 16;
+const MAP_ROOT_GAP = 28;
+const MAP_PAD = 28;
+const MAP_ZOOM_MIN = 0.25;
+const MAP_ZOOM_MAX = 2.5;
+// The zoom below which a node's label is no longer readable. Fit never starts
+// below it; a reader may still zoom out past it deliberately.
+const MAP_ZOOM_READABLE = 0.55;
+// Past this many nodes the picture stops being legible at any zoom that still
+// shows a label, so the list — which never stops being legible — is what a
+// reader gets unless they ask for the drawing.
+const MAP_GRAPH_CAP = 140;
+
+const PROVENANCE_LABELS = {
+  authored: 'Authored in Canon',
+  imported: 'Imported',
+  federated: 'Federated',
+};
+const PROVENANCE_HELP = {
+  authored: 'Written here, by a person or an agent. Canon is the record.',
+  imported: 'Migrated in from another system. Canon is the record now — and the system it came from should have been retired, so this set is worth keeping short.',
+  federated: 'Depends on a system that still owns the fact. Canon holds the reference and resolves the value when the page is read; it never copies it.',
+};
+const EDGE_LABELS = { child: 'Tree', link: 'Link', reference: 'Source' };
+const EDGE_HELP = {
+  child: 'Parent to child: where the page sits in the tree.',
+  link: 'A link one published page makes to another. Written by hand, never inferred.',
+  reference: 'A reference field on a page, resolving against a registered external source.',
+};
+
+// Feature detection, exactly as /ask and /sources are detected — with one
+// wrinkle: the map lives under a collection, and `GET /collections/<unknown>/graph`
+// answers 404 whether the ROUTE is missing or the COLLECTION is. Only a
+// collection this actor really has tells the two apart, so the probe asks for
+// one first. No collections at all means nothing to map and nothing to
+// conclude, so that answer is not cached.
+let mapProbe = null;
+
+async function probeMapEndpoint() {
+  let collections;
+  try {
+    const r = await api('GET', '/collections');
+    collections = Array.isArray(r) ? r : (r?.collections ?? []);
+  } catch {
+    return null; // cannot tell; ask again later
+  }
+  const first = collections[0];
+  if (!first?.id) return null;
+  try {
+    await api('GET', `/collections/${encodeURIComponent(first.id)}/graph`);
+    return true;
+  } catch (err) {
+    if (err.status === 0) return null;
+    return err.status !== 404 && err.status !== 405;
+  }
+}
+
+async function detectMap() {
+  if (state.features.map !== true && state.features.map !== false) {
+    mapProbe ??= probeMapEndpoint();
+    const found = await mapProbe;
+    mapProbe = null;
+    if (found !== null && state.features.map !== true && state.features.map !== false) {
+      state.features.map = found;
+    }
+  }
+  const link = document.getElementById('nav-map');
+  if (link) link.hidden = state.features.map !== true;
+  return state.features.map === true;
+}
+
+// The collection view's entry to the map: simply not there when the endpoint
+// is not, like every other detected affordance.
+async function renderMapAffordance(hostId, collectionId) {
+  const host = document.getElementById(hostId);
+  if (!host || !(await detectMap())) return;
+  if (!host.isConnected) return;
+  host.innerHTML = `<a class="btn subtle" href="#/collections/${esc(collectionId)}/map"
+    title="See how this collection hangs together, and where its material comes from">Knowledge map</a>`;
+}
+
+// ---- payload normalisation ------------------------------------------------
+
+function normalizeGraphNode(n) {
+  const kind = n?.kind === 'source' ? 'source' : 'page';
+  const provenance = PROVENANCE_LABELS[n?.provenance] ? n.provenance : kind === 'source' ? 'federated' : 'authored';
+  return {
+    id: String(n?.id ?? ''),
+    kind,
+    title: String((kind === 'source' ? (n?.name ?? n?.title) : (n?.title ?? n?.name)) ?? '(untitled)'),
+    type: n?.type ?? null,
+    status: kind === 'page' ? (n?.status ?? 'draft') : null,
+    collectionId: n?.collectionId ?? null,
+    parentId: n?.parentId ?? null,
+    external: n?.external === true,
+    provenance,
+    origin: n?.origin ?? null,
+    references: Number(n?.references ?? 0) || 0,
+    version: n?.version ?? null,
+    authMode: n?.authMode ?? null,
+    freshnessWindowMs: n?.freshnessWindowMs ?? null,
+  };
+}
+
+function normalizeGraph(g) {
+  const nodes = (Array.isArray(g?.nodes) ? g.nodes : []).map(normalizeGraphNode).filter((n) => n.id);
+  const known = new Set(nodes.map((n) => n.id));
+  const edges = (Array.isArray(g?.edges) ? g.edges : [])
+    .map((e) => ({ from: String(e?.from ?? ''), to: String(e?.to ?? ''), kind: e?.kind }))
+    // An edge to something that is not on the map is dropped rather than drawn
+    // to a placeholder — the server already does this, and the client does not
+    // undo it. A box saying "something you may not see, here" is a disclosure.
+    .filter((e) => EDGE_LABELS[e.kind] && known.has(e.from) && known.has(e.to));
+  return {
+    collectionId: g?.collectionId ?? null,
+    generatedAt: g?.generatedAt ?? null,
+    truncated: g?.truncated === true,
+    counts: g?.counts ?? {},
+    nodes,
+    edges,
+  };
+}
+
+// ---- filtering ------------------------------------------------------------
+
+// "Show me only what's federated" and "show me what's past review" are one
+// click each, and the graph and the list are both drawn from THIS — so they
+// can never disagree about what is on the map.
+function mapVisible(graph, filters) {
+  const provOk = (n) =>
+    filters.provenance.has(n.provenance) ||
+    // A page that was imported AND carries a live reference reads as federated,
+    // so "imported" would otherwise hide part of the migration's own trail.
+    (filters.provenance.has('imported') && !!n.origin);
+  const pages = graph.nodes.filter(
+    (n) => n.kind === 'page' && provOk(n) && filters.status.has(n.status),
+  );
+  const visible = new Map(pages.map((n) => [n.id, n]));
+
+  // A source is on the map because pages depend on it: it appears when at
+  // least one visible page still reaches it by a visible edge.
+  const sourceById = new Map(graph.nodes.filter((n) => n.kind === 'source').map((n) => [n.id, n]));
+  const sources = new Map();
+  const edges = [];
+  for (const e of graph.edges) {
+    if (!filters.edges.has(e.kind)) continue;
+    if (e.kind === 'reference') {
+      const page = visible.get(e.from);
+      const source = sourceById.get(e.to);
+      if (!page || !source || !filters.provenance.has('federated')) continue;
+      sources.set(source.id, source);
+      edges.push(e);
+      continue;
+    }
+    if (!visible.has(e.from) || !visible.has(e.to)) continue;
+    edges.push(e);
+  }
+  const nodes = [...pages, ...sources.values()];
+  return { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])) };
+}
+
+// ---- layout ---------------------------------------------------------------
+//
+// A tidy layered tree, written here rather than imported: one column per depth,
+// siblings stacked in the order the tree shows them, and a parent centred on
+// its children. Everything below is a pure function of the server's payload,
+// and the server orders that payload deterministically — so the same record
+// lands in the same place every time it is drawn.
+
+function mapLayout(visible) {
+  const { nodes, edges } = visible;
+  const pos = new Map();
+  const kids = new Map();
+  const parentOf = new Map();
+  for (const e of edges) {
+    if (e.kind !== 'child') continue;
+    if (parentOf.has(e.to)) continue; // a page has one parent
+    parentOf.set(e.to, e.from);
+    if (!kids.has(e.from)) kids.set(e.from, []);
+    kids.get(e.from).push(e.to);
+  }
+
+  const pages = nodes.filter((n) => n.kind === 'page');
+  const inTree = pages.filter((n) => !n.external);
+  const roots = inTree.filter((n) => !parentOf.has(n.id));
+  const colX = (depth) => depth * (MAP_NODE_W + MAP_COL_GAP);
+
+  let cursor = 0;
+  let maxDepth = 0;
+  const placed = new Set();
+  const place = (id, depth) => {
+    if (placed.has(id)) return pos.get(id)?.y ?? 0;
+    placed.add(id);
+    maxDepth = Math.max(maxDepth, depth);
+    const children = (kids.get(id) ?? []).filter((c) => !placed.has(c));
+    if (!children.length) {
+      const y = cursor;
+      cursor += MAP_NODE_H + MAP_ROW_GAP;
+      pos.set(id, { x: colX(depth), y, depth });
+      return y;
+    }
+    const ys = children.map((c) => place(c, depth + 1));
+    const y = (ys[0] + ys[ys.length - 1]) / 2;
+    pos.set(id, { x: colX(depth), y, depth });
+    return y;
+  };
+  for (const root of roots) {
+    place(root.id, 0);
+    cursor += MAP_ROOT_GAP;
+  }
+  // A page whose parent the filters hid still belongs on the map, at the root.
+  for (const page of inTree) if (!placed.has(page.id)) place(page.id, 0);
+
+  // Pages linked out of this collection sit past the deepest branch, and
+  // sources past those: the eye reads left to right from "our tree" to "what
+  // it reaches".
+  const stack = (ids, depth, desired) => {
+    if (!ids.length) return depth;
+    const wanted = ids
+      .map((id) => ({ id, y: desired(id) }))
+      .sort((a, b) => a.y - b.y || a.id.localeCompare(b.id));
+    let last = -Infinity;
+    for (const item of wanted) {
+      const y = Math.max(item.y, last + MAP_NODE_H + MAP_ROW_GAP);
+      pos.set(item.id, { x: colX(depth), y, depth });
+      last = y;
+    }
+    maxDepth = Math.max(maxDepth, depth);
+    return depth + 1;
+  };
+  const meanOf = (ids) => {
+    const ys = ids.map((id) => pos.get(id)?.y).filter((y) => typeof y === 'number');
+    return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : cursor;
+  };
+  const external = pages.filter((n) => n.external).map((n) => n.id);
+  const nextDepth = stack(external, maxDepth + 1, (id) =>
+    meanOf(edges.filter((e) => e.to === id).map((e) => e.from)),
+  );
+  const sources = nodes.filter((n) => n.kind === 'source').map((n) => n.id);
+  stack(sources, Math.max(nextDepth, maxDepth + 1), (id) =>
+    meanOf(edges.filter((e) => e.kind === 'reference' && e.to === id).map((e) => e.from)),
+  );
+
+  let width = 0;
+  let height = 0;
+  for (const p of pos.values()) {
+    width = Math.max(width, p.x + MAP_NODE_W);
+    height = Math.max(height, p.y + MAP_NODE_H);
+  }
+  return { pos, width: width + MAP_PAD * 2, height: height + MAP_PAD * 2, offset: MAP_PAD };
+}
+
+// ---- drawing ---------------------------------------------------------------
+
+function mapClip(text, max = 24) {
+  const s = String(text ?? '');
+  return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
+}
+
+function mapNodeMeta(n) {
+  if (n.kind === 'source') {
+    return `Source${n.type ? ` · ${n.type}` : ''}`;
+  }
+  const type = TYPE_LABELS[n.type] ?? n.type ?? 'Page';
+  return `${type} · ${STATUS_LABELS[n.status] ?? n.status}`;
+}
+
+function mapNodeLabel(n) {
+  if (n.kind === 'source') {
+    return `${n.title}. External source${n.type ? `, kind ${n.type}` : ''}, referenced by ${n.references} page${n.references === 1 ? '' : 's'}.`;
+  }
+  return `${n.title}. ${mapNodeMeta(n)}. ${PROVENANCE_LABELS[n.provenance]}${n.external ? ', in another collection' : ''}.`;
+}
+
+function mapEdgePath(a, b) {
+  const forward = b.x >= a.x + MAP_NODE_W;
+  const x1 = forward ? a.x + MAP_NODE_W : a.x;
+  const x2 = forward ? b.x : b.x + MAP_NODE_W;
+  const y1 = a.y + MAP_NODE_H / 2;
+  const y2 = b.y + MAP_NODE_H / 2;
+  const d = Math.max(30, Math.abs(x2 - x1) / 2);
+  const c1 = forward ? x1 + d : x1 - d;
+  const c2 = forward ? x2 - d : x2 + d;
+  return `M ${x1} ${y1} C ${c1} ${y1} ${c2} ${y2} ${x2} ${y2}`;
+}
+
+function mapSvgHTML(visible, layout) {
+  const { pos, offset } = layout;
+  const marker = (kind) => `
+    <marker id="map-arrow-${kind}" class="map-arrow map-arrow-${kind}" viewBox="0 0 8 8"
+      refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 8 4 L 0 8 z"></path>
+    </marker>`;
+  const edges = visible.edges
+    .map((e) => {
+      const a = pos.get(e.from);
+      const b = pos.get(e.to);
+      if (!a || !b) return '';
+      return `<path class="map-edge map-edge-${esc(e.kind)}" d="${mapEdgePath(a, b)}"
+        marker-end="url(#map-arrow-${esc(e.kind)})"
+        data-from="${esc(e.from)}" data-to="${esc(e.to)}"></path>`;
+    })
+    .join('');
+  const nodes = visible.nodes
+    .map((n) => {
+      const p = pos.get(n.id);
+      if (!p) return '';
+      const href = n.kind === 'source' ? '#/sources' : `#/pages/${encodeURIComponent(n.id)}`;
+      const cls = [
+        'map-node',
+        `map-node-${n.kind}`,
+        `pv-${esc(n.provenance)}`,
+        n.kind === 'page' ? `st-${esc(n.status)}` : 'st-source',
+        n.external ? 'is-external' : '',
+      ].join(' ');
+      return `<a class="${cls}" href="${esc(href)}" tabindex="0" data-node="${esc(n.id)}"
+        transform="translate(${p.x} ${p.y})" aria-label="${esc(mapNodeLabel(n))}">
+        <title>${esc(mapNodeLabel(n))}</title>
+        <rect class="map-node-box" width="${MAP_NODE_W}" height="${MAP_NODE_H}" rx="${n.kind === 'source' ? 22 : 10}"></rect>
+        <rect class="map-node-stripe" x="0" y="0" width="4" height="${MAP_NODE_H}" rx="2"></rect>
+        <text class="map-node-title" x="15" y="21">${esc(mapClip(n.title))}</text>
+        <text class="map-node-meta" x="15" y="37">${esc(mapClip(mapNodeMeta(n), 28))}</text>
+      </a>`;
+    })
+    .join('');
+  return `
+    <svg class="map-svg" id="map-svg" tabindex="0" role="application"
+      aria-label="Knowledge map. Drag to pan, scroll or use the buttons to zoom, Tab to move between pages.">
+      <defs>${marker('child')}${marker('link')}${marker('reference')}</defs>
+      <g id="map-canvas">
+        <g class="map-edges" transform="translate(${offset} ${offset})">${edges}</g>
+        <g class="map-nodes" transform="translate(${offset} ${offset})">${nodes}</g>
+      </g>
+    </svg>`;
+}
+
+// ---- the list, which is the same data ---------------------------------------
+
+function mapProvTag(n) {
+  const detail =
+    n.provenance === 'imported' && n.origin
+      ? ` from ${n.origin.system}`
+      : '';
+  return `<span class="map-prov map-prov-${esc(n.provenance)}"
+    title="${esc(PROVENANCE_HELP[n.provenance])}">${esc(PROVENANCE_LABELS[n.provenance])}${esc(detail)}</span>`;
+}
+
+function mapOriginNote(n) {
+  if (!n.origin) return '';
+  return `<span class="map-origin muted" title="A migrated source should be retired; this page still traces to one.">migrated from ${esc(n.origin.system)} · ${esc(n.origin.file)}</span>`;
+}
+
+function mapListHTML(visible) {
+  const { nodes, edges } = visible;
+  const byId = visible.byId;
+  const kids = new Map();
+  const parentOf = new Map();
+  for (const e of edges) {
+    if (e.kind !== 'child') continue;
+    if (parentOf.has(e.to)) continue;
+    parentOf.set(e.to, e.from);
+    if (!kids.has(e.from)) kids.set(e.from, []);
+    kids.get(e.from).push(e.to);
+  }
+  const linksFrom = new Map();
+  const refsFrom = new Map();
+  for (const e of edges) {
+    const bucket = e.kind === 'link' ? linksFrom : e.kind === 'reference' ? refsFrom : null;
+    if (!bucket) continue;
+    if (!bucket.has(e.from)) bucket.set(e.from, []);
+    bucket.get(e.from).push(e.to);
+  }
+
+  const row = (n) => {
+    const links = (linksFrom.get(n.id) ?? []).map((id) => byId.get(id)).filter(Boolean);
+    const refs = (refsFrom.get(n.id) ?? []).map((id) => byId.get(id)).filter(Boolean);
+    return `
+      <div class="map-row">
+        <a class="map-row-title" href="#/pages/${esc(n.id)}">${esc(n.title)}</a>
+        ${badge(n.status, 'sm')}
+        <span class="muted map-row-type">${esc(TYPE_LABELS[n.type] ?? n.type ?? '')}</span>
+        ${mapProvTag(n)}
+        ${n.external ? '<span class="map-external-tag" title="Linked from this collection, but held in another">other collection</span>' : ''}
+        ${mapOriginNote(n)}
+        ${links.length ? `<span class="map-row-edges">links to ${links.map((t) => `<a href="#/pages/${esc(t.id)}">${esc(t.title)}</a>`).join(', ')}</span>` : ''}
+        ${refs.length ? `<span class="map-row-edges">reads from ${refs.map((t) => `<span class="map-source-name">${esc(t.title)}</span>`).join(', ')}</span>` : ''}
+      </div>`;
+  };
+
+  const branch = (ids, depth) => {
+    if (!ids.length || depth > 24) return '';
+    return `<ul class="map-list">${ids
+      .map((id) => {
+        const n = byId.get(id);
+        if (!n) return '';
+        return `<li>${row(n)}${branch(kids.get(id) ?? [], depth + 1)}</li>`;
+      })
+      .join('')}</ul>`;
+  };
+
+  const pages = nodes.filter((n) => n.kind === 'page');
+  const roots = pages.filter((n) => !n.external && !parentOf.has(n.id)).map((n) => n.id);
+  const external = pages.filter((n) => n.external);
+  const sources = nodes.filter((n) => n.kind === 'source');
+  const referencedBy = (sourceId) =>
+    edges.filter((e) => e.kind === 'reference' && e.to === sourceId).map((e) => byId.get(e.from)).filter(Boolean);
+
+  return `
+    <div class="map-list-wrap">
+      <h2 class="h-small">The tree${roots.length ? '' : ' — nothing matches these filters'}</h2>
+      ${branch(roots, 0)}
+      ${external.length ? `
+        <h2 class="h-small">Linked from elsewhere in the record</h2>
+        <ul class="map-list">${external.map((n) => `<li>${row(n)}</li>`).join('')}</ul>` : ''}
+      ${sources.length ? `
+        <h2 class="h-small">Sources this collection reads from</h2>
+        <ul class="map-list map-source-list">
+          ${sources.map((s) => `
+            <li>
+              <div class="map-row">
+                <span class="map-row-title map-source-name">${esc(s.title)}</span>
+                <span class="muted map-row-type">${esc(s.type ?? 'source')}</span>
+                ${s.authMode ? `<span class="kind-tag${s.authMode === 'service' ? ' ref-service' : ''}">${esc(s.authMode === 'service' ? 'service-resolved' : 'per asker')}</span>` : ''}
+                ${s.freshnessWindowMs !== null ? `<span class="muted">fresh for ${esc(fmtDuration(s.freshnessWindowMs))}</span>` : ''}
+                <span class="map-row-edges">read by ${referencedBy(s.id).map((p) => `<a href="#/pages/${esc(p.id)}">${esc(p.title)}</a>`).join(', ') || '—'}</span>
+              </div>
+            </li>`).join('')}
+        </ul>` : ''}
+    </div>`;
+}
+
+// ---- legend and filters ------------------------------------------------------
+
+function mapLegendHTML() {
+  // The swatch carries its own arrowhead rather than borrowing the map's: the
+  // legend is shown beside the list too, where the map's <defs> do not exist.
+  const swatch = (kind) => `<svg class="map-legend-edge" viewBox="0 0 42 10" aria-hidden="true">
+    <defs><marker id="map-legend-arrow-${kind}" class="map-arrow map-arrow-${kind}" viewBox="0 0 8 8"
+      refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 8 4 L 0 8 z"></path></marker></defs>
+    <path class="map-edge map-edge-${kind}" d="M 1 5 L 34 5" marker-end="url(#map-legend-arrow-${kind})"></path></svg>`;
+  return `
+    <section class="panel map-legend">
+      <h2 class="h-small">How to read this map</h2>
+      <div class="map-legend-grid">
+        <div>
+          <h3 class="map-legend-h">Nodes</h3>
+          <p class="map-legend-item"><span class="map-chip map-chip-page"></span> A page in the record.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-source"></span> A registered external source. Canon never copies what it owns.</p>
+          <p class="map-legend-item"><span class="map-chip map-chip-external"></span> A page in another collection, reached by a link.</p>
+        </div>
+        <div>
+          <h3 class="map-legend-h">Edges — the explicit graph, never an inferred one</h3>
+          ${['child', 'link', 'reference'].map((k) => `
+            <p class="map-legend-item">${swatch(k)} <strong>${esc(EDGE_LABELS[k])}</strong> — ${esc(EDGE_HELP[k])}</p>`).join('')}
+        </div>
+        <div>
+          <h3 class="map-legend-h">Where the material comes from</h3>
+          ${['authored', 'imported', 'federated'].map((p) => `
+            <p class="map-legend-item"><span class="map-chip pv-${p}"></span>
+              <strong>${esc(PROVENANCE_LABELS[p])}</strong> — ${esc(PROVENANCE_HELP[p])}</p>`).join('')}
+          <p class="map-legend-note muted">A page that was imported and also reads from a live source is drawn as
+            federated; its migration origin is still named on the node and in the list.</p>
+        </div>
+        <div>
+          <h3 class="map-legend-h">Standing</h3>
+          <p class="map-legend-item">The bar down a node's left edge is its status, in the badges the rest of Canon uses:
+            ${['draft', 'in_review', 'canonical', 'needs_update'].map((s) => badge(s, 'sm')).join(' ')}.</p>
+          <p class="map-legend-note muted">Sources carry no status: standing belongs to the record, and a source is
+            not part of it.</p>
+        </div>
+      </div>
+    </section>`;
+}
+
+function mapFiltersHTML(graph, filters) {
+  const count = (fn) => graph.nodes.filter(fn).length;
+  const box = (group, value, label, n, help) => `
+    <label class="map-check" title="${esc(help ?? '')}">
+      <input type="checkbox" data-filter="${esc(group)}" value="${esc(value)}" ${filters[group].has(value) ? 'checked' : ''}>
+      <span>${label}${n === null ? '' : ` <span class="muted">${n}</span>`}</span>
+    </label>`;
+  const statuses = ['draft', 'in_review', 'canonical', 'needs_update', 'archived'].filter((s) =>
+    graph.nodes.some((n) => n.kind === 'page' && n.status === s),
+  );
+  return `
+    <div class="map-filters">
+      <fieldset class="map-filter">
+        <legend>Provenance</legend>
+        ${['authored', 'imported', 'federated']
+          .map((p) => box('provenance', p, esc(PROVENANCE_LABELS[p]),
+            count((n) => n.kind === 'page' && (n.provenance === p || (p === 'imported' && !!n.origin))),
+            PROVENANCE_HELP[p]))
+          .join('')}
+      </fieldset>
+      <fieldset class="map-filter">
+        <legend>Status</legend>
+        ${statuses
+          .map((s) => box('status', s, badge(s, 'sm'), count((n) => n.kind === 'page' && n.status === s)))
+          .join('')}
+      </fieldset>
+      <fieldset class="map-filter">
+        <legend>Edges</legend>
+        ${['child', 'link', 'reference']
+          .map((k) => box('edges', k, esc(EDGE_LABELS[k]), graph.edges.filter((e) => e.kind === k).length, EDGE_HELP[k]))
+          .join('')}
+      </fieldset>
+    </div>`;
+}
+
+// ---- the view ----------------------------------------------------------------
+
+function mapUnavailableHTML() {
+  return `
+    <div class="empty-state">
+      <h2>The knowledge map is not available yet</h2>
+      <p>This Canon server does not serve <code>/collections/:id/graph</code>. The tree in the
+        sidebar and each page's related list still show how the record hangs together.</p>
+      <p><a class="btn" href="#/">Back to collections</a></p>
+    </div>`;
+}
+
+async function viewMap(collectionId) {
+  if (!(await detectMap())) {
+    app.innerHTML = `<div class="page-wide">${mapUnavailableHTML()}</div>`;
+    return;
+  }
+  document.querySelectorAll('#topnav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === 'map'));
+
+  const collections = await api('GET', '/collections').catch(() => []);
+  const list = Array.isArray(collections) ? collections : [];
+  if (!collectionId) {
+    if (list.length === 1) {
+      location.replace(`#/collections/${encodeURIComponent(list[0].id)}/map`);
+      return;
+    }
+    app.innerHTML = `
+      <div class="page-wide">
+        <div class="page-head"><div>
+          <h1>Knowledge map</h1>
+          <p class="muted map-lede">Pick a collection to see how its pages hang together — the tree, the
+            links people wrote, and the outside systems it still reads from.</p>
+        </div></div>
+        ${list.length ? `
+          <div class="card-grid">
+            ${list.map((c) => `
+              <a class="card collection-card" href="#/collections/${esc(c.id)}/map">
+                <h3>${esc(c.name)}</h3>
+                <p class="muted">${esc(c.description || 'No description.')}</p>
+              </a>`).join('')}
+          </div>` : `
+          <div class="empty-state"><h2>Nothing to map yet</h2>
+            <p>Create a collection and add a few pages, and its shape will be here.</p>
+            <p><a class="btn" href="#/">Back to collections</a></p></div>`}
+      </div>`;
+    return;
+  }
+
+  let collection;
+  let raw;
+  try {
+    [collection, raw] = await Promise.all([
+      api('GET', `/collections/${collectionId}`),
+      api('GET', `/collections/${collectionId}/graph`),
+    ]);
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) {
+      state.features.map = false;
+      const link = document.getElementById('nav-map');
+      if (link) link.hidden = true;
+      app.innerHTML = `<div class="page-wide">${mapUnavailableHTML()}</div>`;
+      return;
+    }
+    throw err;
+  }
+
+  const graph = normalizeGraph(raw);
+  const keep = state.map && state.map.collectionId === collectionId ? state.map : null;
+  state.map = {
+    collectionId,
+    collection,
+    graph,
+    filters: keep?.filters ?? {
+      provenance: new Set(['authored', 'imported', 'federated']),
+      status: new Set(['draft', 'in_review', 'canonical', 'needs_update', 'archived']),
+      edges: new Set(['child', 'link', 'reference']),
+    },
+    // A picture nobody can read is worse than a list: past the cap the list is
+    // what a reader gets, and the toggle says so rather than hiding it.
+    view: keep?.view ?? (graph.nodes.length > MAP_GRAPH_CAP ? 'list' : 'graph'),
+    transform: { x: 0, y: 0, k: 1 },
+    layout: null,
+  };
+
+  const total = graph.nodes.length;
+  app.innerHTML = `
+    <div class="page-wide map-page">
+      <p class="breadcrumb"><a href="#/collections/${esc(collectionId)}">${esc(collection.name)}</a></p>
+      <div class="page-head">
+        <div>
+          <h1>Knowledge map</h1>
+          <p class="muted map-lede">How <strong>${esc(collection.name)}</strong> hangs together, and where its
+            material comes from. Every edge here is one Canon actually holds — the page tree, the links people
+            wrote, and the reference fields pages carry. Nothing is inferred.</p>
+        </div>
+        <div class="actions">
+          <div class="map-modes" role="group" aria-label="How to show the map">
+            <button class="btn subtle" id="map-mode-graph" aria-pressed="false">Graph</button>
+            <button class="btn subtle" id="map-mode-list" aria-pressed="false">List</button>
+          </div>
+          ${list.length > 1 ? `
+            <label class="map-scope"><span class="sr-only">Collection</span>
+              <select id="map-collection">
+                ${list.map((c) => `<option value="${esc(c.id)}" ${c.id === collectionId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+              </select>
+            </label>` : ''}
+        </div>
+      </div>
+
+      ${graph.truncated ? `<div class="notice">This collection is larger than one map can hold, so the picture is
+        partial: it stops at the server's cap. The tree and search still reach every page.</div>` : ''}
+      ${total > MAP_GRAPH_CAP ? `<div class="notice">${total} nodes is more than a drawing can show legibly, so the
+        list is what opens by default. The graph is still one click away.</div>` : ''}
+
+      ${mapFiltersHTML(graph, state.map.filters)}
+      <p class="map-summary muted" id="map-summary"></p>
+      <div class="map-stage" id="map-stage"></div>
+      ${mapLegendHTML()}
+    </div>`;
+
+  app.querySelector('#map-collection')?.addEventListener('change', (e) => {
+    location.hash = `#/collections/${encodeURIComponent(e.target.value)}/map`;
+  });
+  app.querySelector('#map-mode-graph').addEventListener('click', () => setMapView('graph'));
+  app.querySelector('#map-mode-list').addEventListener('click', () => setMapView('list'));
+  app.querySelector('.map-filters').addEventListener('change', (e) => {
+    const group = e.target?.dataset?.filter;
+    if (!group) return;
+    const set = state.map.filters[group];
+    if (e.target.checked) set.add(e.target.value);
+    else set.delete(e.target.value);
+    renderMapStage();
+  });
+  renderMapStage();
+}
+
+function setMapView(view) {
+  if (!state.map) return;
+  state.map.view = view;
+  renderMapStage();
+}
+
+function renderMapStage() {
+  const stage = document.getElementById('map-stage');
+  const summary = document.getElementById('map-summary');
+  if (!stage || !state.map) return;
+  const { graph, filters, view } = state.map;
+  const visible = mapVisible(graph, filters);
+  const pages = visible.nodes.filter((n) => n.kind === 'page').length;
+  const sources = visible.nodes.length - pages;
+
+  document.getElementById('map-mode-graph')?.setAttribute('aria-pressed', String(view === 'graph'));
+  document.getElementById('map-mode-list')?.setAttribute('aria-pressed', String(view === 'list'));
+  document.getElementById('map-mode-graph')?.classList.toggle('is-on', view === 'graph');
+  document.getElementById('map-mode-list')?.classList.toggle('is-on', view === 'list');
+
+  if (summary) {
+    const parts = [
+      `${pages} page${pages === 1 ? '' : 's'}`,
+      `${sources} source${sources === 1 ? '' : 's'}`,
+      `${visible.edges.length} edge${visible.edges.length === 1 ? '' : 's'}`,
+    ];
+    const hidden = graph.nodes.length - visible.nodes.length;
+    summary.innerHTML = `${esc(parts.join(' · '))}${hidden > 0 ? ` · <span class="muted">${hidden} hidden by the filters</span>` : ''}`;
+  }
+
+  if (!visible.nodes.length) {
+    stage.className = 'map-stage is-empty';
+    stage.innerHTML = `<div class="empty-state"><h2>Nothing matches these filters</h2>
+      <p>Widen the filters above to bring the record back into view.</p></div>`;
+    return;
+  }
+
+  if (view === 'list') {
+    stage.className = 'map-stage is-list';
+    stage.innerHTML = mapListHTML(visible);
+    return;
+  }
+
+  const layout = mapLayout(visible);
+  state.map.layout = layout;
+  stage.className = 'map-stage is-graph';
+  stage.innerHTML = `
+    <div class="map-controls">
+      <button class="btn subtle" id="map-zoom-out" aria-label="Zoom out">−</button>
+      <button class="btn subtle" id="map-zoom-in" aria-label="Zoom in">+</button>
+      <button class="btn subtle" id="map-fit">Fit</button>
+    </div>
+    <div class="map-detail" id="map-detail" aria-live="polite"></div>
+    ${mapSvgHTML(visible, layout)}`;
+  wireMapStage(visible);
+}
+
+function applyMapTransform() {
+  const canvas = document.getElementById('map-canvas');
+  if (!canvas || !state.map) return;
+  const { x, y, k } = state.map.transform;
+  canvas.setAttribute('transform', `translate(${x} ${y}) scale(${k})`);
+}
+
+function fitMap() {
+  const svg = document.getElementById('map-svg');
+  if (!svg || !state.map?.layout) return;
+  const { width, height } = state.map.layout;
+  const w = svg.clientWidth || 900;
+  const h = svg.clientHeight || 520;
+  // Fit, but never below the zoom at which a label stops being a label: past
+  // that, "fitting" fits a blur, and the honest move is to show the top-left of
+  // the map at a readable size and let the reader pan — or read the list.
+  const k = Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, MAP_ZOOM_READABLE, Math.min(w / width, h / height, 1)));
+  state.map.transform = {
+    k,
+    x: width * k <= w ? (w - width * k) / 2 : 0,
+    y: height * k <= h ? (h - height * k) / 2 : 0,
+  };
+  applyMapTransform();
+}
+
+function mapDetailHTML(n, visible) {
+  if (!n) {
+    return `<p class="muted">Hover or tab to a node for its detail. Click one to open it.</p>`;
+  }
+  if (n.kind === 'source') {
+    const readers = visible.edges.filter((e) => e.kind === 'reference' && e.to === n.id).length;
+    return `
+      <h3 class="map-detail-title">${esc(n.title)}</h3>
+      <p class="map-detail-line"><span class="role-tag">${esc(n.type ?? 'source')}</span>
+        ${n.authMode ? `<span class="kind-tag${n.authMode === 'service' ? ' ref-service' : ''}">${esc(n.authMode === 'service' ? 'service-resolved' : 'per asker')}</span>` : ''}</p>
+      <p class="map-detail-line muted">An external system that still owns its facts. ${readers} page${readers === 1 ? '' : 's'} on this map read from it${n.freshnessWindowMs !== null ? `, fresh for ${esc(fmtDuration(n.freshnessWindowMs))}` : ''}.</p>`;
+  }
+  const links = visible.edges.filter((e) => e.kind === 'link' && e.from === n.id).length;
+  const backlinks = visible.edges.filter((e) => e.kind === 'link' && e.to === n.id).length;
+  return `
+    <h3 class="map-detail-title">${esc(n.title)}</h3>
+    <p class="map-detail-line">${badge(n.status, 'sm')}
+      <span class="muted">${esc(TYPE_LABELS[n.type] ?? n.type ?? '')}</span>
+      ${n.version ? `<span class="citation-version">v${esc(n.version)}</span>` : '<span class="muted">never published</span>'}
+      ${n.external ? '<span class="map-external-tag">other collection</span>' : ''}</p>
+    <p class="map-detail-line">${mapProvTag(n)}</p>
+    ${n.origin ? `<p class="map-detail-line muted">Migrated from ${esc(n.origin.system)} · ${esc(n.origin.file)}${n.origin.at ? ` · ${esc(fmtDateTime(n.origin.at))}` : ''}. A migrated source should have been retired.</p>` : ''}
+    ${n.references ? `<p class="map-detail-line muted">Reads ${n.references} value${n.references === 1 ? '' : 's'} from outside Canon.</p>` : ''}
+    <p class="map-detail-line muted">${links} link${links === 1 ? '' : 's'} out · ${backlinks} in</p>`;
+}
+
+function wireMapStage(visible) {
+  const svg = document.getElementById('map-svg');
+  const detail = document.getElementById('map-detail');
+  if (!svg) return;
+  fitMap();
+  if (detail) detail.innerHTML = mapDetailHTML(null, visible);
+
+  const show = (id) => {
+    if (!detail) return;
+    detail.innerHTML = mapDetailHTML(visible.byId.get(id) ?? null, visible);
+    svg.querySelectorAll('.map-node.is-active').forEach((el) => el.classList.remove('is-active'));
+    svg.querySelectorAll('.map-edge.is-active').forEach((el) => el.classList.remove('is-active'));
+    const node = svg.querySelector(`[data-node="${cssEscape(id)}"]`);
+    if (node) node.classList.add('is-active');
+    svg.querySelectorAll('.map-edge').forEach((el) => {
+      if (el.dataset.from === id || el.dataset.to === id) el.classList.add('is-active');
+    });
+  };
+  const over = (e) => {
+    const node = e.target.closest?.('[data-node]');
+    if (node) show(node.dataset.node);
+  };
+  svg.addEventListener('mouseover', over);
+  svg.addEventListener('focusin', over);
+
+  // Pan: drag anywhere that is not a node. A drag that moved is not a click,
+  // so dragging across a node never navigates.
+  let dragging = null;
+  svg.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest?.('a.map-node')) return;
+    dragging = { x: e.clientX, y: e.clientY, ox: state.map.transform.x, oy: state.map.transform.y };
+    svg.setPointerCapture(e.pointerId);
+    svg.classList.add('is-panning');
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    state.map.transform.x = dragging.ox + (e.clientX - dragging.x);
+    state.map.transform.y = dragging.oy + (e.clientY - dragging.y);
+    applyMapTransform();
+  });
+  const endDrag = (e) => {
+    if (!dragging) return;
+    dragging = null;
+    svg.classList.remove('is-panning');
+    try { svg.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  };
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+
+  const zoomAbout = (factor, cx, cy) => {
+    const t = state.map.transform;
+    const k = Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, t.k * factor));
+    const ratio = k / t.k;
+    state.map.transform = { k, x: cx - (cx - t.x) * ratio, y: cy - (cy - t.y) * ratio };
+    applyMapTransform();
+  };
+  svg.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const box = svg.getBoundingClientRect();
+    zoomAbout(Math.exp(-e.deltaY * 0.0015), e.clientX - box.left, e.clientY - box.top);
+  }, { passive: false });
+
+  const centre = () => [svg.clientWidth / 2, svg.clientHeight / 2];
+  document.getElementById('map-zoom-in')?.addEventListener('click', () => zoomAbout(1.25, ...centre()));
+  document.getElementById('map-zoom-out')?.addEventListener('click', () => zoomAbout(0.8, ...centre()));
+  document.getElementById('map-fit')?.addEventListener('click', fitMap);
+
+  // Keyboard: the arrows pan, +/- zoom, 0 fits. Every node is already a link
+  // in the tab order, so Tab and Enter walk and open the record without a mouse.
+  svg.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 160 : 60;
+    const moves = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
+    if (moves[e.key]) {
+      e.preventDefault();
+      state.map.transform.x += moves[e.key][0];
+      state.map.transform.y += moves[e.key][1];
+      applyMapTransform();
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      zoomAbout(1.25, ...centre());
+    } else if (e.key === '-') {
+      e.preventDefault();
+      zoomAbout(0.8, ...centre());
+    } else if (e.key === '0') {
+      e.preventDefault();
+      fitMap();
+    }
+  });
+  // The layout is a pure function of the data, so a resize only re-fits it —
+  // the picture itself never moves under the reader. One listener at a time,
+  // and it no-ops once the map has been navigated away from.
+  if (state.map.resize) window.removeEventListener('resize', state.map.resize);
+  state.map.resize = () => { if (document.getElementById('map-svg')) fitMap(); };
+  window.addEventListener('resize', state.map.resize);
 }
 
 // ---------------------------------------------------------------------------

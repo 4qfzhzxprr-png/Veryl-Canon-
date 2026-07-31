@@ -1041,6 +1041,237 @@ label.check input { width: auto; display: inline; margin: 0; }
 
 .modal [data-service-warn] { margin-top: 0.9rem; font-size: 0.86rem; }
 
+/* ---------- knowledge map ------------------------------------------------ */
+
+/* The map borrows the whole visual language rather than inventing one: the
+   surface, border and radius of a panel, the status badge colours for standing,
+   and the accent for the one thing the accent already means — Canon's own mark.
+   Provenance is a fill tint, standing is the bar down a node's left edge, and
+   both are spelled out in the legend, because a map has to teach itself. */
+
+.map-lede { margin: 0.35rem 0 0; max-width: 52rem; }
+.map-summary { margin: 0.15rem 0 0.7rem; font-size: 0.84rem; }
+
+.map-modes { display: inline-flex; gap: 0.15rem; border: 1px solid var(--border); border-radius: 8px; padding: 0.12rem; }
+.map-modes .btn { border-radius: 6px; }
+.map-modes .btn.is-on { background: var(--accent-soft); color: var(--accent); }
+
+.map-scope select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+}
+
+.map-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0.9rem 0 0.4rem; }
+.map-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+  padding: 0.35rem 0.85rem 0.55rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.map-filter legend {
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+.map-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.map-check input { width: auto; display: inline; margin: 0; }
+.map-check:hover { color: var(--accent); }
+
+.map-stage {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin: 0 0 1.25rem;
+}
+.map-stage.is-graph { position: relative; height: min(68vh, 640px); overflow: hidden; }
+.map-stage.is-list { padding: 1.1rem 1.25rem; }
+.map-stage.is-empty { border-style: dashed; border-color: var(--border-strong); padding: 0.5rem; }
+.map-stage.is-empty .empty-state { border: none; background: none; margin: 0; }
+
+.map-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.map-svg.is-panning { cursor: grabbing; }
+.map-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.map-controls {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.15rem;
+}
+
+.map-detail {
+  position: absolute;
+  left: 0.6rem;
+  bottom: 0.6rem;
+  z-index: 2;
+  max-width: min(23rem, calc(100% - 1.2rem));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.84rem;
+}
+.map-detail-title { margin: 0 0 0.25rem; font-size: 0.95rem; font-weight: 650; overflow-wrap: anywhere; }
+.map-detail-line { margin: 0.2rem 0; display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.map-detail p:last-child { margin-bottom: 0; }
+
+/* nodes */
+.map-node { cursor: pointer; }
+.map-node-box {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  transition: stroke 0.12s ease;
+}
+.map-node-title { font-family: var(--sans); font-size: 12.5px; font-weight: 600; fill: var(--text); }
+.map-node-meta { font-family: var(--sans); font-size: 10.5px; fill: var(--muted); }
+.map-node:hover .map-node-box, .map-node.is-active .map-node-box { stroke: var(--accent); stroke-width: 1.6; }
+.map-node:focus { outline: none; }
+.map-node:focus-visible .map-node-box { stroke: var(--accent); stroke-width: 2.4; }
+
+/* provenance: a tint, never a new hue */
+.map-node.pv-authored .map-node-box { fill: var(--surface-2); }
+.map-node.pv-imported .map-node-box { fill: var(--amber-soft); }
+.map-node.pv-federated .map-node-box { fill: var(--accent-soft); }
+/* a page held in another collection: same tint, dashed edge */
+.map-node.is-external .map-node-box { stroke-dasharray: 5 3; }
+/* a source is not a page: pill-shaped, dashed, and never carries a status bar */
+.map-node-source .map-node-box { stroke: var(--accent); stroke-dasharray: 4 3; }
+.map-node-source .map-node-stripe { display: none; }
+
+/* standing: the badge palette, as a bar down the left edge */
+.map-node-stripe { fill: var(--border-strong); }
+.map-node.st-draft .map-node-stripe { fill: var(--border-strong); }
+.map-node.st-in_review .map-node-stripe { fill: var(--amber); }
+.map-node.st-canonical .map-node-stripe { fill: var(--accent); }
+.map-node.st-needs_update .map-node-stripe { fill: var(--amber); }
+.map-node.st-archived .map-node-stripe { fill: var(--muted); }
+
+/* edges: three kinds, three weights */
+.map-edge { fill: none; stroke-width: 1.4; }
+.map-edge-child { stroke: var(--border-strong); }
+.map-edge-link { stroke: var(--accent); stroke-dasharray: 6 4; opacity: 0.85; }
+.map-edge-reference { stroke: var(--amber); stroke-dasharray: 2 3; }
+.map-edge.is-active { stroke-width: 2.4; opacity: 1; }
+.map-arrow path { stroke: none; }
+.map-arrow-child path { fill: var(--border-strong); }
+.map-arrow-link path { fill: var(--accent); }
+.map-arrow-reference path { fill: var(--amber); }
+
+/* legend */
+.map-legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.5rem 2rem;
+}
+.map-legend-h {
+  font-size: 0.78rem;
+  font-weight: 650;
+  margin: 0 0 0.35rem;
+  color: var(--text);
+}
+/* The swatch sits in the text flow rather than in a flex row, so a long
+   explanation wraps under itself instead of pushing the swatch onto its own
+   line — the legend has to read as prose, not as a broken table. */
+.map-legend-item {
+  margin: 0.3rem 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.map-legend-item strong { color: var(--text); font-weight: 600; }
+.map-legend-note { font-size: 0.8rem; margin: 0.5rem 0 0; }
+.map-legend-edge { width: 42px; height: 10px; vertical-align: -1px; margin-right: 0.35rem; }
+.map-chip {
+  display: inline-block;
+  width: 1.5rem;
+  height: 0.85rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  vertical-align: -1px;
+  margin-right: 0.35rem;
+}
+.map-chip.pv-authored { background: var(--surface-2); }
+.map-chip.pv-imported { background: var(--amber-soft); }
+.map-chip.pv-federated { background: var(--accent-soft); }
+.map-chip-page { background: var(--surface-2); }
+.map-chip-source { background: var(--accent-soft); border: 1px dashed var(--accent); border-radius: 99px; }
+.map-chip-external { background: var(--surface-2); border-style: dashed; }
+
+/* the list fallback: the same data, and never less of it */
+.map-list, .map-list ul { list-style: none; margin: 0; padding: 0; }
+.map-list ul { padding-left: 1rem; border-left: 1px solid var(--border); margin-left: 0.5rem; }
+.map-list li { margin: 0.1rem 0; }
+.map-list-wrap .h-small { margin: 1.1rem 0 0.5rem; }
+.map-list-wrap .h-small:first-child { margin-top: 0; }
+.map-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  padding: 0.22rem 0.35rem;
+  border-radius: 6px;
+}
+.map-row:hover { background: var(--surface-2); }
+.map-row-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.map-row-type { font-size: 0.82rem; }
+.map-row-edges { font-size: 0.8rem; color: var(--muted); }
+.map-row-edges a { color: var(--accent); }
+.map-source-name { font-weight: 600; overflow-wrap: anywhere; }
+.map-origin { font-size: 0.78rem; }
+
+.map-prov {
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  border-radius: 99px;
+  padding: 0.04rem 0.5rem;
+  white-space: nowrap;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+}
+.map-prov-imported { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+.map-prov-federated { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.map-external-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: 99px;
+  padding: 0.04rem 0.45rem;
+  white-space: nowrap;
+}
+
 /* ---------- toasts ------------------------------------------------------ */
 
 .toasts {
@@ -1114,4 +1345,10 @@ label.check input { width: auto; display: inline; margin: 0; }
   .field-pair { flex-direction: column; align-items: stretch; }
   .field-pair label:last-child { flex: 1 1 auto; }
   .source-mode { max-width: none; }
+  /* On a narrow screen the drawing gets shorter and the detail card gets out of
+     its own way: the map stays usable rather than becoming a peephole. */
+  .map-stage.is-graph { height: min(56vh, 420px); }
+  .map-detail { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; max-width: none; font-size: 0.8rem; }
+  .map-filters { gap: 0.5rem; }
+  .map-filter { padding: 0.3rem 0.6rem 0.45rem; }
 }
