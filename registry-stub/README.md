@@ -8,7 +8,7 @@ The M3 exit criterion — "revoking it in the Registry cuts its access within a 
 
 Per the contract, two faces:
 
-- **Verification** (the only thing Canon calls): `POST /verify` — passport in, identity plus certification standing plus permitted collections and actions out, or a typed refusal (`unknown_passport`, `certification_lapsed`, `revoked`).
+- **Verification** (the only thing Canon calls): `POST /verify` — passport in, identity plus certification standing plus permitted collections, sources, and actions out, or a typed refusal (`unknown_passport`, `certification_lapsed`, `revoked`). `permittedSources` names the federated sources the agent may resolve references from; it is governed exactly like `permittedCollections`, defaults to `[]` (none), and takes `"*"` for all.
 - **Administration** (what the demonstration drives): `POST /agents` (register, issue passport — shown once, never listed), `POST /agents/:id/certify`, `POST /agents/:id/revoke` (terminal), `PUT /agents/:id/permissions`, `GET /agents` (listing with effective states), `GET /health`.
 
 Honest liberties of a test double, both declared in the contract: state is in-memory and disposable (every demonstration starts from a clean Registry), and the administrative face is unauthenticated (the live Registry authenticates its own).
@@ -30,7 +30,7 @@ The test build also compiles [`../server/src/registry.ts`](../server/src/registr
 ```sh
 npm start &
 # Register and certify an agent; note the passport (shown only here).
-curl -s :3100/agents -d '{"name":"PolicyBot","permittedCollections":["*"],"permittedActions":["read"]}'
+curl -s :3100/agents -d '{"name":"PolicyBot","permittedCollections":["*"],"permittedSources":["src-benefits-admin"],"permittedActions":["read"]}'
 curl -s :3100/agents/<agentId>/certify -X POST -d '{}'
 curl -s :3100/verify -d '{"passport":"vap_..."}'        # 200, certified, limits attached
 curl -s :3100/agents/<agentId>/revoke -X POST -d '{}'

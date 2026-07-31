@@ -36,6 +36,9 @@ test('stub: registration issues a passport but not standing', async () => {
     assert.match(bot.passport, /^vap_[0-9a-f]{48}$/);
     assert.equal(bot.certification.state, 'pending');
     assert.deepEqual(bot.permittedCollections, ['col-1']);
+    // Sources default to nowhere, like collections: where the limits are
+    // silent, the agent gets less (REGISTRY-CONTRACT.md §4).
+    assert.deepEqual(bot.permittedSources, []);
 
     // Identity is not standing: a pending agent verifies as lapsed.
     const denied = await call('POST', '/verify', { passport: bot.passport });
@@ -107,6 +110,61 @@ test('stub: revocation is a distinct, terminal refusal', async () => {
     assert.equal((await call('POST', `/agents/${bot.agentId}/certify`, {})).status, 409);
     const again = (await call('POST', `/agents/${bot.agentId}/revoke`, {})).json;
     assert.equal(again.certification.revokedAt, revoked.certification.revokedAt);
+  } finally {
+    server.close();
+  }
+});
+
+// A source is a governed object, and an agent's passport carries which sources
+// it may reach alongside which collections it may read (DATA-BACKBONE.md §6,
+// REGISTRY-CONTRACT.md §4). The stub stores and answers that field on exactly
+// the same terms as permittedCollections.
+test('stub: permittedSources is registered, verified, replaced, and listed', async () => {
+  const { server, call } = await startStub();
+  try {
+    const bot = (
+      await call('POST', '/agents', {
+        name: 'BenefitsBot',
+        permittedCollections: ['col-1'],
+        permittedSources: ['src-benefits', 'src-benefits', ' src-hris '],
+        permittedActions: ['read'],
+      })
+    ).json;
+    // Deduplicated and trimmed, like collection ids.
+    assert.deepEqual(bot.permittedSources, ['src-benefits', 'src-hris']);
+
+    await call('POST', `/agents/${bot.agentId}/certify`, {});
+    const verified = (await call('POST', '/verify', { passport: bot.passport })).json;
+    assert.deepEqual(verified.permittedSources, ['src-benefits', 'src-hris']);
+
+    // A present field replaces entirely; an omitted one is left alone.
+    await call('PUT', `/agents/${bot.agentId}/permissions`, { permittedCollections: ['*'] });
+    const untouched = (await call('POST', '/verify', { passport: bot.passport })).json;
+    assert.deepEqual(untouched.permittedCollections, ['*']);
+    assert.deepEqual(untouched.permittedSources, ['src-benefits', 'src-hris'], 'omitted means unchanged');
+
+    await call('PUT', `/agents/${bot.agentId}/permissions`, { permittedSources: ['*'] });
+    assert.deepEqual((await call('POST', '/verify', { passport: bot.passport })).json.permittedSources, ['*']);
+
+    // Sending [] is how an administrator takes federation away.
+    await call('PUT', `/agents/${bot.agentId}/permissions`, { permittedSources: [] });
+    assert.deepEqual((await call('POST', '/verify', { passport: bot.passport })).json.permittedSources, []);
+
+    // Nonsense is refused rather than stored, and refused before anything is
+    // replaced: the record is never left half-written.
+    const bad = await call('PUT', `/agents/${bot.agentId}/permissions`, {
+      permittedCollections: ['col-9'],
+      permittedSources: [{ id: 'src-benefits' }],
+    });
+    assert.equal(bad.status, 400);
+    assert.match(bad.json.message, /permittedSources/);
+    const after = (await call('POST', '/verify', { passport: bot.passport })).json;
+    assert.deepEqual(after.permittedCollections, ['*'], 'a rejected field replaces nothing');
+    assert.equal((await call('POST', '/agents', { name: 'X', permittedSources: 'src-1' })).status, 400);
+
+    // The administrative listing reports the field an administrator sets.
+    const listing = (await call('GET', '/agents')).json as any[];
+    assert.deepEqual(listing.find((a) => a.name === 'BenefitsBot').permittedSources, []);
   } finally {
     server.close();
   }

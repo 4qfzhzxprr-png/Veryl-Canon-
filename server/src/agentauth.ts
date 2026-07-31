@@ -11,11 +11,18 @@
 //   credentials: the passport is presented to the Registry, and the answer's
 //   `agentId` is matched against the actor's `registryRef`. An agent seen for
 //   the first time gets an actor row created for it, named by the Registry.
-// - Enforcing the Registry's `permittedCollections` and `permittedActions` as
-//   an INTERSECTION with Canon's own collection permissions. This module
-//   applies the Registry half before the store sees the request; the store
-//   applies Canon's half exactly as it does for people. Neither can widen the
-//   other, so an agent acts only where both allow.
+// - Enforcing the Registry's `permittedCollections`, `permittedSources`, and
+//   `permittedActions` as an INTERSECTION with Canon's own collection
+//   permissions. This module applies the Registry half before the store sees
+//   the request; the store applies Canon's half exactly as it does for people.
+//   Neither can widen the other, so an agent acts only where both allow.
+// - Governing federated sources on exactly those terms. A source is a governed
+//   object (DATA-BACKBONE.md §6): if agents reached external systems directly,
+//   the Registry's limits would stop at Canon's door and an agent barred from a
+//   collection could read the same facts through the source behind it. Whole
+//   requests about a source are settled in `enforce`; individual references on
+//   a readable page are settled by `refuseUnpermittedSource`, which the
+//   reference layer calls per reference (see "the reference layer's one call").
 // - Failing closed. Unknown passport, lapsed certification, revocation, or an
 //   unreachable Registry all refuse the request, with the contract's statuses.
 //   Staleness is impossible by construction: the RegistryClient's cache is
@@ -24,6 +31,7 @@
 // - Auditing. Every fresh (uncached) verification is an `agent.session` event;
 //   refusals are `agent.auth_failed`; limit denials are `agent.denied`.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { CanonError, ErrorCode } from './model.js';
@@ -39,9 +47,17 @@ export interface AgentSession {
   agentId: string; // the Registry identity, stored as the actor's registryRef
   name: string;
   permittedCollections: string[];
+  /** Source ids this agent may resolve references from; `"*"` for all, `[]` for none. */
+  permittedSources: string[];
   permittedActions: string[];
   /** True when this request re-asked the Registry rather than using its cache. */
   fresh: boolean;
+  /**
+   * May this agent resolve a reference from this source? The Registry's half
+   * of the intersection only — the page's own readability is Canon's half and
+   * is decided by the store, as it is for people.
+   */
+  permitsSource(sourceId: string): boolean;
 }
 
 /** What enforcement hands back: the narrowing to apply to the response. */
@@ -72,7 +88,9 @@ type Scope =
   | { kind: 'comment'; id: string } // collection resolved from the comment's page
   | { kind: 'bodyCollection' } // collection id in the request body
   | { kind: 'newCollection' } // creates a collection: only '*' can reach it
-  | { kind: 'filtered'; filter: 'collections' | 'search' | 'audit' }; // spans collections
+  | { kind: 'source'; id: string } // source id in the path
+  | { kind: 'sourceAdmin' } // registers or changes a source: only '*' can reach it
+  | { kind: 'filtered'; filter: 'collections' | 'search' | 'audit' | 'sources' }; // spans collections or sources
 
 interface Rule {
   method: string;
@@ -141,6 +159,35 @@ const RULES: Rule[] = [
   // an agent can never be told something its collections do not hold.
   { method: 'POST', pattern: /^\/ask$/, action: 'read', scope: () => ({ kind: 'bodyCollection' }) },
   { method: 'GET', pattern: /^\/pages\/([^/]+)\/related$/, action: 'read', scope: PAGE },
+
+  // Federation (DATA-BACKBONE.md §6; REGISTRY-CONTRACT.md §4). The reference
+  // layer itself — sources.ts, connectors.ts, references.ts — is another
+  // stream's work; these rules are written ahead of it deliberately, because
+  // an unclassified route is refused to agents and a federation surface that
+  // arrived unclassified would be silently closed to every agent rather than
+  // silently open. Classifying now means the merge changes behaviour once,
+  // visibly, in the direction the contract states.
+  //
+  // Resolving a page's references is `read`, scoped to the page's collection:
+  // the page's readability is the collection question, and each individual
+  // reference is then filtered by `permittedSources` inside the handler (see
+  // refuseUnpermittedSource). A page whose references the agent may not
+  // resolve is still readable; the references come back refused in place.
+  { method: 'GET', pattern: /^\/pages\/([^/]+)\/references$/, action: 'read', scope: PAGE },
+
+  // Reading the source register is `read`, and the listing is narrowed to the
+  // agent's permitted sources rather than refused — the same treatment
+  // collection listings and searches get (REGISTRY-CONTRACT.md §4.2).
+  { method: 'GET', pattern: /^\/sources$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'sources' }) },
+  { method: 'GET', pattern: /^\/sources\/([^/]+)$/, action: 'read', scope: (g) => ({ kind: 'source', id: g[0] ?? '' }) },
+
+  // Registering, changing, or removing a source is `write` AND requires `"*"`,
+  // exactly as creating a collection does. Being permitted to read *through* a
+  // source is not being permitted to *redefine* it: an agent that could
+  // repoint a source would be writing its own limits.
+  { method: 'POST', pattern: /^\/sources$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
+  { method: 'PUT', pattern: /^\/sources\/([^/]+)$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
+  { method: 'DELETE', pattern: /^\/sources\/([^/]+)$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
 ];
 
 function classify(method: string, pathname: string): { action: AgentAction; scope: Scope } | null {
@@ -157,6 +204,17 @@ function classify(method: string, pathname: string): { action: AgentAction; scop
 /** `"*"` means every collection; otherwise the id must be listed verbatim. */
 export function permitsCollection(permitted: readonly string[], collectionId: string): boolean {
   return permitted.includes('*') || permitted.includes(collectionId);
+}
+
+/**
+ * `"*"` means every source; otherwise the id must be listed verbatim, and an
+ * empty list means none. Identical to permitsCollection by design rather than
+ * by accident: the contract governs a source exactly as it governs a
+ * collection, and the day the two rules diverge it should be because someone
+ * changed this function on purpose.
+ */
+export function permitsSource(permitted: readonly string[], sourceId: string): boolean {
+  return permitted.includes('*') || permitted.includes(sourceId);
 }
 
 // The contract's error table (§5), in Canon's vocabulary.
@@ -214,13 +272,16 @@ export class AgentAuth {
     }
 
     const actorId = this.actorForAgent(result.agent);
+    const permittedSources = result.agent.permittedSources;
     const session: AgentSession = {
       actorId,
       agentId: result.agent.agentId,
       name: result.agent.name,
       permittedCollections: result.agent.permittedCollections,
+      permittedSources,
       permittedActions: result.agent.permittedActions,
       fresh: !result.cached,
+      permitsSource: (sourceId: string) => permitsSource(permittedSources, sourceId),
     };
 
     if (actorHeader && actorHeader !== actorId) {
@@ -243,6 +304,7 @@ export class AgentAuth {
           registryRef: session.agentId,
           name: session.name,
           permittedCollections: session.permittedCollections,
+          permittedSources: session.permittedSources,
           permittedActions: session.permittedActions,
           checkedAt: result.checkedAt,
         },
@@ -296,6 +358,26 @@ export class AgentAuth {
       });
     }
 
+    // Sources, on exactly the terms collections get. Administration first:
+    // redefining a source is not something a named-source grant can cover,
+    // because the thing it would redefine is the grant's own subject.
+    if (scope.kind === 'sourceAdmin' && !session.permittedSources.includes('*')) {
+      this.deny(session, 'source', { action, sourceAdministration: true });
+      throw new CanonError(
+        'forbidden',
+        'The Registry permits this agent only named sources, so it cannot register or change one',
+        { reason: 'source_administration_not_permitted', permittedSources: session.permittedSources },
+      );
+    }
+    if (scope.kind === 'source' && !permitsSource(session.permittedSources, scope.id)) {
+      this.deny(session, 'source', { action, sourceId: scope.id });
+      throw new CanonError('forbidden', 'The Registry does not permit this agent to reach this source', {
+        reason: 'source_not_permitted',
+        sourceId: scope.id,
+        permittedSources: session.permittedSources,
+      });
+    }
+
     const filter = scope.kind === 'filtered' ? scope.filter : null;
     return {
       action,
@@ -343,10 +425,17 @@ export class AgentAuth {
   // Responses that span collections are narrowed to the permitted ones, so a
   // listing, a search, or the audit log never carries an agent something the
   // Registry does not permit it to see.
-  private narrow(session: AgentSession, filter: 'collections' | 'search' | 'audit', result: unknown): unknown {
+  private narrow(
+    session: AgentSession,
+    filter: 'collections' | 'search' | 'audit' | 'sources',
+    result: unknown,
+  ): unknown {
     if (!Array.isArray(result)) return result;
     if (filter === 'collections') {
       return result.filter((c) => permitsCollection(session.permittedCollections, (c as { id: string }).id));
+    }
+    if (filter === 'sources') {
+      return result.filter((s) => permitsSource(session.permittedSources, (s as { id: string }).id));
     }
     if (filter === 'search') {
       return result.filter((r) => permitsCollection(session.permittedCollections, (r as { collectionId: string }).collectionId));
@@ -375,9 +464,36 @@ export class AgentAuth {
     return this.store.createActor({ kind: 'agent', name: agent.name, registryRef: agent.agentId }).id;
   }
 
-  private deny(session: AgentSession, reason: 'route' | 'action' | 'collection', details: Record<string, unknown>): void {
+  /**
+   * A reference the Registry will not let this agent resolve, recorded in the
+   * `agent.denied` family and naming the source — DATA-BACKBONE §6 asks every
+   * resolution to be an audit event naming who asked, which source, and which
+   * reference; a refused resolution is that same event with the reason where
+   * the value would have been. Public because the reference layer refuses
+   * individual references long after `enforce` has let the request through.
+   */
+  denySource(
+    session: AgentSession,
+    sourceId: string,
+    context: { pageId?: string; selector?: string; key?: string } = {},
+  ): void {
+    this.deny(session, 'source', {
+      sourceId,
+      reference: true,
+      ...(context.pageId ? { pageId: context.pageId } : {}),
+      ...(context.selector ? { selector: context.selector } : {}),
+      ...(context.key ? { key: context.key } : {}),
+    });
+  }
+
+  private deny(
+    session: AgentSession,
+    reason: 'route' | 'action' | 'collection' | 'source',
+    details: Record<string, unknown>,
+  ): void {
     this.audit(session.actorId, 'agent', 'agent.denied', {
       collectionId: typeof details.collectionId === 'string' ? details.collectionId : undefined,
+      pageId: typeof details.pageId === 'string' ? details.pageId : undefined,
       details: { reason, registryRef: session.agentId, ...details },
     });
   }
@@ -406,6 +522,97 @@ export class AgentAuth {
         JSON.stringify(ctx.details ?? {}),
       );
   }
+}
+
+// ---- the reference layer's one call ------------------------------------
+//
+// `enforce` settles whole requests, before a handler runs. Federated
+// references are not whole requests: one page can carry references from
+// several sources, its collection may be permitted while some of those
+// sources are not, and the contract (REGISTRY-CONTRACT.md §4.2) says the page
+// stays readable while each unpermitted reference comes back refused in place.
+// So the check has to happen per reference, inside the handler, in code that
+// has no reason to know about HTTP headers or passports.
+//
+// The seam is a request-scoped session. `runInAgentRequestScope` wraps handler
+// execution in api.ts; anything called from inside a handler — however deep,
+// across as many awaits as it likes — can ask who is asking without that
+// question being threaded through every signature. For a person there is no
+// scope, and every function here answers "permitted": people are governed by
+// Canon's own permissions alone, which the store applies as it always has.
+//
+// The reference layer's whole obligation is one call per reference:
+//
+//     const refusal = refuseUnpermittedSource(ref.sourceId, { pageId, selector: ref.selector });
+//     if (refusal) { out.push({ ...slot, value: null, ...refusal }); continue; }
+//
+// It returns null when the reference may be resolved and a refusal record when
+// it may not, having already written the audit event. Spreading the record
+// into the reference's slot is what makes the refusal visible: a refused
+// reference must never be dropped from the payload, because a silently missing
+// value reads as "no such value" — the deductible unset, the headcount zero.
+
+/** What occupies a reference's slot when the Registry withholds its source. */
+export interface SourceRefusal {
+  error: 'source_not_permitted';
+  message: string;
+  sourceId: string;
+  /** Which side of the intersection refused. Canon's own half says `canon`. */
+  refusedBy: 'registry';
+}
+
+interface AgentRequestScope {
+  auth: AgentAuth;
+  session: AgentSession;
+}
+
+const agentRequestScope = new AsyncLocalStorage<AgentRequestScope>();
+
+/**
+ * Run a request handler with its agent session in scope. Called by api.ts
+ * around handler execution; a person's request passes a null session and runs
+ * with no scope at all, which is exactly what "people are unaffected" means.
+ */
+export function runInAgentRequestScope<T>(auth: AgentAuth | null, session: AgentSession | null, fn: () => T): T {
+  if (!auth || !session) return fn();
+  return agentRequestScope.run({ auth, session }, fn);
+}
+
+/** The agent behind the request in hand, or null when a person is asking. */
+export function currentAgentSession(): AgentSession | null {
+  return agentRequestScope.getStore()?.session ?? null;
+}
+
+/**
+ * May the asker resolve a reference from this source? True for people, and
+ * for an agent whose `permittedSources` carries the id or `"*"`. Audits
+ * nothing — use it for shaping work (skipping a fetch, counting refusals);
+ * use `refuseUnpermittedSource` for the refusal itself.
+ */
+export function permitsSourceForRequest(sourceId: string): boolean {
+  const scope = agentRequestScope.getStore();
+  return scope ? scope.session.permitsSource(sourceId) : true;
+}
+
+/**
+ * Null when this source may be resolved for the asker; a refusal record to put
+ * in the reference's slot when it may not. Writes the `agent.denied` audit
+ * event naming the source as a side effect, so a caller that honours the
+ * return value cannot forget to log the refusal.
+ */
+export function refuseUnpermittedSource(
+  sourceId: string,
+  context: { pageId?: string; selector?: string; key?: string } = {},
+): SourceRefusal | null {
+  const scope = agentRequestScope.getStore();
+  if (!scope || scope.session.permitsSource(sourceId)) return null;
+  scope.auth.denySource(scope.session, sourceId, context);
+  return {
+    error: 'source_not_permitted',
+    message: 'The Registry does not permit this agent to resolve references from this source',
+    sourceId,
+    refusedBy: 'registry',
+  };
 }
 
 /**

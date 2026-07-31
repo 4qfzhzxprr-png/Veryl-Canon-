@@ -36,10 +36,13 @@ function parseActions(value: unknown, fallback: PermittedAction[]): PermittedAct
   return [...new Set(value as PermittedAction[])];
 }
 
-function parseCollections(value: unknown, fallback: string[]): string[] {
+// Collection ids and source ids are governed alike (REGISTRY-CONTRACT.md §4),
+// so they parse alike: opaque non-empty strings, deduplicated, `"*"` carried
+// through as the entry meaning all, absent meaning "leave as it was".
+function parseIds(value: unknown, fallback: string[], field: 'permittedCollections' | 'permittedSources'): string[] {
   if (value === undefined) return fallback;
   if (!Array.isArray(value) || value.some((c) => typeof c !== 'string' || !c.trim())) {
-    throw new RegistryError('invalid', 'permittedCollections must be an array of non-empty strings');
+    throw new RegistryError('invalid', `${field} must be an array of non-empty strings`);
   }
   return [...new Set((value as string[]).map((c) => c.trim()))];
 }
@@ -66,7 +69,12 @@ export class RegistryStore {
 
   // ---- administrative face ---------------------------------------------
 
-  register(input: { name?: unknown; permittedCollections?: unknown; permittedActions?: unknown }): AgentRecord {
+  register(input: {
+    name?: unknown;
+    permittedCollections?: unknown;
+    permittedSources?: unknown;
+    permittedActions?: unknown;
+  }): AgentRecord {
     if (typeof input.name !== 'string' || !input.name.trim()) {
       throw new RegistryError('invalid', 'An agent requires a name');
     }
@@ -75,7 +83,10 @@ export class RegistryStore {
       name: input.name.trim(),
       passport: issuePassport(),
       certification: { state: 'pending', certifiedAt: null, expiresAt: null, revokedAt: null, reason: null },
-      permittedCollections: parseCollections(input.permittedCollections, []),
+      permittedCollections: parseIds(input.permittedCollections, [], 'permittedCollections'),
+      // Nowhere by default, sources included: where the limits are silent,
+      // the agent gets less (REGISTRY-CONTRACT.md §4).
+      permittedSources: parseIds(input.permittedSources, [], 'permittedSources'),
       permittedActions: parseActions(input.permittedActions, ['read']),
       createdAt: now(),
     };
@@ -120,11 +131,17 @@ export class RegistryStore {
 
   setPermissions(
     agentId: string,
-    input: { permittedCollections?: unknown; permittedActions?: unknown },
+    input: { permittedCollections?: unknown; permittedSources?: unknown; permittedActions?: unknown },
   ): AgentView {
     const record = this.agent(agentId);
-    record.permittedCollections = parseCollections(input.permittedCollections, record.permittedCollections);
-    record.permittedActions = parseActions(input.permittedActions, record.permittedActions);
+    // Each field is validated before any is stored, so a rejected field never
+    // leaves the record half-replaced.
+    const collections = parseIds(input.permittedCollections, record.permittedCollections, 'permittedCollections');
+    const sources = parseIds(input.permittedSources, record.permittedSources, 'permittedSources');
+    const actions = parseActions(input.permittedActions, record.permittedActions);
+    record.permittedCollections = collections;
+    record.permittedSources = sources;
+    record.permittedActions = actions;
     return this.view(record);
   }
 
@@ -140,6 +157,7 @@ export class RegistryStore {
       name: record.name,
       certification: { ...record.certification, state: effectiveState(record.certification) },
       permittedCollections: [...record.permittedCollections],
+      permittedSources: [...record.permittedSources],
       permittedActions: [...record.permittedActions],
       createdAt: record.createdAt,
     };
@@ -173,6 +191,7 @@ export class RegistryStore {
       name: record.name,
       certified: true,
       permittedCollections: [...record.permittedCollections],
+      permittedSources: [...record.permittedSources],
       permittedActions: [...record.permittedActions],
       checkedAt: now(),
       recheckAfterSeconds: RECHECK_AFTER_SECONDS,

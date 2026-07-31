@@ -10,7 +10,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createRegistryApi } from '../../registry-stub/src/api.js';
 import { RegistryStore } from '../../registry-stub/src/store.js';
-import { AgentAuth, agentAuthFromEnv } from '../src/agentauth.js';
+import {
+  AgentAuth,
+  agentAuthFromEnv,
+  currentAgentSession,
+  permitsSourceForRequest,
+  refuseUnpermittedSource,
+  runInAgentRequestScope,
+} from '../src/agentauth.js';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { RegistryClient } from '../src/registry.js';
@@ -22,6 +29,9 @@ interface Rig {
   canon: Server;
   db: DatabaseSync;
   store: CanonStore;
+  // Canon's door itself, for the enforcement primitives that federation calls
+  // from inside a handler rather than from the route table.
+  auth: AgentAuth | null;
   call: (
     method: string,
     path: string,
@@ -70,6 +80,7 @@ async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promi
     canon,
     db,
     store,
+    auth,
     call,
     close: () => {
       canon.close();
@@ -426,6 +437,241 @@ test('the configuration switch is the environment, and it defaults to off', asyn
     CANON_REGISTRY_TTL_MS: '600000',
   });
   assert.equal(greedy!.registry.cacheTtlMs, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Federated sources, governed like collections (DATA-BACKBONE.md §6;
+// REGISTRY-CONTRACT.md §4).
+//
+// The federation core — sources.ts, connectors.ts, references.ts, and the
+// GET /pages/:id/references and /sources routes in api.ts — is another
+// stream's work and is not in this tree. Its routes are therefore classified
+// here but not yet mounted, so a call through fetch would be answered by
+// api.ts's own 404 before agentauth ever saw it. These tests exercise the
+// enforcement primitives directly instead: `enforce` for whole requests, and
+// the request-scoped `refuseUnpermittedSource` for individual references. When
+// the federation core lands, the routes it mounts meet exactly these rules.
+
+test('permittedSources rides the verification into the session and the audit', async () => {
+  const r = await rig({ ttlMs: 5_000 });
+  try {
+    const { dana, collection } = await seed(r);
+    const bot = r.registry.register({
+      name: 'BenefitsBot',
+      permittedCollections: [collection.id],
+      permittedSources: ['src-benefits'],
+      permittedActions: ['read'],
+    });
+    r.registry.certify(bot.agentId);
+
+    const session = await r.auth!.authenticate(bot.passport);
+    assert.deepEqual(session.permittedSources, ['src-benefits']);
+    assert.equal(session.permitsSource('src-benefits'), true);
+    assert.equal(session.permitsSource('src-payroll'), false);
+
+    // The session event records what the Registry granted, sources included:
+    // the audit log has to be able to answer "what was this agent allowed to
+    // reach" a year later, when the Registry's record has moved on.
+    const sessions = (await r.call('GET', '/audit?action=agent.session', { actor: dana.id })).json;
+    assert.equal(sessions.length, 1);
+    assert.deepEqual(sessions[0].details.permittedSources, ['src-benefits']);
+
+    // A limits change in the Registry arrives with the next verification, on
+    // the same clock as a revocation.
+    r.registry.setPermissions(bot.agentId, { permittedSources: ['*'] });
+    r.auth!.registry.invalidate(bot.passport);
+    const widened = await r.auth!.authenticate(bot.passport);
+    assert.equal(widened.permitsSource('anything-at-all'), true);
+  } finally {
+    r.close();
+  }
+});
+
+test('sources are an intersection too, and silence grants none', async () => {
+  const r = await rig();
+  try {
+    const { dana, collection, page } = await seed(r);
+    const other = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Everything else' })).json;
+
+    // Permitted the collection the page lives in, and one source.
+    const bot = r.registry.register({
+      name: 'BenefitsBot',
+      permittedCollections: [collection.id],
+      permittedSources: ['src-benefits'],
+      permittedActions: ['read'],
+    });
+    r.registry.certify(bot.agentId);
+    const session = await r.auth!.authenticate(bot.passport);
+    r.store.setMember(dana.id, collection.id, session.actorId, 'view');
+
+    // Direction 1 — the collection is permitted, the source is not. The page
+    // is readable; the reference from the withheld source is refused in place.
+    assert.equal((await r.call('GET', `/pages/${page.id}`, { passport: bot.passport })).status, 200);
+    const enforced = r.auth!.enforce(session, { method: 'GET', pathname: `/pages/${page.id}/references` });
+    assert.equal(enforced.action, 'read');
+    assert.equal(enforced.collectionId, collection.id, 'the page’s collection governs the page');
+    const refusal = runInAgentRequestScope(r.auth, session, () =>
+      refuseUnpermittedSource('src-payroll', { pageId: page.id, selector: 'salary' }),
+    );
+    assert.ok(refusal, 'an unpermitted source must be refused, not resolved');
+    assert.equal(refusal!.error, 'source_not_permitted');
+    assert.equal(refusal!.sourceId, 'src-payroll');
+    assert.equal(refusal!.refusedBy, 'registry');
+    // ...while the permitted one is not refused at all.
+    assert.equal(
+      runInAgentRequestScope(r.auth, session, () => refuseUnpermittedSource('src-benefits', { pageId: page.id })),
+      null,
+    );
+
+    // Direction 2 — the source is permitted, the collection is not. The
+    // Registry's source grant buys nothing on a page the agent cannot reach.
+    const elsewhere = (
+      await r.call('POST', '/pages', { actor: dana.id }, { collectionId: other.id, type: 'note', title: 'Payroll' })
+    ).json;
+    assert.equal(session.permitsSource('src-benefits'), true);
+    assert.throws(
+      () => r.auth!.enforce(session, { method: 'GET', pathname: `/pages/${elsewhere.id}/references` }),
+      (err: any) => err.details.reason === 'collection_not_permitted',
+      'a permitted source does not open an unpermitted collection',
+    );
+
+    // Absent means none: an agent whose limits say nothing about sources
+    // resolves nothing, however wide its collections are.
+    const quiet = r.registry.register({ name: 'QuietBot', permittedCollections: ['*'], permittedActions: ['read'] });
+    r.registry.certify(quiet.agentId);
+    const quietSession = await r.auth!.authenticate(quiet.passport);
+    assert.deepEqual(quietSession.permittedSources, []);
+    assert.equal(quietSession.permitsSource('src-benefits'), false);
+    assert.ok(runInAgentRequestScope(r.auth, quietSession, () => refuseUnpermittedSource('src-benefits')));
+
+    // `"*"` means every source, exactly as it means every collection.
+    const wide = r.registry.register({
+      name: 'WideBot',
+      permittedCollections: ['*'],
+      permittedSources: ['*'],
+      permittedActions: ['read'],
+    });
+    r.registry.certify(wide.agentId);
+    const wideSession = await r.auth!.authenticate(wide.passport);
+    assert.equal(wideSession.permitsSource('src-never-registered'), true);
+    assert.equal(
+      runInAgentRequestScope(r.auth, wideSession, () => refuseUnpermittedSource('src-never-registered')),
+      null,
+    );
+
+    // People are unaffected: outside an agent scope everything is permitted
+    // here, because Canon's own permissions are the only gate a person meets.
+    assert.equal(currentAgentSession(), null);
+    assert.equal(permitsSourceForRequest('src-payroll'), true);
+    assert.equal(refuseUnpermittedSource('src-payroll'), null);
+  } finally {
+    r.close();
+  }
+});
+
+test('reading through a source is not redefining one: administration needs "*"', async () => {
+  const r = await rig();
+  try {
+    const { collection } = await seed(r);
+    const named = r.registry.register({
+      name: 'BenefitsBot',
+      permittedCollections: [collection.id],
+      permittedSources: ['src-benefits'],
+      permittedActions: ['read', 'write'],
+    });
+    r.registry.certify(named.agentId);
+    const session = await r.auth!.authenticate(named.passport);
+
+    // Registering, changing, or removing a source is write AND "*".
+    for (const [method, pathname] of [
+      ['POST', '/sources'],
+      ['PUT', '/sources/src-benefits'],
+      ['DELETE', '/sources/src-benefits'],
+    ]) {
+      assert.throws(
+        () => r.auth!.enforce(session, { method: method!, pathname: pathname!, body: {} }),
+        (err: any) => err.details.reason === 'source_administration_not_permitted',
+        `${method} ${pathname} must need "*"`,
+      );
+    }
+
+    // Reading one it was named is fine, and reading one it was not is not.
+    assert.equal(r.auth!.enforce(session, { method: 'GET', pathname: '/sources/src-benefits' }).action, 'read');
+    assert.throws(
+      () => r.auth!.enforce(session, { method: 'GET', pathname: '/sources/src-payroll' }),
+      (err: any) => err.details.reason === 'source_not_permitted' && err.details.sourceId === 'src-payroll',
+    );
+
+    // A listing is narrowed, not refused — the rule collections already have.
+    const listing = r.auth!.enforce(session, { method: 'GET', pathname: '/sources' });
+    assert.deepEqual(listing.narrow([{ id: 'src-benefits' }, { id: 'src-payroll' }]), [{ id: 'src-benefits' }]);
+
+    // With "*", administration opens.
+    const admin = r.registry.register({
+      name: 'AdminBot',
+      permittedCollections: ['*'],
+      permittedSources: ['*'],
+      permittedActions: ['read', 'write'],
+    });
+    r.registry.certify(admin.agentId);
+    const adminSession = await r.auth!.authenticate(admin.passport);
+    assert.equal(r.auth!.enforce(adminSession, { method: 'POST', pathname: '/sources', body: {} }).action, 'write');
+
+    // But write is still needed: "*" over sources is not an action grant.
+    const reader = r.registry.register({
+      name: 'ReadOnlyBot',
+      permittedCollections: ['*'],
+      permittedSources: ['*'],
+      permittedActions: ['read'],
+    });
+    r.registry.certify(reader.agentId);
+    const readerSession = await r.auth!.authenticate(reader.passport);
+    assert.throws(
+      () => r.auth!.enforce(readerSession, { method: 'POST', pathname: '/sources', body: {} }),
+      (err: any) => err.details.reason === 'action_not_permitted',
+    );
+  } finally {
+    r.close();
+  }
+});
+
+test('a refused source resolution is an agent.denied event naming the source', async () => {
+  const r = await rig();
+  try {
+    const { dana, collection, page } = await seed(r);
+    const bot = r.registry.register({
+      name: 'BenefitsBot',
+      permittedCollections: [collection.id],
+      permittedSources: ['src-benefits'],
+      permittedActions: ['read'],
+    });
+    r.registry.certify(bot.agentId);
+    const session = await r.auth!.authenticate(bot.passport);
+
+    runInAgentRequestScope(r.auth, session, () => {
+      refuseUnpermittedSource('src-payroll', { pageId: page.id, selector: 'salary', key: 'EMP-7' });
+      refuseUnpermittedSource('src-benefits', { pageId: page.id }); // permitted: nothing logged
+    });
+
+    const denials = (await r.call('GET', '/audit?action=agent.denied', { actor: dana.id })).json;
+    assert.equal(denials.length, 1, 'a permitted source is not a denial');
+    const [event] = denials;
+    assert.equal(event.actorKind, 'agent');
+    assert.equal(event.actorId, session.actorId);
+    assert.equal(event.pageId, page.id);
+    assert.equal(event.details.reason, 'source');
+    assert.equal(event.details.sourceId, 'src-payroll');
+    assert.equal(event.details.selector, 'salary');
+    assert.equal(event.details.registryRef, bot.agentId);
+
+    // The same family covers a whole request refused about a source.
+    assert.throws(() => r.auth!.enforce(session, { method: 'GET', pathname: '/sources/src-payroll' }));
+    const both = (await r.call('GET', '/audit?action=agent.denied', { actor: dana.id })).json;
+    assert.equal(both.length, 2);
+    assert.ok(both.every((e: any) => e.details.sourceId === 'src-payroll'));
+  } finally {
+    r.close();
+  }
 });
 
 // Regression: /ask and /pages/:id/related were added by a later stream than

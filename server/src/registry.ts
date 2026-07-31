@@ -21,6 +21,14 @@ export interface AgentVerification {
   name: string;
   certified: true;
   permittedCollections: string[];
+  /**
+   * The federated source ids this agent may resolve references from
+   * (REGISTRY-CONTRACT.md §4). `"*"` means all; `[]` means none, and none is
+   * what an answer that omits the field is read as — a Registry predating
+   * federation must not accidentally grant an agent every source. Present but
+   * not an array of strings is malformed, and malformed fails closed.
+   */
+  permittedSources: string[];
   permittedActions: string[];
 }
 
@@ -117,11 +125,17 @@ export class RegistryClient {
     if (response.ok) {
       const permittedCollections = stringArray(body.permittedCollections);
       const permittedActions = stringArray(body.permittedActions);
+      // Silence means none; nonsense means no (REGISTRY-CONTRACT.md §6). An
+      // absent permittedSources is the empty list — a Registry that predates
+      // federation grants no source rather than every source — but a field
+      // that is present and unreadable makes the whole answer malformed.
+      const permittedSources = body.permittedSources === undefined ? [] : stringArray(body.permittedSources);
       if (
         body.certified !== true ||
         typeof body.agentId !== 'string' ||
         typeof body.name !== 'string' ||
         !permittedCollections ||
+        !permittedSources ||
         !permittedActions
       ) {
         return this.failClosed('Registry verification answer was malformed');
@@ -137,6 +151,7 @@ export class RegistryClient {
           name: body.name,
           certified: true,
           permittedCollections,
+          permittedSources,
           permittedActions,
         },
         checkedAt: typeof body.checkedAt === 'string' ? body.checkedAt : new Date().toISOString(),
