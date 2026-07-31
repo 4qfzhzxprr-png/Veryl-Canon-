@@ -16,6 +16,8 @@ The first running slice of Veryl Canon: the data storage and organization backbo
 - **Email delivery.** A real SMTP client written on `node:net` and `node:tls` — STARTTLS or direct TLS, `AUTH PLAIN` and `AUTH LOGIN`, dot-stuffed `DATA` — sends the notifications the outbox holds. Messages are RFC 5322 with a plain-text and an HTML part, and each one carries a deep link straight to the page or its review, which is what CORE-PLAN.md section 7 names as the answer to review friction. Delivery is retried with backoff and bounded attempts; a permanently refused message (5xx, no address on record) is marked dead rather than retried forever, with the reason kept on the row. Configured entirely by environment variables (below); with none set, behaviour is exactly as it was — the dev transport logs to the console.
 - **Trust.** Every write attributed to its actor; agents are actors that require a Registry reference (Agent Passport) and carry their kind into history and audit. The append-only audit log records all writes, plus page views on restricted collections, filterable by actor, action, and date, and exportable as RFC 4180 CSV (`GET /audit.csv`, same filters). The export is bounded by construction: at most 1000 records, newest first, with `x-canon-truncated: true` when the cap was reached — narrow with `from`/`to` to walk a longer log.
 - **Import.** Confluence HTML space exports and Google Docs (Takeout) exports, read from an unpacked directory on disk. The Confluence importer recovers the page tree from the export's index and falls back to page breadcrumbs, then to a flat import. Both share a tolerant, dependency-free HTML → structured-text converter (headings, bold, italics, lists, tables, links, code blocks, images as links) that never emits HTML into a page body and never chokes on malformed markup. Everything arrives as a Draft attributed to the importing actor; nothing is ever Canonical on arrival. See [Importing](#importing).
+- **Federation.** Facts other systems own are referenced, never copied ([DATA-BACKBONE.md §6](../DATA-BACKBONE.md)). A **Source** is a registered external system (`name`, `kind`, `baseUrl`, `authMode`, `freshnessWindowMs`, and the collections it may be referenced from — an empty scope means Canon-wide); registering or changing one takes `admin` on those collections, and every change is an audit event. **Canon stores no credential for a source**: there is no credential column, a per-asker credential is never held, and a service credential belongs to the deployment's configuration. A **reference field** on a page is `{ sourceId, selector, key }` — structured data on the page, never parsed from its body — and resolves to `{ value, resolvedAt, fromCache, stale, sourceName, error? }`. The last resolved value is cached with its fetch time: past the source's freshness window it is still returned, but marked `stale` rather than presented as current, and a connector failure returns the cached value stale **with the error**, or an error and no value when nothing was ever cached. Nothing is ever invented. `per_asker` sources carry the asking actor's identity into the source and cache per asker, so one reader's entitled value can never reach another's screen; `service` sources resolve once and that value is visible to everyone who can view the collection — which is what choosing that mode means. Every resolution is a `reference.resolve` audit event naming who asked, which source, page and selector, and whether the value came from the source or the cache.
+- **Connectors.** The integration seam, `resolve(source, request: { selector, key, asker }) -> { value, resolvedAt }`, registered by `source.kind` so a real connector plugs in without touching federation's logic. The shipped default is a hermetic static connector (`kind: 'static'`, `baseUrl` naming a fixture set) — a **test double, not an integration**: it exists so the whole system and the whole suite run with no external calls. A kind with no connector registered fails visibly (`No connector is registered for source kind …`) rather than resolving to nothing.
 - **The web UI.** A zero-dependency static SPA served from [public/](public/) at the server root: collections and page trees with status badges, the draft editor with the page-lock screen, the full review flow, version history with side-by-side compare and restore, search, comments, and the audit view. Safe-subset markdown rendering (escape-first). Identity via a dev "who are you" screen until SSO lands. The Ask view (grounded answers — question box, cited answer, refusal state) is built against the `POST /ask` contract in [DATA-BACKBONE.md](../DATA-BACKBONE.md) §5 and feature-detects it: while the endpoint returns 404, the whole experience stays hidden, exactly as search and comments do.
 
 ## Two ways in: people and agents
@@ -45,6 +47,7 @@ How an agent request is handled ([`src/agentauth.ts`](src/agentauth.ts), per [RE
 ## What is stubbed, and where it goes next
 
 - **Identity.** People arrive via the `X-Actor-Id` header until SSO lands. Agents authenticate with their Agent Passport (above); the Registry behind it is the stub in [registry-stub/](../registry-stub/) until the live service is ready.
+- **The connector.** The only connector shipped is the hermetic `static` one, whose fixture data is supplied per source. It is a test double: it reaches nothing. A real integration implements `Connector` and registers itself on the store's `ConnectorRegistry` at start-up, keyed by the `kind` its sources carry; nothing else in federation changes.
 - **The embedding provider and the answer generator.** Both are interfaces with hermetic defaults: a hashed bag of words and an extractive generator. A hosted or self-hosted embedding model and a real language model plug into the same seams, and nothing else in retrieval changes. Until then the vector channel catches partial term overlap rather than paraphrase, and answers quote rather than compose prose.
 
 ## Running it
@@ -82,7 +85,7 @@ POST   /collections                         { name, description?, restricted? }
 GET    /collections | /collections/:id | /collections/:id/tree | /collections/:id/members
 PUT    /collections/:id/members/:actorId    { role }
 POST   /pages                               { collectionId, parentId?, type, title }
-GET    /pages/:id                           page + current published version
+GET    /pages/:id                           page + current published version + its reference descriptors
 PUT    /pages/:id/draft                     { title?, body?, fields? } — acquires the page lock
 DELETE /pages/:id/draft                     discard
 POST   /pages/:id/publish                   { note? }
@@ -106,6 +109,15 @@ POST   /ask                                 { question, collectionId?, limit? }
                                                  refused, reason? }
 GET    /pages/:id/related?canonical=&limit=  parent, children, and linked pages, permission-filtered
 POST   /notifications/flush                 { limit? } — deliver queued notifications (requires admin somewhere)
+POST   /sources                             { name, kind, baseUrl?, authMode, freshnessWindowMs, collectionIds? }
+                                            requires admin on the scoped collections (admin somewhere if unscoped)
+GET    /sources | /sources/:id              sources scoped to your collections, plus Canon-wide ones
+PUT    /sources/:id                         same fields, all optional; admin under the old and the new scope
+DELETE /sources/:id                         refuses (409) while any page still references it
+POST   /pages/:id/references                { sourceId, selector, key, label? } — requires edit
+DELETE /references/:id                      requires edit
+GET    /pages/:id/references                resolve this page's references for the asking actor
+                                            -> [{ value, resolvedAt, fromCache, stale, sourceName, error? }]
 ```
 
 ## Importing

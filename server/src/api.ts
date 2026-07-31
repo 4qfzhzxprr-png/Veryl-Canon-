@@ -74,7 +74,11 @@ const routes: Route[] = [
   route('GET', '/pages/:id', ({ store, actorId, params }) => {
     const page = store.getPage(actorId, params.id!, { logView: true });
     const current = page.currentVersion ? store.getVersion(actorId, page.id, page.currentVersion) : null;
-    return { ...page, current };
+    // References travel inside the page payload the UI already fetches
+    // (DATA-BACKBONE.md §6) — unresolved descriptors, so rendering the page
+    // costs no external call. Resolution stays on GET /pages/:id/references.
+    const references = store.listReferences(actorId, page.id);
+    return { ...page, current, references };
   }),
   route('POST', '/pages/:id/move', ({ store, actorId, params, body }) =>
     store.movePage(actorId, params.id!, { parentId: body.parentId ?? null }),
@@ -163,6 +167,25 @@ const routes: Route[] = [
   route('POST', '/imports', ({ store, actorId, body }) => store.runImport(actorId, body)),
   route('GET', '/imports', ({ store, actorId }) => store.listImportRuns(actorId)),
   route('GET', '/imports/:id', ({ store, actorId, params }) => store.getImportRun(actorId, params.id!)),
+
+  // Federation (DATA-BACKBONE.md §6): registered sources, and resolving a
+  // page's reference fields for the asking actor.
+  route('POST', '/sources', ({ store, actorId, body }) => store.createSource(actorId, body)),
+  route('GET', '/sources', ({ store, actorId }) => store.listSources(actorId)),
+  route('GET', '/sources/:id', ({ store, actorId, params }) => store.getSource(actorId, params.id!)),
+  route('PUT', '/sources/:id', ({ store, actorId, params, body }) => store.updateSource(actorId, params.id!, body)),
+  route('DELETE', '/sources/:id', ({ store, actorId, params }) => {
+    store.deleteSource(actorId, params.id!);
+    return { ok: true };
+  }),
+  route('GET', '/pages/:id/references', ({ store, actorId, params }) => store.resolveReferences(actorId, params.id!)),
+  route('POST', '/pages/:id/references', ({ store, actorId, params, body }) =>
+    store.addReference(actorId, params.id!, body),
+  ),
+  route('DELETE', '/references/:id', ({ store, actorId, params }) => {
+    store.removeReference(actorId, params.id!);
+    return { ok: true };
+  }),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
