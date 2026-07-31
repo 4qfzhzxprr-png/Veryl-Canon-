@@ -28,16 +28,59 @@ The first running slice of Veryl Canon: the data storage and organization backbo
 - **Connectors.** The integration seam, `resolve(source, request: { selector, key, asker }) -> { value, resolvedAt }`, registered by `source.kind` so a real connector plugs in without touching federation's logic. The shipped default is a hermetic static connector (`kind: 'static'`, `baseUrl` naming a fixture set) — a **test double, not an integration**: it exists so the whole system and the whole suite run with no external calls. A kind with no connector registered fails visibly (`No connector is registered for source kind …`) rather than resolving to nothing.
 - **The web UI.** A zero-dependency static SPA served from [public/](public/) at the server root: collections and page trees with status badges, the draft editor with the page-lock screen, the full review flow, version history with side-by-side compare and restore, search, comments, and the audit view. Safe-subset markdown rendering (escape-first). Identity via a dev "who are you" screen until SSO lands. The Ask view (grounded answers — question box, cited answer, refusal state) is built against the `POST /ask` contract in [DATA-BACKBONE.md](../DATA-BACKBONE.md) §5 and feature-detects it: while the endpoint returns 404, the whole experience stays hidden, exactly as search and comments do. The Map view draws `GET /collections/:id/graph` as inline SVG with a deterministic layered layout — a tidy tree seeded by the page tree, linked pages from other collections past its deepest branch, and sources in a column of their own — so the same record maps the same way on every reload; it pans, zooms, is reachable by keyboard (every node is a link in the tab order), explains itself in a legend, filters by provenance, status and edge kind, and falls back to a nested list carrying the same data, automatically past a documented node cap. Feature-detected like the rest: with no `/graph`, the Map entry is not there.
 
-## Two ways in: people and agents
+## Three ways in: people, developers, and agents
 
-Canon has one door and two credentials at it. A request carries a person's identity or an agent's passport, never both.
+Canon has one door and three credentials at it. A request carries exactly one of them — a person's session, a dev header, or an agent's passport — and any pairing is refused with `403 identity_mismatch` rather than resolved in favour of one.
 
-| Mode | Header | Live when | What it means |
+| Mode | Credential | Live when | What it means |
 | --- | --- | --- | --- |
-| **Dev mode** (default) | `X-Actor-Id: <actorId>` | always | The alpha's stand-in for SSO. Any actor id names its actor; nothing is verified. |
-| **Agent Passport** | `X-Agent-Passport: <token>` | `CANON_REGISTRY_URL` is set | The passport is verified with the Veryl Agent Registry on every session, resolved to an agent actor, and the Registry's limits are enforced on the request. |
+| **SSO** | `Cookie: canon_session=…` | `CANON_OIDC_ISSUER` is set | A person signs in at the organization's identity provider through an OpenID Connect Authorization Code flow with PKCE. The ID token's issuer, audience, expiry, nonce and **signature** are all verified (RS256 against the provider's JWKS, keyed by `kid`); the person gets a Canon actor provisioned from their verified claims on first sight, matched on the IdP **subject** thereafter. The session lives server-side, so signing out actually ends it. |
+| **Dev** | `X-Actor-Id: <actorId>` | `CANON_DEV_AUTH=true` | The alpha's stand-in for SSO. Any actor id names its actor and **nothing is verified**. Off by default: a server started without the variable refuses the header outright with `401 dev_auth_disabled`, and `POST /actors` does not exist on it. |
+| **Agent Passport** | `X-Agent-Passport: <token>` | `CANON_REGISTRY_URL` is set | The passport is verified with the Veryl Agent Registry on every session, resolved to an agent actor, and the Registry's limits are enforced on the request. Entirely unaffected by the other two. |
 
-With no Registry configured, Canon runs dev mode only: a request carrying `X-Agent-Passport` is refused with `503 unavailable` and a message naming the missing setting. Setting one environment variable turns passport authentication on, and swapping the stub for the live Registry is the same one variable:
+Each is one environment variable, and the server says at start-up which are live — loudly, and in the case of dev mode alarmingly, because a deployment must never have to read the code to find out whether it is running open.
+
+### Single sign-on
+
+```sh
+CANON_OIDC_ISSUER=http://127.0.0.1:3200 \
+CANON_OIDC_CLIENT_ID=veryl-canon \
+CANON_OIDC_CLIENT_SECRET=… \
+CANON_BASE_URL=https://canon.example.com \
+npm start
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `CANON_OIDC_ISSUER` | The provider's issuer URL. Setting it turns SSO on; unset, people cannot sign in. Discovery is read from `<issuer>/.well-known/openid-configuration` and **must name the same issuer**, so a provider that redirects cannot become a provider that substitutes. |
+| `CANON_OIDC_CLIENT_ID`, `CANON_OIDC_CLIENT_SECRET` | Required once the issuer is set. The secret authenticates the token call with `client_secret_basic`, so it stays out of the form body. |
+| `CANON_OIDC_REDIRECT_URI` | Optional; defaults to `<CANON_BASE_URL>/auth/callback`. Register it at the provider verbatim. |
+| `CANON_OIDC_SCOPE` | Optional; defaults to `openid profile email`. |
+| `CANON_OIDC_CLOCK_TOLERANCE_SEC` | Optional; skew allowed on `exp`/`nbf`/`iat`. Defaults to 60. |
+| `CANON_OIDC_TIMEOUT_MS` | Optional; how long to wait for the provider. Defaults to 5000. |
+| `CANON_SESSION_SECRET` | The HMAC key the session cookie is signed with. **Set it.** Without one, a key is invented at start-up: every restart signs everybody out, and no second instance can read the first's cookies. |
+| `CANON_SESSION_TTL_MS` | Optional; idle lifetime, renewed on use. Defaults to 8 hours. |
+| `CANON_SESSION_MAX_LIFETIME_MS` | Optional; the ceiling no amount of renewal passes. Defaults to 24 hours. |
+| `CANON_COOKIE_SECURE` | Optional; `true`/`false` to force the cookie's `Secure` flag. Defaults to on unless `CANON_BASE_URL` is plain `http`. |
+| `CANON_ALLOWED_ORIGINS` | Optional; extra origins a cookie-authenticated write may come from. The redirect URI's own origin is always allowed. |
+
+The routes are `GET /auth/login` (optionally `?return=<path on this server>`; anything else is confined to `/`, because an open redirect on a login endpoint is a phishing primitive), `GET /auth/callback`, `POST /auth/logout`, and `GET /auth/session` — which is open and answers `{ mode, sso, devAuth, authenticated, actor, csrfToken, csrfHeader, loginUrl }`. The web UI reads it at start-up and shows a real sign-in button, a dev picker, or a plain "no sign-in is configured" accordingly. None of these routes are in the record's route table or in agentauth's, so an agent presenting a passport at one is refused exactly as at any unclassified route.
+
+**Just-in-time provisioning** matches on the IdP subject, qualified by issuer, and never on the email address. An address changes and can be reassigned; giving a leaver's address to a new hire must not hand them the leaver's history, roles and audit trail. Name and email follow the provider on every sign-in, so attribution stays true.
+
+**CSRF.** A session cookie is an ambient credential, so an unsafe request carrying one must prove it was meant. Canon requires **both** an acceptable `Origin`/`Referer` **and** a session-bound token in `X-Canon-CSRF` (fetched from `GET /auth/session`). The token is a synchronizer token held server-side beside the session, not a double-submit cookie — a double-submit is forgeable by anyone who can write a cookie on the domain. Requests identified by `X-Actor-Id` or `X-Agent-Passport` are exempt and correctly so: neither is ambient, so no cross-site page can cause one to be sent.
+
+### Dev authentication
+
+```sh
+CANON_DEV_AUTH=true npm start   # X-Actor-Id accepted; POST /actors and GET /auth/dev/actors exist
+```
+
+This is what the test suite runs under and what local work uses. It is off unless the variable says `true`, so no deployment can end up open by forgetting something. With it off, `X-Actor-Id` is refused, `POST /actors` answers `404` (people arrive by SSO, agents by passport; neither needs it), and the web UI's identity picker is replaced by a real sign-in.
+
+### Agent Passports
+
+With no Registry configured, a request carrying `X-Agent-Passport` is refused with `503 unavailable` and a message naming the missing setting. Setting one environment variable turns passport authentication on, and swapping the stub for the live Registry is the same one variable:
 
 ```sh
 CANON_REGISTRY_URL=http://127.0.0.1:3100 npm start   # passport authentication live
@@ -57,7 +100,7 @@ How an agent request is handled ([`src/agentauth.ts`](src/agentauth.ts), per [RE
 
 ## What is stubbed, and where it goes next
 
-- **Identity.** People arrive via the `X-Actor-Id` header until SSO lands. Agents authenticate with their Agent Passport (above); the Registry behind it is the stub in [registry-stub/](../registry-stub/) until the live service is ready.
+- **Identity.** People sign in through OpenID Connect (above); the provider behind it is the stub in [idp-stub/](../idp-stub/) until the design partner's tenant is wired up, and swapping to it is `CANON_OIDC_ISSUER`. Agents authenticate with their Agent Passport; the Registry behind it is the stub in [registry-stub/](../registry-stub/) on exactly the same terms. `X-Actor-Id` survives as an explicit development opt-in and nothing else.
 - **The connector.** The only connector shipped is the hermetic `static` one, whose fixture data is supplied per source. It is a test double: it reaches nothing. A real integration implements `Connector` and registers itself on the store's `ConnectorRegistry` at start-up, keyed by the `kind` its sources carry; nothing else in federation changes.
 - **The embedding provider and the answer generator.** Both are interfaces with hermetic defaults: a hashed bag of words and an extractive generator. A hosted or self-hosted embedding model and a real language model plug into the same seams, and nothing else in retrieval changes. Until then the vector channel catches partial term overlap rather than paraphrase, and answers quote rather than compose prose.
 
@@ -67,7 +110,7 @@ Node 22+ (uses the built-in `node:sqlite`; no runtime dependencies).
 
 ```sh
 npm install   # dev dependencies only (TypeScript)
-npm test      # build + invariant test suite
+npm test      # build + invariant test suite (runs with CANON_DEV_AUTH=true, stated in package.json)
 npm start     # serve on :3000, record in ./canon.db (CANON_DB, PORT to override)
 ```
 
@@ -132,11 +175,16 @@ Delivery is an outbox, never an inline send: the notification row is written fir
 
 ## API sketch
 
-All requests JSON; identity via `X-Actor-Id`, or `X-Agent-Passport` for agents (see above).
+All requests JSON; identity via the session cookie, `X-Actor-Id` in dev mode, or `X-Agent-Passport` for agents (see above).
 
 ```
 GET    /health
-POST   /actors                              create person or agent (agents need registryRef)
+GET    /auth/session                        open: which door is open, who you are, your CSRF token
+GET    /auth/login | GET /auth/callback     SSO only
+POST   /auth/logout                         ends the session server-side
+GET    /auth/dev/actors                     dev mode only: the identity picker's directory
+POST   /actors                              DEV MODE ONLY — 404 otherwise; people arrive by SSO, agents by passport
+GET    /actors[?collection=<id>]            a collection's members, or your colleagues; never a global directory
 POST   /collections                         { name, description?, restricted? }
 GET    /collections | /collections/:id | /collections/:id/tree | /collections/:id/members
 PUT    /collections/:id/members/:actorId    { role }

@@ -1,7 +1,9 @@
 // Veryl Canon web UI — a single-file, no-dependency SPA over the Canon API.
-// Identity is the dev X-Actor-Id header (SSO and Agent Passport arrive with
-// the Registry integration). Hash routing; all rendering through esc() so no
-// record content is ever injected as HTML.
+// Identity is whichever door the server has open, learned from GET
+// /auth/session at start-up: a real SSO sign-in when one is configured, and
+// the dev X-Actor-Id picker when CANON_DEV_AUTH=true. A cookie session carries
+// its CSRF token on every write (see api()). Hash routing; all rendering
+// through esc() so no record content is ever injected as HTML.
 
 'use strict';
 
@@ -54,6 +56,10 @@ const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
 
 const state = {
   actor: readStoredActor(),
+  // GET /auth/session: { mode, sso, devAuth, authenticated, actor, csrfToken,
+  // csrfHeader, loginUrl }. Which door is open is the server's answer, not a
+  // build-time constant, so one UI serves an SSO deployment and a dev one.
+  auth: null,
   actors: null, // cached GET /actors
   // null = not yet probed
   features: { search: null, comments: null, ask: null, related: null, references: null, sources: null },
@@ -91,14 +97,23 @@ function storeActor(actor) {
 
 async function api(method, path, body, opts = {}) {
   const headers = {};
-  const actorId = opts.actorId ?? state.actor?.id;
+  // A cookie session is ambient, so it identifies the caller on its own and
+  // must never travel alongside an X-Actor-Id: the server refuses the pair.
+  const cookieSession = state.auth?.viaCookie === true;
+  const actorId = cookieSession ? null : (opts.actorId ?? state.actor?.id);
   if (actorId) headers['X-Actor-Id'] = actorId;
+  // The CSRF token for a cookie-authenticated write. Safe methods do not need
+  // it and header-identified requests are not ambient, so neither carries one.
+  if (cookieSession && state.auth?.csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    headers[state.auth.csrfHeader ?? 'X-Canon-CSRF'] = state.auth.csrfToken;
+  }
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let res;
   try {
     res = await fetch(path, {
       method,
       headers,
+      credentials: 'same-origin',
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -117,9 +132,30 @@ async function api(method, path, body, opts = {}) {
   return data;
 }
 
+// Which door is open, and who (if anyone) is already through it. Called once
+// at start-up and again after a sign-out.
+async function loadAuth() {
+  try {
+    state.auth = await api('GET', '/auth/session');
+  } catch {
+    // An older server with no /auth/session: dev mode, as it always was.
+    state.auth = { mode: 'dev', sso: false, devAuth: true, authenticated: false, actor: null, csrfToken: null };
+  }
+  if (state.auth.authenticated && state.auth.actor) storeActor(state.auth.actor);
+  else if (state.auth.viaCookie === false && state.auth.devAuth === false) storeActor(null);
+  return state.auth;
+}
+
 async function loadActors(force = false) {
   if (!state.actors || force) {
-    state.actors = await api('GET', '/actors', undefined, state.actor ? {} : { actorId: 'onboarding' });
+    // The directory is narrowed to people you actually work with, so it is
+    // only fetchable as somebody. Before sign-in, the dev picker has its own
+    // door; with SSO there is nothing to pick.
+    state.actors = state.actor || state.auth?.viaCookie
+      ? await api('GET', '/actors')
+      : state.auth?.devAuth
+        ? await api('GET', '/auth/dev/actors')
+        : [];
   }
   return state.actors;
 }
@@ -402,8 +438,16 @@ function renderChrome() {
     chip.innerHTML = `
       <span class="chip-name">${esc(state.actor.name)}</span>
       ${state.actor.kind === 'agent' ? '<span class="kind-tag agent">agent</span>' : ''}
-      <button class="btn subtle" id="switch-actor" title="Switch identity">Switch</button>`;
-    chip.querySelector('#switch-actor').addEventListener('click', () => {
+      <button class="btn subtle" id="switch-actor" title="${state.auth?.viaCookie ? 'Sign out' : 'Switch identity'}">${
+        state.auth?.viaCookie ? 'Sign out' : 'Switch'
+      }</button>`;
+    chip.querySelector('#switch-actor').addEventListener('click', async () => {
+      // A cookie session is ended at the server, where the row is deleted; a
+      // dev identity is only ever local, so forgetting it is the whole of it.
+      if (state.auth?.viaCookie) {
+        try { await api('POST', '/auth/logout'); } catch { /* the cookie is cleared either way */ }
+        state.auth = null;
+      }
       storeActor(null);
       resetFeatures();
       state.ask = null;
@@ -412,6 +456,7 @@ function renderChrome() {
       if (askLink) askLink.hidden = true;
       const sourcesLink = document.getElementById('nav-sources');
       if (sourcesLink) sourcesLink.hidden = true;
+      await loadAuth();
       renderChrome();
       location.hash = '#/identity';
       route();
@@ -613,10 +658,43 @@ function renderErrorPage(err) {
 // Identity screen (dev sign-in)
 
 async function viewIdentity() {
+  if (!state.auth) await loadAuth();
+  const sso = state.auth?.sso === true;
+  const dev = state.auth?.devAuth === true;
+
+  // With SSO configured this is a real sign-in: the browser leaves for the
+  // organization's identity provider and comes back with a session cookie.
+  // The dev picker below it survives only where the server has kept the dev
+  // door open, and says out loud that it verifies nothing.
+  if (!dev) {
+    app.innerHTML = `
+      <div class="identity-wrap">
+        <div class="identity-card">
+          <h1>Sign in</h1>
+          ${sso ? `
+            <p class="muted">Canon uses your organization's single sign-on. You will be sent to your
+            identity provider and returned here.</p>
+            <p><button class="btn primary" id="sso-signin">Sign in with your organization account</button></p>`
+          : `
+            <p class="form-error">No sign-in is configured on this server.</p>
+            <p class="muted">An administrator sets <code>CANON_OIDC_ISSUER</code> for single sign-on, or
+            <code>CANON_DEV_AUTH=true</code> for the development identity picker.</p>`}
+        </div>
+      </div>`;
+    const btn = app.querySelector('#sso-signin');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const back = state.afterIdentity && state.afterIdentity !== '#/identity' ? state.afterIdentity : '#/';
+        location.href = `/auth/login?return=${encodeURIComponent('/' + back)}`;
+      });
+    }
+    return;
+  }
+
   let actors = [];
   let loadError = null;
   try {
-    actors = await api('GET', '/actors', undefined, { actorId: state.actor?.id ?? 'onboarding' });
+    actors = await api('GET', '/auth/dev/actors');
   } catch (err) {
     loadError = err;
   }
@@ -624,9 +702,10 @@ async function viewIdentity() {
     <div class="identity-wrap">
       <div class="identity-card">
         <h1>Who are you?</h1>
-        <p class="muted">Development sign-in for the Canon alpha. Identity travels as the
-        <code>X-Actor-Id</code> header; SSO for people and Agent Passport authentication for
-        agents arrive with the Registry integration.</p>
+        <p class="muted">Development sign-in. Identity travels as the <code>X-Actor-Id</code> header and
+        <strong>nothing about it is verified</strong> — this server was started with
+        <code>CANON_DEV_AUTH=true</code>. Agents authenticate with an Agent Passport instead.</p>
+        ${sso ? '<p><button class="btn primary" id="sso-signin">Sign in with your organization account</button></p>' : ''}
         ${loadError ? `<p class="form-error">${esc(loadError.message)}</p>` : ''}
         <div class="identity-list">
           ${actors.length ? actors.map((a) => `
@@ -654,6 +733,14 @@ async function viewIdentity() {
         </form>
       </div>
     </div>`;
+
+  const ssoBtn = app.querySelector('#sso-signin');
+  if (ssoBtn) {
+    ssoBtn.addEventListener('click', () => {
+      const back = state.afterIdentity && state.afterIdentity !== '#/identity' ? state.afterIdentity : '#/';
+      location.href = `/auth/login?return=${encodeURIComponent('/' + back)}`;
+    });
+  }
 
   app.querySelectorAll('[data-pick]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -3396,6 +3483,10 @@ document.addEventListener('click', (e) => {
 });
 
 window.addEventListener('hashchange', route);
-renderChrome();
-wireSearch();
-route();
+// Ask the server which door is open before drawing anything: a cookie session
+// means the person is already signed in and the chrome should say so.
+loadAuth().finally(() => {
+  renderChrome();
+  wireSearch();
+  route();
+});

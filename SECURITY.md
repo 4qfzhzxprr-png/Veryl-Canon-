@@ -4,11 +4,13 @@
 
 It is written the way the rest of this repository is written. Where a control is partial, it says so and says where it stops. A finding nobody can act on because the report overstated the fix is worse than no report.
 
+**Addendum.** F10 and F11 below were added after the original review, when the two recommendations the review would not make on its own — R1, no authentication for people; R2, an open directory — were built and landed. Their regression tests live in [`server/test/auth.test.ts`](server/test/auth.test.ts) and [`idp-stub/test/idp.test.ts`](idp-stub/test/idp.test.ts) rather than in `security.test.ts`, because they test a door rather than guard a fix. Section 4's "CSRF is not applicable" paragraph and section 5's first assumption are rewritten accordingly; both predicted this change, and both are kept visible rather than quietly replaced.
+
 ---
 
 ## 1. Scope and method
 
-**In scope.** The whole of `server/src/` (every module), `server/public/app.js`, `registry-stub/src/`, `source-stub/src/`, and the contracts the code claims to implement: [CORE-PLAN.md](CORE-PLAN.md) §4 Epic E, §5 M4, §7; [DATA-BACKBONE.md](DATA-BACKBONE.md) §2, §5, §6; [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) in full.
+**In scope.** The whole of `server/src/` (every module — including `auth.ts` and its `idp-stub/src/` counterpart, added with F10), `server/public/app.js`, `registry-stub/src/`, `source-stub/src/`, and the contracts the code claims to implement: [CORE-PLAN.md](CORE-PLAN.md) §4 Epic E, §5 M4, §7; [DATA-BACKBONE.md](DATA-BACKBONE.md) §2, §5, §6; [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) in full.
 
 **Method.** Manual reading of every source file, route by route and store method by store method, against seven questions:
 
@@ -22,7 +24,7 @@ It is written the way the rest of this repository is written. Where a control is
 
 Findings were confirmed by writing the exploit as a test first. Every fix below has a regression test in [`server/test/security.test.ts`](server/test/security.test.ts) that **fails without the fix** — verified by reverting each fix in turn and watching its test go red. Two tests in that file are marked as property tests rather than regressions: they assert behaviour that was already correct and that nothing was guarding.
 
-**Test counts after this work:** `server` 171 (was 148), `registry-stub` 10, `source-stub` 13. All pass.
+**Test counts after this work:** `server` 171 (was 148), `registry-stub` 10, `source-stub` 13. All pass. (F10 and F11, added later, take `server` to 248 and add `idp-stub` at 12 — see §6.)
 
 **Second pass, §3.** Everything in §3 below was originally left undone on purpose: each one is a behaviour change, and a security review should not land those on its own authority. The team has since decided on R3 through R8 and they are now implemented, tested the same way — each fix's test verified red by reverting the fix and watching it fail. **Test counts after that work:** `server` 220, `registry-stub` 10, `source-stub` 13, `studio-stub` 8. All pass. R1 and R2 remain open and are being taken up with SSO.
 
@@ -139,21 +141,50 @@ A spreadsheet treats a cell beginning `=`, `+`, `-`, `@`, tab or CR as a formula
 
 **Fixed**: both are bound parameters, with the clamp kept.
 
+### F10 — There was no authentication for people · **Critical · fixed** *(was R1)*
+
+`X-Actor-Id` was an assertion, not a credential: knowing an actor's UUID *was* being that actor. `POST /actors` was open to unauthenticated callers, so anyone who could reach the port could mint an identity and then be it. Every other control in this document — collection roles, the audit narrowing in F2, the Registry intersection — sat on top of that, and §5's first assumption said so in as many words.
+
+This was recorded as R1 rather than fixed because closing it is a product change, not a review's edit. It has now been made. **Fixed** by a new module, [`server/src/auth.ts`](server/src/auth.ts), a new stub to build it against, [`idp-stub/`](idp-stub/), and the application of both at the door in `api.ts`:
+
+- **OpenID Connect, Authorization Code with PKCE.** `GET /auth/login` → the provider → `GET /auth/callback`. State, nonce and the PKCE verifier are held server-side and are **single-use**: a replayed callback finds nothing and is refused as an unknown state, which is the same refusal a forged one gets.
+- **The ID token is actually verified.** RS256 only, checked with `node:crypto` against the provider's JWKS, fetched, cached and keyed by `kid` — with one refetch on an unknown `kid` so key rotation survives, rate-limited so a made-up `kid` cannot be used to hammer the provider. `alg: none` and every HMAC algorithm are refused by policy rather than by failing to find a key. Then issuer (exact), audience (`azp` required when there is more than one), `exp`, `nbf`, `iat` and **nonce** — a *missing* nonce is refused exactly as a wrong one is, because a token with no nonce may be a perfectly valid one replayed from elsewhere. The discovery document must itself name the issuer it was fetched from, so a provider that redirects cannot become a provider that substitutes.
+- **Just-in-time provisioning on the subject, never the email.** A person authenticating for the first time gets a Canon actor from their verified claims; thereafter they are matched on the IdP subject, qualified by issuer, with a unique index in the storage layer rather than only in the lookup. An address changes and can be reassigned: matching on email would mean giving a leaver's address to a new hire hands them the leaver's history, roles and audit trail. Name and email follow the provider on each sign-in, so attribution stays true.
+- **Sessions are server-side.** The cookie is `HttpOnly`, `SameSite=Lax`, `Secure` unless the deployment is plain-`http` local, and carries a session id signed with HMAC-SHA256 — a pointer, never a bearer of claims. The signature is checked before the database is asked anything. Idle lifetime renews on use up to a hard absolute ceiling; **logout deletes the row**, so the same cookie presented afterwards authenticates nothing. `revokeSessionsFor(actorId)` cuts every session a person holds.
+- **`POST /actors` is closed.** It exists only while dev authentication is on, and answers `404` otherwise — not merely refused, absent. People arrive by SSO; agents arrive by passport, where `agentauth.ts` creates the actor from the Registry's answer. Neither path needs it.
+- **`X-Actor-Id` survives only as an explicit opt-in.** `CANON_DEV_AUTH=true` and nothing else. A server started without it refuses the header outright with `401 dev_auth_disabled`, and says at start-up which doors are open — alarmingly when dev mode is one of them. The test suite states the opt-in in `server/package.json`, so the suite runs against the same code path a developer does rather than a special case.
+- **The three doors never mix.** A session cookie alongside an `X-Agent-Passport`, or alongside an `X-Actor-Id` naming somebody else, is `403 identity_mismatch` — the same refusal `agentauth.ts` already made for a passport plus a mismatched actor header, now complete for every pairing. REGISTRY-CONTRACT.md §2 stated the rule; all of it is now enforced.
+
+Sign-ins, provisionings, failures and logouts are audit events (`person.session`, `person.provisioned`, `person.auth_failed`, `person.logout`). No ID token, authorization code, client secret or session id ever reaches an error message or the log; there is a test asserting it.
+
+**What this does not do, stated plainly.** Canon does not consume the provider's group or role claims, so collection membership is still granted inside Canon by an administrator; a person who signs in and holds no role sees an empty Canon, which is the correct default but is not the same as provisioning from a directory. There is no single-logout: revoking someone at the identity provider does not reach into Canon's session table, so their session survives until it expires or somebody calls `revokeSessionsFor`. That is a real gap next to the agent door's sixty-second guarantee, and it is a deliberate scope line rather than an oversight — see R9.
+
+### F11 — `GET /actors` disclosed the whole directory · **Medium · fixed (behaviour change)** *(was R2)*
+
+Any actor could list every actor with their email address, and the web UI's identity picker depended on it — including for callers who were nobody at all, since the picker asked with a made-up actor id and the store never checked.
+
+**Fixed** in `visibleActors` ([`server/src/auth.ts`](server/src/auth.ts)), with one rule per legitimate need:
+
+- `GET /actors?collection=<id>` — that collection's member list, to anyone who may view it. This is the legitimate case: a member list is who you can name as an owner, an approver, or a mention. A non-member learns nothing, not even the size of the list, because the existing `listMembers` permission check runs first.
+- `GET /actors` from an actor who holds `admin` on at least one collection — the whole directory. An administrator "sets up collections, permissions and document types" (CORE-PLAN.md §2) and cannot grant a role to somebody they cannot find. This is the same "admin on at least one collection" operator stand-in `sources.ts` and `notify.ts` already use.
+- `GET /actors` from anyone else — themselves plus the people they actually share a collection with, with **email addresses omitted for everyone but themselves**.
+- The dev identity picker moved to `GET /auth/dev/actors`, which exists only in dev mode. Keeping it off the record's route entirely is what lets `GET /actors` carry one rule for everybody rather than a rule with a hole in it.
+
+**This is a behaviour change and it is deliberate**, in the same spirit as F2: a contributor's view of the organization is now bounded by who they work with. The residual is the operator case — an administrator of one collection still sees every actor and every address. Bounding *that* needs an org-level administrator role, which is the same missing thing F2 named, and inventing a second answer for it here would leave Canon with two.
+
 ---
 
 ## 3. Recommendations — the behaviour changes, and what the team decided
 
 Each of these was a behaviour change the team had to decide on rather than something a security review should land on its own. R1 and R2 are still open and belong with SSO. R3 through R8 were decided and are now implemented; each carries its decision, what changed, and — where the recommendation was not followed exactly — the argument for the version that shipped instead.
 
-### R1 — There is no authentication · **Critical in production, accepted for the alpha**
+### R1 — There is no authentication · **fixed, see F10**
 
-`X-Actor-Id` is an assertion, not a credential: knowing an actor's UUID *is* being that actor. `POST /actors` is open to unauthenticated callers, so anyone who can reach the port can mint an identity. Every other control in this document — collection roles, the audit narrowing in F2, the Registry intersection — sits on top of that.
+Closed. `X-Actor-Id` is now an explicit development opt-in (`CANON_DEV_AUTH=true`) and refused otherwise; people sign in through OpenID Connect; `POST /actors` exists only in dev mode. The deployment gate this entry described is discharged — with the caveats F10 states about group claims and single-logout, and R9 below.
 
-This is the documented alpha design (`api.ts`: "people get SSO later"; [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) §2 says the same), and the agent door is genuinely authenticated because the Registry is. It is recorded here as **the assumption the whole model rests on**: Canon must not hold a design partner's real corpus on a network anyone untrusted can reach until SSO lands. That is a deployment gate, not a code change.
+### R2 — `GET /actors` discloses the whole directory · **fixed, see F11**
 
-### R2 — `GET /actors` discloses the whole directory, including email addresses
-
-Any actor can list every actor with their email. The web UI's identity picker depends on it. The fix belongs with SSO (R1), where "who may see the directory" becomes answerable.
+Closed. A member list per collection to its members, the whole directory only to an operator, colleagues without addresses to everyone else.
 
 ### R3 — A mention notified any actor, including non-members · **fixed (behaviour change)**
 
@@ -239,6 +270,17 @@ Three decisions inside this one worth naming:
 - **Nothing that reads the record is limited.** `GET /pages/:id`, `/search`, `/collections`, `/audit`, `/notifications` and the whole Knowledge read surface have no bucket, and a test asserts it. The one failure this must not have is a person unable to read a policy at the moment they need it: a limiter that can do that has cost more than the load it prevented. A new route is unlimited by default — the opposite of `agentauth`'s default, and for the opposite reason.
 - **The auth bucket is keyed by the connection's origin, not by actor**, because the actor is precisely what an unverified passport is asserting; keying a brute-force limiter by the credential being guessed would limit nothing. **Only a failed authentication spends a token**, so a busy honest agent never meets this bucket at all. When SSO lands (R1), its login route belongs in this bucket, on this key. `X-Forwarded-For` is deliberately not trusted — behind a proxy that collapses origins this bucket degrades to a per-proxy limit, which is honest but weaker, and a deployment in that shape should limit logins at the proxy.
 - **It is in process.** Several Canon processes limit per process. That is proportionate for the alpha and it is written down rather than implied; a distributed limiter needs a shared store Canon does not have, and building one here would have been the wrong-sized change.
+Nothing bounds requests per actor. `POST /ask` is the expensive one, and `GET /auth/login` now joins it as an unauthenticated route that costs the server work (a row, and a discovery fetch on a cold cache). Assumed to be handled by whatever sits in front of Canon; recorded because that assumption is not written down anywhere else.
+
+### R9 — A session outlives a revocation at the identity provider
+
+New with F10. The agent door re-asks the Registry at least once a minute, which is what makes "revoking an agent cuts its access within a minute" true. The people door does not: an ID token is verified once, at sign-in, and the session that follows is Canon's own. Disabling someone in Entra ID or Okta therefore does nothing to a session they already hold until it expires — up to `CANON_SESSION_MAX_LIFETIME_MS`, a day by default.
+
+**Recommendation: shorten the absolute lifetime for a partner deployment, and add a periodic re-check** — either the provider's token introspection or a silent re-authorization on a cadence, plus an administrative "sign this person out everywhere". The primitive for the last of these already exists (`PersonAuth.revokeSessionsFor`); what is missing is a route to it and a decision about who may call it. Not done here because "how fast must a person's revocation propagate" is a commitment to make deliberately, the way the sixty-second one was, rather than a number a first implementation picks.
+
+### R10 — Nothing behind SSO is provisioned from the directory
+
+Also new with F10. Canon reads `sub`, `name` and `email` from the ID token and no group or role claim. A person who signs in successfully and holds no collection role sees an empty Canon until an administrator grants them one. That is the right default — a claim from a directory is not a Canon permission — but a partner with hundreds of staff will want group-to-collection mapping, and designing it badly (an IdP group silently granting `admin`) would undo F2 and F11 at once. **Recommendation: design it together with the org-level administrator role F2 and F11 both ask for, not before.**
 
 ---
 
@@ -272,9 +314,18 @@ A review that reports only hits is not a review. These were attacked specificall
 
 **SMTP wire handling.** Dot-stuffing is correct, envelope addresses are validated for CR/LF and angle brackets, STARTTLS is required whenever credentials are present so a password never crosses in clear, and AUTH exchanges are never logged.
 
-**CSRF is not applicable.** Identity travels in a custom header (`X-Actor-Id` / `X-Agent-Passport`), never a cookie, so there are no ambient credentials for a cross-site request to borrow. This stops being true the moment SSO introduces a session cookie — see §5.
+**CSRF ~~is not applicable~~ is handled.** This paragraph used to read "identity travels in a custom header, never a cookie, so there are no ambient credentials for a cross-site request to borrow — this stops being true the moment SSO introduces a session cookie". SSO has introduced a session cookie, so it is true no longer, and the prediction is worth keeping visible because it is exactly the kind of paragraph that goes stale silently.
 
-**The stubs.** `registry-stub` and `source-stub` leave their administrative faces unauthenticated. Both say so in their own headers, both are test doubles, and neither is deployable. No finding is raised; they must never be run anywhere real, which is what "stub" is doing in their names.
+What is there instead (`assertCsrf` in [`server/src/auth.ts`](server/src/auth.ts)): a request that is **cookie-authenticated** and **not a safe method** must satisfy *both* checks, or it is `403`.
+
+1. **Origin.** `Origin`, or `Referer` when there is no `Origin`, must be an origin the deployment allows (the redirect URI's own, plus `CANON_ALLOWED_ORIGINS`). Browsers send `Origin` on every cross-site POST including form submissions, so this catches the classic attack outright and costs an honest caller nothing. An opaque origin (`null` — a sandboxed iframe, a `data:` document) is refused rather than treated as absent.
+2. **A session-bound token** in `X-Canon-CSRF`, compared in constant time against a token minted with the session and held **server-side beside it**. This is a synchronizer token, not a double-submit cookie: a double-submit is forgeable by anyone who can write a cookie on the domain — a sibling subdomain, a network position on plain HTTP — and Canon holds a regulated corpus, so the cheaper pattern is not worth the caveat. A custom header also cannot be produced by a form post at all, and cross-origin JavaScript cannot read the token because Canon emits no CORS headers.
+
+Both, because either alone has a gap: origin checking fails open on a request carrying neither `Origin` nor `Referer`, and a token alone is spent the moment one leaks into a URL or a log. `SameSite=Lax` on the cookie is a third layer and is not relied on as any of them.
+
+Requests identified by `X-Actor-Id` or `X-Agent-Passport` are **exempt**, and that is correct rather than convenient: neither is ambient, so no cross-site page can cause one to be sent. The exemption is keyed on how the request was actually authenticated, not on which header happens to be present, so it cannot be claimed by attaching a header.
+
+**The stubs.** `registry-stub`, `source-stub` and `idp-stub` leave their administrative faces unauthenticated. All three say so in their own headers, all three are test doubles, and none is deployable. `idp-stub` goes further and authenticates no *person* either — `?login_hint=<sub>` issues a code on the spot, which is what makes the flow drivable from a test with no browser, and is also what makes running it anywhere real equivalent to having no authentication at all. No finding is raised; they must never be run anywhere real, which is what "stub" is doing in their names.
 
 ---
 
@@ -282,7 +333,9 @@ A review that reports only hits is not a review. These were attacked specificall
 
 The assumptions the design rests on. If one of these stops being true, re-read this document rather than trusting it.
 
-1. **Everyone who can reach the port is trusted to be who they say they are.** `X-Actor-Id` is an assertion and `POST /actors` is open. Every authorization control in Canon is downstream of that. The alpha survives because the deployment is closed; a partner corpus on a reachable network without SSO is the single fastest way to make this review worthless.
+1. **`CANON_DEV_AUTH` is not set in any deployment that matters.** This used to read "everyone who can reach the port is trusted to be who they say they are", and F10 has replaced the trust with a verified ID token — but the old behaviour is still one environment variable away, because tests and local work genuinely need it. With it set, `X-Actor-Id` is believed and `POST /actors` is open, and every authorization control in Canon is downstream of that again. The server shouts about it at start-up. **The one thing a deployment must get right is not setting it**, and the second is `CANON_SESSION_SECRET`: without one, sessions are signed with a per-process key, which is survivable on a single instance and silently breaks behind a load balancer.
+
+   The second half of the old assumption still holds in a new place: an identity provider that will issue a token for anybody is a Canon anybody can enter. `idp-stub` is exactly such a provider — it authenticates nobody, by design — so it must never be what `CANON_OIDC_ISSUER` points at outside a test.
 
 2. **A collection admin is trusted with the network the server sits on.** F1's allowlist moves that trust from a collection admin to whoever writes `CANON_SOURCE_ALLOWED_HOSTS` — and everything inside the allowlist is still reachable. Add a host to that list and you are asserting it is safe for Canon to fetch, follow redirects within, and read responses from. The connection now goes to the address that was checked and to no other (F1 follow-up), so an allowlisted name can no longer be re-pointed at an internal address between the check and the connect; what remains is the allowlist itself, one unauthenticated DNS answer per hop, and — over plain `http://` — the network path.
 
@@ -350,3 +403,18 @@ Recorded separately from the table above, because they were made after the revie
 | `server/test/security.test.ts` | Eight more tests, one per behaviour change, each verified red by reverting its fix. |
 | `server/test/{agentauth,answers,federation,import}.test.ts` | Four existing tests updated to the new behaviour, each with the reason in a comment. |
 | `server/README.md` | The rate-limit variables, and import's trust level corrected to `admin`. |
+### Changes made by the authentication work (F10, F11)
+
+| File | Change |
+| --- | --- |
+| `server/src/auth.ts` | **New.** The people-facing door: the OIDC client (discovery, JWKS by `kid`, code exchange, ID-token validation), server-side sessions behind a signed cookie, CSRF, just-in-time provisioning on the subject, and `visibleActors`. |
+| `idp-stub/` | **New.** A standalone OpenID Connect provider with zero runtime dependencies, mirroring `registry-stub`: discovery, JWKS, authorize, token, userinfo, an administrative face, and a set of named quirks so every refusal path can be tested against a provider that really lies. |
+| `server/src/api.ts` | The three-door resolution at the top of every request: `/auth/…` handled before the route table, dev-only routes absent when dev auth is off, `X-Actor-Id` refused unless opted into, the CSRF gate on cookie-authenticated writes, and every pairing of two identities refused. `POST /actors` is dev-only; `GET /actors` is narrowed. |
+| `server/src/index.ts` | Assembles the door from the environment and announces at start-up which of the three are live — loudly when dev authentication is one of them. |
+| `server/public/app.js` | Reads `GET /auth/session` at start-up; a real sign-in button when SSO is configured, the dev picker when dev auth is on, and the CSRF token on every cookie-authenticated write. |
+| `server/package.json` | The test suite states `CANON_DEV_AUTH=true`, so it runs the same code path a developer does rather than a special case. |
+| `server/test/auth.test.ts` | **New.** 36 tests, run against the real `idp-stub` in-process. |
+| `idp-stub/test/idp.test.ts` | **New.** 12 tests over the provider itself. |
+| `server/README.md`, `idp-stub/README.md` | The three doors and every new environment variable. |
+
+**Test counts after the authentication work:** `server` 248 (was 212), `idp-stub` 12, `registry-stub` 10, `source-stub` 13, `studio-stub` 8. All pass.

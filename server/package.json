@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test \"dist/server/test/**/*.test.js\"",
+    "test": "npm run build && CANON_DEV_AUTH=true node --test \"dist/server/test/**/*.test.js\"",
     "start": "npm run build && node dist/server/src/index.js"
   },
   "devDependencies": {
