@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Member Benefits : Claims Runbook</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first"><span><a href="index.html">Member Benefits</a></span></li>
+                            <li><span><a href="Benefits+Overview_65601.html">Benefits Overview</a></span></li>
+                        </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                        <span id="title-text">Claims Runbook</span>
+                    </h1>
+                </div>
+
+                <div id="content" class="page view">
+                    <div id="main-content" class="wiki-content group">
+                        <p>How the nightly claims batch is routed. Owned by the claims platform team; page reviewed each quarter.</p>
+
+                        <h2 id="ClaimsRunbook-Routingrule">Routing rule</h2>
+                        <p>Claims above the manual-review threshold never route automatically:</p>
+                        <div class="code panel pdl" style="border-width: 1px;">
+                            <div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: python; gutter: false; theme: Confluence" data-theme="Confluence">def route(claim):
+    if claim["amount"] &gt; 5000:
+        return "manual"
+    if claim["provider"] not in NETWORK:
+        return "manual"
+    return "auto"</pre>
+                            </div>
+                        </div>
+
+                        <h2 id="ClaimsRunbook-Ifthebatchfails">If the batch fails</h2>
+                        <ol>
+                            <li><p>Check <code>claims-batch</code> in the job console</p></li>
+                            <li><p>Re-run with <code>--resume</code>; it is idempotent per claim id</p></li>
+                            <li><p>If two re-runs fail, page the on-call engineer</p></li>
+                        </ol>
+
+                        <p>The batch writes its own audit trail; do not edit rows by hand.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

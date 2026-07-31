@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { COMMENTS_SCHEMA } from './comments.js';
+import { IMPORTS_SCHEMA } from './import.js';
 import { NOTIFICATIONS_SCHEMA } from './notify.js';
 
 // Storage separates by lifecycle (DATA-BACKBONE.md §4): the current record
@@ -115,5 +116,6 @@ export function openDb(path: string): DatabaseSync {
   db.exec(SCHEMA);
   db.exec(COMMENTS_SCHEMA); // comments (Epic C, M2); DDL lives with its logic in comments.ts
   db.exec(NOTIFICATIONS_SCHEMA); // notifications outbox (Epic C, M2); DDL in notify.ts
+  db.exec(IMPORTS_SCHEMA); // import runs and their per-file outcomes (Epic E, M4); DDL in import.ts
   return db;
 }

@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { CanonError } from './model.js';
 import { CanonStore } from './store.js';
+import { RawResponse } from './csv.js';
 
 // A deliberately thin HTTP layer over the store. Actor identity arrives in
 // the X-Actor-Id header for now; people get SSO and agents get Agent
@@ -126,6 +127,22 @@ const routes: Route[] = [
   route('POST', '/comments/:id/resolve', ({ store, actorId, params }) => store.resolveComment(actorId, params.id!)),
   route('POST', '/comments/:id/reopen', ({ store, actorId, params }) => store.reopenComment(actorId, params.id!)),
   route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
+
+  // Epic E, M4: the audit log as a CSV download, same filters as GET /audit,
+  // and the Confluence and Google Docs importers.
+  route('GET', '/audit.csv', ({ store, actorId, query }) =>
+    store.auditCsv(actorId, {
+      actorId: query.get('actor') ?? undefined,
+      action: query.get('action') ?? undefined,
+      from: query.get('from') ?? undefined,
+      to: query.get('to') ?? undefined,
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
+
+  route('POST', '/imports', ({ store, actorId, body }) => store.runImport(actorId, body)),
+  route('GET', '/imports', ({ store, actorId }) => store.listImportRuns(actorId)),
+  route('GET', '/imports/:id', ({ store, actorId, params }) => store.getImportRun(actorId, params.id!)),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -165,7 +182,10 @@ export function createApi(store: CanonStore): Server {
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
       const result = match.handler({ store, actorId, params, query: url.searchParams, body });
-      send(res, 200, result ?? { ok: true });
+      // Almost everything here is JSON; a handler that needs another content
+      // type (the audit CSV download) returns a RawResponse and writes itself.
+      if (result instanceof RawResponse) result.writeTo(res);
+      else send(res, 200, result ?? { ok: true });
     } catch (err) {
       if (err instanceof CanonError) {
         send(res, err.httpStatus, { error: err.code, message: err.message, ...err.details });
