@@ -3,6 +3,8 @@ import { COMMENTS_SCHEMA } from './comments.js';
 import { EMBEDDINGS_SCHEMA } from './embeddings.js';
 import { IMPORTS_SCHEMA } from './import.js';
 import { NOTIFICATIONS_SCHEMA } from './notify.js';
+import { REFERENCES_SCHEMA } from './references.js';
+import { SOURCES_SCHEMA } from './sources.js';
 
 // Storage separates by lifecycle (DATA-BACKBONE.md §4): the current record
 // (actors, collections, members, pages, drafts), immutable history
@@ -119,5 +121,7 @@ export function openDb(path: string): DatabaseSync {
   db.exec(NOTIFICATIONS_SCHEMA); // notifications outbox (Epic C, M2); DDL in notify.ts
   db.exec(EMBEDDINGS_SCHEMA); // derived embeddings (Epic D, M3); DDL in embeddings.ts
   db.exec(IMPORTS_SCHEMA); // import runs and their per-file outcomes (Epic E, M4); DDL in import.ts
+  db.exec(SOURCES_SCHEMA); // federated sources (DATA-BACKBONE.md §6); DDL in sources.ts
+  db.exec(REFERENCES_SCHEMA); // reference fields and their labelled cache; DDL in references.ts
   return db;
 }

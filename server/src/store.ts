@@ -24,6 +24,9 @@ import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retriev
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 import { AUDIT_CSV_MAX_ROWS, RawResponse, auditCsvResponse } from './csv.js';
 import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './import.js';
+import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
+import { Source, SourceInput, SourceService } from './sources.js';
+import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -48,11 +51,19 @@ export class CanonStore {
   // answers.ts; delegates at the end of this class.
   private readonly retrieval: RetrievalService;
   private readonly answers: AnswerService;
+  // Federation (DATA-BACKBONE.md §6) lives in sources.ts, connectors.ts and
+  // references.ts. The connector registry is a deployment's seam: it defaults
+  // to the hermetic static connector so everything runs with no external
+  // calls, and a real integration registers itself on it.
+  readonly connectors: ConnectorRegistry;
+  private readonly sources: SourceService;
+  private readonly references: ReferenceService;
 
   constructor(
     private readonly db: DatabaseSync,
     transport?: NotificationTransport,
     embeddingProvider?: EmbeddingProvider,
+    connectors: ConnectorRegistry = defaultConnectorRegistry(),
   ) {
     this.searchIndex = new SearchIndex(db);
     this.embeddings = new EmbeddingStore(db, embeddingProvider);
@@ -60,6 +71,9 @@ export class CanonStore {
     this.commentService = new CommentService(db, this, this.notifier);
     this.retrieval = new RetrievalService(db, this, this.searchIndex, this.embeddings);
     this.answers = new AnswerService(db, this, this.retrieval);
+    this.connectors = connectors;
+    this.sources = new SourceService(db, this);
+    this.references = new ReferenceService(db, this, this.sources, this.connectors);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -803,5 +817,44 @@ export class CanonStore {
 
   listImportRuns(actorId: string): Omit<ImportRunRecord, 'items' | 'files'>[] {
     return new ImportService(this.db, this).listRuns(actorId);
+  }
+
+  // ---- federation: sources and reference fields (DATA-BACKBONE.md §6) ---
+  // Thin delegates; the logic lives in sources.ts, connectors.ts, references.ts.
+
+  createSource(actorId: string, input: SourceInput): Source {
+    return this.sources.create(actorId, input);
+  }
+
+  listSources(actorId: string): Source[] {
+    return this.sources.list(actorId);
+  }
+
+  getSource(actorId: string, id: string): Source {
+    return this.sources.get(actorId, id);
+  }
+
+  updateSource(actorId: string, id: string, input: Partial<SourceInput>): Source {
+    return this.sources.update(actorId, id, input);
+  }
+
+  deleteSource(actorId: string, id: string): void {
+    this.sources.remove(actorId, id);
+  }
+
+  addReference(actorId: string, pageId: string, input: ReferenceInput): PageReference {
+    return this.references.add(actorId, pageId, input);
+  }
+
+  listReferences(actorId: string, pageId: string): PageReference[] {
+    return this.references.list(actorId, pageId);
+  }
+
+  removeReference(actorId: string, referenceId: string): void {
+    this.references.remove(actorId, referenceId);
+  }
+
+  resolveReferences(actorId: string, pageId: string): Promise<ResolvedReference[]> {
+    return this.references.resolveReferences(actorId, pageId);
   }
 }
