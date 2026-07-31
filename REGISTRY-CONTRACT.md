@@ -24,7 +24,7 @@ The handshake:
 
 1. The agent calls Canon's API with its passport in the `X-Agent-Passport` header. (People authenticate separately; in the current alpha server that is the `X-Actor-Id` header, and SSO later. The two paths never mix: a request carries a person's identity or an agent's passport, not both.)
 2. Canon presents the passport to the Registry's `POST /verify` endpoint.
-3. The Registry answers with the agent's identity, its certification standing, and its limits — permitted collections and permitted actions — or with a refusal.
+3. The Registry answers with the agent's identity, its certification standing, and its limits — permitted collections, permitted sources, and permitted actions — or with a refusal.
 4. On a verified answer, Canon resolves the agent to its actor record (creating one on first contact, holding the Registry's `agentId` as the `registryRef`), enforces the limits against the request, and attributes the action to that actor in history and the audit log.
 5. On any refusal, or no answer, Canon rejects the request. See section 5.
 
@@ -43,21 +43,33 @@ The sixty-second cap is not a tuning knob; it is the guarantee. CORE-PLAN commit
 
 Whether one minute is tight enough is an open question, recorded in section 7.
 
-## 4. Permitted collections and actions
+## 4. Permitted collections, sources, and actions
 
 The verification answer carries the agent's limits, set in the Registry by the organization's administrators:
 
 - **`permittedCollections`** — the Canon collection IDs the agent may touch, as opaque strings. The single entry `"*"` means all collections. The Registry does not know Canon's collections; administrators copy the IDs in. Canon enforces: a request touching a collection outside the list is forbidden, whatever Canon's own membership tables say.
-- **`permittedActions`** — what the agent may do inside its permitted collections, from a fixed vocabulary of three: `read`, `comment`, `write`. `read` covers viewing pages, trees, versions, and grounded answers; `comment` covers commenting; `write` covers drafting, publishing, and page operations, and only where Canon's own workflow allows agents to write at all (Core keeps agents read-mostly; see CORE-PLAN, scope).
+- **`permittedSources`** — the Canon source IDs the agent may resolve references from, as opaque strings, on exactly the same terms. The single entry `"*"` means all sources. Absent or empty means none: an agent whose limits say nothing about sources resolves no federated value at all.
+- **`permittedActions`** — what the agent may do inside its permitted collections, from a fixed vocabulary of three: `read`, `comment`, `write`. `read` covers viewing pages, trees, versions, grounded answers, and resolving a page's references; `comment` covers commenting; `write` covers drafting, publishing, page operations, and registering or changing a source, and only where Canon's own workflow allows agents to write at all (Core keeps agents read-mostly; see CORE-PLAN, scope).
+
+`permittedSources` exists because a collection limit that stops at Canon's door is not a limit. [DATA-BACKBONE.md](DATA-BACKBONE.md) (section 6) makes a connection to an external system a governed object for exactly this reason: if agents reach external systems directly, "rules set once, carried everywhere" quietly becomes false, and an agent barred from a collection could read the same facts through the source behind it. So the passport carries which sources the agent may reach alongside which collections it may read, and Canon enforces both at the same door.
+
+### 4.1 The intersection
 
 Enforcement is an intersection, never a union. An agent acts only where **both** the Registry's limits and Canon's own collection permissions allow. The Registry's answer can narrow what an agent's collection membership would permit; it can never widen it. And per the backbone principles, Canon stores none of this: the limits live in the Registry, arrive with each verification, are enforced against the request in hand, and expire with the cached answer. A limits change in the Registry therefore propagates exactly as fast as a revocation — within the same minute.
 
-Two cases the list of collection IDs does not decide on its own, settled when Epic D wired this contract into Canon's door:
+For sources the rule is word for word the same: an agent resolves a reference only where **both** the Registry permits the source AND Canon's own permissions permit the page the reference sits on. Neither side widens the other. A source in `permittedSources` grants nothing on a page the agent cannot read; a readable page grants nothing through a source the Registry withheld. And because federation resolves with the asker's identity wherever the source can accept it (DATA-BACKBONE, section 6), the source system's own access model is a third narrowing, applied after both of these — three gates in series, no union among them.
 
-- **A request that spans collections** — a collection listing, a search, the audit log — is narrowed to the agent's permitted collections rather than refused. Refusing a search because the record holds a collection the agent may not see would be a strange reading of "permitted"; the guarantee that matters is that nothing outside the list reaches the agent, and narrowing keeps it.
+### 4.2 Cases the lists of IDs do not decide on their own
+
+Settled when Epic D wired this contract into Canon's door, and extended when sources joined it:
+
+- **A request that spans collections** — a collection listing, a search, the audit log — is narrowed to the agent's permitted collections rather than refused. Refusing a search because the record holds a collection the agent may not see would be a strange reading of "permitted"; the guarantee that matters is that nothing outside the list reaches the agent, and narrowing keeps it. A listing of sources is narrowed the same way, to `permittedSources`.
+- **A page that carries references the agent may not resolve** is narrowed, not refused, on the same reasoning. If the page's collection is permitted, the page is readable; the references drawn from permitted sources resolve as usual, and each reference from an unpermitted source comes back **refused in place**. The whole page is never denied because one field behind it was governed elsewhere — that would let a single withheld source blank out a policy the agent is plainly entitled to read.
+- **A refused reference must be visibly refused, never silently omitted.** This is the part that is not merely a courtesy. A reference's slot on a page is a claim that a value exists there; a slot that quietly disappears reads as *no such value* — the deductible is unset, the headcount is zero, the claim is not on file. Canon would then be asserting something false on behalf of a system it never asked. So the refusal occupies the slot: the reference is returned with its `sourceId`, no `value`, and `error: "source_not_permitted"`, and any answer that would have leaned on it says it could not read that value rather than composing around the hole. The same discipline the backbone requires of staleness — degrade visibly, never substitute a guess — applies to a refusal, which is just a degradation with a governance cause.
 - **A request that touches no existing collection**, such as creating one, cannot be checked against a list of IDs that necessarily excludes it. Canon requires `"*"` for these: an agent limited to named collections cannot mint itself a new one.
+- **A request that registers or changes a source** is the same case one level up, and Canon requires `"*"` in `permittedSources` for it. Being permitted to *read through* a source is not being permitted to *redefine* it: an agent that could repoint a source's `baseUrl` or widen the collections it may be referenced from would be writing its own limits, which is the one thing rule 1 of section 1 forbids. Registering, changing, or removing a source is `write` **and** `"*"`; reading through one is `read` and a named id.
 
-Both rules follow the same principle as the rest of this section — where the limits are silent, the agent gets less, not more.
+All of these follow the same principle as the rest of this section — where the limits are silent, the agent gets less, not more.
 
 ## 5. Error semantics: fail closed
 
@@ -72,7 +84,17 @@ Every failure mode has one outcome — the agent's request is refused — but Ca
 
 Two rules sharpen the last row. First, Canon never converts "no answer" into any of the definitive refusals or, worse, into an allowance; it reports the outage as an outage. Second, definitive answers — verified or refused — may be cached up to the sixty-second ceiling, but "no usable answer" is never cached: the next request tries the Registry again, so recovery is immediate when the Registry returns.
 
-Every refused agent request is an audit event in Canon, attributed to the passport's agent where the agent is known. Where it is not — an unknown passport names no agent, and a refusal carries no `agentId` — the event is recorded against a one-way fingerprint of the presented passport, never the passport itself. Rule 1 admits no exception for the audit log: a refused credential written down verbatim is still a credential Canon stores, and a fingerprint correlates repeated attempts without ever being replayable.
+Those four are refusals of the *whole request*, decided before Canon's store sees it. A limit denied inside a request Canon did serve is reported in the body rather than the status line, with a machine-readable `reason` so an operator can tell the cases apart:
+
+| Canon's `reason` | Meaning | How it reaches the agent |
+| --- | --- | --- |
+| `route_not_available_to_agents` | The route is not in the agent vocabulary at all | 403, request refused |
+| `action_not_permitted` | `permittedActions` does not carry the action this route needs | 403, request refused |
+| `collection_not_permitted` | `permittedCollections` does not carry this collection, or the request creates one without `"*"` | 403, request refused |
+| `source_not_permitted` | `permittedSources` does not carry this source | 403 for a request *about* the source; `error: "source_not_permitted"` in the reference's own slot for a reference *through* it (section 4.2) |
+| `source_administration_not_permitted` | Registering, changing, or removing a source without `"*"` | 403, request refused |
+
+Every refused agent request is an audit event in Canon, attributed to the passport's agent where the agent is known. A refused reference is one too — the `agent.denied` event names the source that was withheld and the page the reference sat on, so the log answers "what did this agent try to reach, and through what" rather than only "what did it read". DATA-BACKBONE (section 6) requires every resolution to be an audit event naming who asked, which source, and which reference; a resolution refused on the Registry's limits is that same event with the reason in place of the value. Where it is not — an unknown passport names no agent, and a refusal carries no `agentId` — the event is recorded against a one-way fingerprint of the presented passport, never the passport itself. Rule 1 admits no exception for the audit log: a refused credential written down verbatim is still a credential Canon stores, and a fingerprint correlates repeated attempts without ever being replayable.
 
 ## 6. Endpoints
 
@@ -98,6 +120,7 @@ Response `200` — the agent is registered and currently certified:
   "name": "PolicyBot",
   "certified": true,
   "permittedCollections": ["c1a2...", "d4b8..."],
+  "permittedSources": ["src-benefits-admin"],
   "permittedActions": ["read", "comment"],
   "checkedAt": "2026-07-30T12:00:00.000Z",
   "recheckAfterSeconds": 60
@@ -105,6 +128,8 @@ Response `200` — the agent is registered and currently certified:
 ```
 
 `certified` is always literally `true` in a `200`; there is no certified-false success. `recheckAfterSeconds` is the Registry's ceiling on how long Canon may act on this answer without re-asking; Canon applies the smaller of this and sixty seconds.
+
+`permittedSources` is the one field Canon tolerates the absence of, and it tolerates it in the safe direction: a Registry that predates federation sends no such field, and Canon reads that as the empty list — the agent resolves no references and everything else about the answer stands. A `permittedSources` that is present but is not an array of strings is a malformed answer, refused like any other (section 5, last row). Silence means none; nonsense means no.
 
 Response `400` `{ "error": "invalid", ... }` — no `passport` field.
 
@@ -124,11 +149,12 @@ Request:
 {
   "name": "PolicyBot",
   "permittedCollections": ["c1a2..."],
+  "permittedSources": ["src-benefits-admin"],
   "permittedActions": ["read", "comment"]
 }
 ```
 
-`permittedCollections` defaults to `[]` (nowhere), `permittedActions` to `["read"]`. Unknown actions are `400 invalid`.
+`permittedCollections` defaults to `[]` (nowhere), `permittedSources` to `[]` (no source), `permittedActions` to `["read"]`. Unknown actions are `400 invalid`; a `permittedCollections` or `permittedSources` that is not an array of non-empty strings is `400 invalid`.
 
 Response `200`:
 
@@ -139,6 +165,7 @@ Response `200`:
   "passport": "vap_9f2c47a1...",
   "certification": { "state": "pending", "certifiedAt": null, "expiresAt": null, "revokedAt": null, "reason": null },
   "permittedCollections": ["c1a2..."],
+  "permittedSources": ["src-benefits-admin"],
   "permittedActions": ["read", "comment"],
   "createdAt": "2026-07-30T12:00:00.000Z"
 }
@@ -156,11 +183,11 @@ Request: `{ "reason": "Retired after incident review" }` — optional. Response 
 
 **`PUT /agents/:agentId/permissions`** — replace limits.
 
-Request: `{ "permittedCollections": ["*"], "permittedActions": ["read"] }` — either field may be omitted to leave it unchanged; a present field replaces the old value entirely. Response `200`: the agent record.
+Request: `{ "permittedCollections": ["*"], "permittedSources": ["src-benefits-admin"], "permittedActions": ["read"] }` — any field may be omitted to leave it unchanged; a present field replaces the old value entirely. Omitting `permittedSources` therefore leaves an agent's source limits alone rather than clearing them; sending `[]` is how an administrator takes federation away. Response `200`: the agent record.
 
 **`GET /agents`** — administrative listing.
 
-Response `200`: an array of agent records (no passports). Each record's `certification.state` is the *effective* state: `"lapsed"` is reported for a certified agent whose `expiresAt` has passed, so an administrator reads standing directly instead of doing date arithmetic.
+Response `200`: an array of agent records (no passports), each carrying `permittedCollections`, `permittedSources`, and `permittedActions`. Each record's `certification.state` is the *effective* state: `"lapsed"` is reported for a certified agent whose `expiresAt` has passed, so an administrator reads standing directly instead of doing date arithmetic.
 
 **`GET /health`** — `{ "ok": true, "product": "Veryl Agent Registry", "stage": "stub" }`.
 
@@ -171,6 +198,7 @@ Unknown agent IDs on any administrative route are `404 not_found`.
 - **Session-level immediate cutoff versus the one-minute window.** CORE-PLAN's open question, restated here because this contract is where it lands: is a sub-sixty-second revocation window acceptable to compliance teams, or must revocation sever live sessions immediately? The contract as written guarantees the minute; immediate cutoff would add a push channel or per-request verification (cache TTL of zero — which this contract already permits, at the cost of a Registry round-trip per request). Resolve with the Registry team and the first design partner; nothing in this contract forecloses either answer.
 - **Push versus pull for the audit trail.** DATA-BACKBONE asks whether the Registry needs agent activity streamed from Canon or can pull from the audit log. Resolve alongside the question above; the same push channel would serve both.
 - **Limits vocabulary growth.** Three actions suffice for Core's read-mostly agents. The Next tier's agent proposals will want a `propose` action; adding one is additive and Canon must reject actions it does not recognize rather than guessing.
+- **Granularity below the source.** `permittedSources` limits an agent to whole sources, which is the right grain while a source is one record system reached by one connector. If a design partner needs an agent permitted a source's headcount selector but not its salary selector, the limit wants a selector dimension — an extension of this field, not a new one. Resolve when a real connector exists; nothing here forecloses it, and until then the source is the unit of governance because the source is the unit of registration.
 
 ---
 

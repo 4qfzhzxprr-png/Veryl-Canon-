@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
-import { AgentAuth, AgentSession, passportAuthUnavailable } from './agentauth.js';
+import { AgentAuth, AgentSession, passportAuthUnavailable, runInAgentRequestScope } from './agentauth.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
 import { CanonStore } from './store.js';
@@ -21,6 +21,15 @@ type Handler = (ctx: {
   params: Record<string, string>;
   query: URLSearchParams;
   body: any;
+  /**
+   * The verified agent behind this request, or null when a person is asking.
+   * Most handlers ignore it — the store enforces Canon's permissions from
+   * `actorId` alone. It is here for handlers that must govern parts of one
+   * response separately, which today means federated references: the same
+   * session is also ambient inside the handler via `currentAgentSession()`
+   * and `refuseUnpermittedSource()` in agentauth.ts.
+   */
+  agent: AgentSession | null;
 }) => unknown;
 
 interface Route {
@@ -240,7 +249,14 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       // Awaited: grounded answers are async (the embedding provider interface
       // is) and so is the outbox flush, which waits on a mail relay. Awaiting
       // a plain value changes nothing for every other handler.
-      const result = await match.handler({ store, actorId, params, query: url.searchParams, body });
+      //
+      // The handler runs inside the agent's request scope, so code beneath it
+      // can ask who is asking without every signature carrying the answer.
+      // That is how the reference layer refuses an individual reference whose
+      // source the Registry withheld while still serving the page around it.
+      const result = await runInAgentRequestScope(agentAuth, session, () =>
+        match.handler({ store, actorId, params, query: url.searchParams, body, agent: session }),
+      );
       // Almost everything here is JSON; a handler that needs another content
       // type (the audit CSV download) returns a RawResponse and writes itself.
       // An agent's narrowing never applies to it: the CSV routes are not in

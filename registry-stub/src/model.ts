@@ -26,6 +26,11 @@ export interface AgentRecord {
   passport: string; // stored for lookup; returned once at registration, never listed
   certification: Certification;
   permittedCollections: string[];
+  // The Canon source ids this agent may resolve references from
+  // (REGISTRY-CONTRACT.md §4). Opaque strings, `"*"` for all, `[]` for none —
+  // the same shape and the same default as permittedCollections, because a
+  // federated source is governed exactly like a collection.
+  permittedSources: string[];
   permittedActions: PermittedAction[];
   createdAt: string;
 }
@@ -36,6 +41,7 @@ export interface AgentView {
   name: string;
   certification: Omit<Certification, 'state'> & { state: EffectiveCertState };
   permittedCollections: string[];
+  permittedSources: string[];
   permittedActions: PermittedAction[];
   createdAt: string;
 }
@@ -46,6 +52,7 @@ export interface Verification {
   name: string;
   certified: true;
   permittedCollections: string[];
+  permittedSources: string[];
   permittedActions: PermittedAction[];
   checkedAt: string;
   recheckAfterSeconds: number;

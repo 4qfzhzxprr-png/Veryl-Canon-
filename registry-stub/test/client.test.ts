@@ -31,8 +31,15 @@ test('client: issue then verify carries identity and limits', async () => {
       assert.equal(result.agent.certified, true);
       assert.deepEqual(result.agent.permittedCollections, ['col-1']);
       assert.deepEqual(result.agent.permittedActions, ['read', 'comment']);
+      assert.deepEqual(result.agent.permittedSources, [], 'registered with none, so none');
       assert.equal(result.cached, false);
     }
+
+    const federated = store.register({ name: 'BenefitsBot', permittedSources: ['src-benefits'] });
+    store.certify(federated.agentId);
+    const withSources = await client.verifyPassport(federated.passport);
+    assert.equal(withSources.ok, true);
+    if (withSources.ok) assert.deepEqual(withSources.agent.permittedSources, ['src-benefits']);
 
     const unknown = await client.verifyPassport('vap_nobody');
     assert.deepEqual([unknown.ok, !unknown.ok && unknown.reason], [false, 'unknown_passport']);
@@ -109,6 +116,41 @@ test('client: caches within the TTL, re-asks after it expires', async () => {
     assert.equal(eager.cacheTtlMs, REVOCATION_GUARANTEE_MS);
   } finally {
     server.close();
+  }
+});
+
+// REGISTRY-CONTRACT.md §6: silence means none, nonsense means no. A Registry
+// that predates federation must not accidentally grant an agent every source,
+// and an unreadable field must not be quietly skipped past.
+test('client: an absent permittedSources is none; an unreadable one fails closed', async () => {
+  const answer = (body: Record<string, unknown>): typeof fetch =>
+    (async () =>
+      new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })) as any;
+
+  const base = {
+    agentId: 'a-1',
+    name: 'LegacyBot',
+    certified: true,
+    permittedCollections: ['col-1'],
+    permittedActions: ['read'],
+    checkedAt: new Date().toISOString(),
+    recheckAfterSeconds: 60,
+  };
+
+  const silent = new RegistryClient({ baseUrl: 'http://registry.invalid', cacheTtlMs: 0, fetchImpl: answer(base) });
+  const quiet = await silent.verifyPassport('vap_legacy');
+  assert.equal(quiet.ok, true, 'an answer without the field is still a good answer');
+  if (quiet.ok) assert.deepEqual(quiet.agent.permittedSources, [], 'and it grants no source at all');
+
+  for (const nonsense of ['*', [1], { all: true }, null]) {
+    const client = new RegistryClient({
+      baseUrl: 'http://registry.invalid',
+      cacheTtlMs: 0,
+      fetchImpl: answer({ ...base, permittedSources: nonsense }),
+    });
+    const result = await client.verifyPassport('vap_legacy');
+    assert.equal(result.ok, false, `permittedSources: ${JSON.stringify(nonsense)} must be malformed`);
+    if (!result.ok) assert.equal(result.reason, 'registry_unreachable');
   }
 });
 
