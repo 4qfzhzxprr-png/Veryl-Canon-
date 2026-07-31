@@ -42,14 +42,18 @@ const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
 const state = {
   actor: readStoredActor(),
   actors: null, // cached GET /actors
-  features: { search: null, comments: null, ask: null, related: null }, // null = not yet probed
+  // null = not yet probed
+  features: { search: null, comments: null, ask: null, related: null, references: null, sources: null },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
+  sourcesById: null, // cached GET /sources, keyed by id, for reference provenance
 };
 
 function resetFeatures() {
-  state.features = { search: null, comments: null, ask: null, related: null };
+  state.features = { search: null, comments: null, ask: null, related: null, references: null, sources: null };
   askProbe = null;
+  sourcesProbe = null;
+  state.sourcesById = null;
 }
 
 function readStoredActor() {
@@ -140,6 +144,53 @@ function fmtDate(iso) {
   const d = new Date(iso + (iso.length === 10 ? 'T00:00:00' : ''));
   if (Number.isNaN(d.getTime())) return esc(iso);
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+// How long ago something happened, in words. Used wherever an age is the
+// point — a federated value's age is part of how much it can be trusted.
+function fmtAgo(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 45) return 'moments ago';
+  const units = [
+    ['minute', 60], ['hour', 3600], ['day', 86400], ['month', 2592000], ['year', 31536000],
+  ];
+  let label = 'minute', size = 60;
+  for (const [name, secs] of units) {
+    if (s >= secs) { label = name; size = secs; }
+  }
+  const n = Math.round(s / size);
+  return `${n} ${label}${n === 1 ? '' : 's'} ago`;
+}
+
+// A duration in plain words: freshness windows arrive as milliseconds and
+// nobody reasons in milliseconds.
+function fmtDuration(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return '—';
+  const units = [['day', 86400000], ['hour', 3600000], ['minute', 60000], ['second', 1000]];
+  for (const [name, size] of units) {
+    if (n >= size && n % size === 0) { const v = n / size; return `${v} ${name}${v === 1 ? '' : 's'}`; }
+  }
+  for (const [name, size] of units) {
+    if (n >= size) { const v = Math.round((n / size) * 10) / 10; return `${v} ${name}${v === 1 ? '' : 's'}`; }
+  }
+  return `${n} ms`;
+}
+
+// selector/key strings come from configuration, not prose: make them read as
+// field names without pretending to know more than we do.
+function humanizeKey(s) {
+  const raw = String(s ?? '').trim();
+  if (!raw) return 'Value';
+  const words = raw
+    .replace(/[_.\-/]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function badge(status, size = '') {
@@ -346,12 +397,15 @@ function renderChrome() {
       document.getElementById('search-slot').hidden = true;
       const askLink = document.getElementById('nav-ask');
       if (askLink) askLink.hidden = true;
+      const sourcesLink = document.getElementById('nav-sources');
+      if (sourcesLink) sourcesLink.hidden = true;
       renderChrome();
       location.hash = '#/identity';
       route();
     });
     detectSearch();
     detectAsk();
+    detectSources();
   } else {
     nav.hidden = true;
     chip.innerHTML = '';
@@ -394,6 +448,25 @@ async function detectAsk() {
   const link = document.getElementById('nav-ask');
   if (link) link.hidden = state.features.ask !== true;
   return state.features.ask === true;
+}
+
+// Registered external systems are feature-detected exactly as /ask is: one
+// probe, 404/405 means the endpoint is not built yet, and until it answers
+// the Sources nav entry and the whole admin screen simply are not there.
+let sourcesProbe = null;
+
+async function detectSources() {
+  if (state.features.sources === null) {
+    sourcesProbe ??= api('GET', '/sources')
+      .then(() => true)
+      .catch((err) => err.status !== 404 && err.status !== 405 && err.status !== 0);
+    const found = await sourcesProbe;
+    sourcesProbe = null;
+    if (state.features.sources === null) state.features.sources = found;
+  }
+  const link = document.getElementById('nav-sources');
+  if (link) link.hidden = state.features.sources !== true;
+  return state.features.sources === true;
 }
 
 // Called by the collection and page views: a small "ask within this
@@ -467,7 +540,10 @@ async function route() {
     await render(viewIdentity);
     return;
   }
-  const section = parts[0] === 'audit' ? 'audit' : parts[0] === 'ask' ? 'ask' : 'home';
+  const section = parts[0] === 'audit' ? 'audit'
+    : parts[0] === 'ask' ? 'ask'
+    : parts[0] === 'sources' ? 'sources'
+    : 'home';
   document.querySelectorAll('#topnav a').forEach((a) => {
     a.classList.toggle('active', a.dataset.nav === section);
   });
@@ -475,6 +551,7 @@ async function route() {
     if (parts.length === 0) return await render(viewHome);
     if (parts[0] === 'identity') return await render(viewIdentity);
     if (parts[0] === 'audit') return await render(viewAudit);
+    if (parts[0] === 'sources') return await render(viewSources);
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'collections' && parts[1]) return await render(() => viewCollection(parts[1]));
     if (parts[0] === 'pages' && parts[1]) {
@@ -831,6 +908,7 @@ async function viewPage(id) {
   } catch { /* viewers without edit access */ }
 
   const current = page.current;
+  const references = Array.isArray(page.references) ? page.references : [];
   const rules = TYPE_FIELDS[page.type] ?? {};
   const reviewed = REVIEWED_TYPES.includes(page.type);
   const isArchived = page.status === 'archived';
@@ -874,6 +952,7 @@ async function viewPage(id) {
           ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(page.approverId)}</dd></div>` : ''}
           ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(page.effectiveDate)}</dd></div>` : ''}
           <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
+          ${references.map(referencePlaceholderHTML).join('')}
         </dl>
 
         ${current ? `<article class="doc-body">${renderMarkdown(current.body)}</article>` : `
@@ -934,8 +1013,283 @@ async function viewPage(id) {
     },
   }));
 
+  renderReferences(id, references);
   renderRelatedPanel(id);
   renderCommentsPanel(id);
+}
+
+// ---------------------------------------------------------------------------
+// Federated values (DATA-BACKBONE.md §6)
+//
+//   GET /pages/:id/references
+//     -> [{ id, sourceId, sourceName, selector, key,
+//           value, resolvedAt, fromCache, stale, error? }]
+//
+// Canon never copies a fact it does not own; it holds a reference and resolves
+// it when the page is read. Three things this UI must therefore carry, because
+// they are the difference between a federated value and a lie:
+//
+//   * staleness is displayed, not hidden — a value past its freshness window
+//     is still the best known value, and saying so is calmer and more honest
+//     than either hiding it or presenting it as current;
+//   * a service-resolved value is marked, because an administrator choosing
+//     that mode chose to publish the value to everyone who can see the
+//     collection, and the reader deserves to know that on the page;
+//   * a refused or failed reference is shown, never omitted — a missing value
+//     must never be readable as "there is no such value".
+
+function normalizeReference(r) {
+  return {
+    id: r?.id ?? r?.referenceId ?? null,
+    sourceId: r?.sourceId ?? null,
+    sourceName: r?.sourceName ?? r?.source?.name ?? null,
+    selector: r?.selector ?? '',
+    key: r?.key ?? '',
+    label: r?.label ?? null,
+    value: r?.value === undefined ? null : r.value,
+    resolvedAt: r?.resolvedAt ?? null,
+    fromCache: r?.fromCache === true,
+    stale: r?.stale === true,
+    error: r?.error ?? null,
+    // The resolution payload need not restate the source's auth mode; where it
+    // does not, it is looked up from the registered source (see resolveAuthMode).
+    authMode: r?.authMode ?? null,
+    serviceResolved: r?.serviceResolved === true,
+  };
+}
+
+// Whether this value was resolved with a service identity — from the row if it
+// says so, otherwise from the registered source it names. Anything unknown is
+// left unmarked rather than guessed at in either direction.
+function resolveAuthMode(r, sourcesById) {
+  if (r.serviceResolved) return 'service';
+  if (r.authMode) return r.authMode;
+  return sourcesById?.get(r.sourceId)?.authMode ?? null;
+}
+
+// GET /sources, cached for the session and never fatal: it is only ever used
+// to enrich, so a server without it simply leaves values unenriched.
+async function loadSourcesById() {
+  if (state.sourcesById) return state.sourcesById;
+  if (state.features.sources === false) return null;
+  try {
+    const list = await api('GET', '/sources');
+    state.features.sources = true;
+    state.sourcesById = new Map((Array.isArray(list) ? list : []).map((s) => [s.id, s]));
+    return state.sourcesById;
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) state.features.sources = false;
+    return null;
+  }
+}
+
+function referenceLabel(ref) {
+  return clip(ref.label || humanizeKey(ref.selector || ref.key || 'Value'), 48);
+}
+
+// A federated value is untrusted text from another system, and it may be a
+// string, a number or a boolean: everything is stringified and escaped, and
+// `false` and `0` are values, not absences.
+function referenceValueText(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value); } catch { return String(value); }
+  }
+  return String(value);
+}
+
+function referenceErrorText(err) {
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  return err.message ?? err.error ?? err.code ?? 'no reason given';
+}
+
+// The provenance line is height-reserved, so a source's error string cannot be
+// allowed to run away with it. The whole text stays in the field's tooltip.
+function clip(s, max = 90) {
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+// A source's error string may or may not be punctuated; the sentence Canon
+// builds around it should read either way.
+function endSentence(s) {
+  const t = String(s ?? '').trim();
+  return !t || /[.!?…]$/.test(t) ? t : `${t}.`;
+}
+
+// Every state of a reference — resolving, fresh, stale, refused — is rendered
+// through this one shape, so the row is the same size before and after the
+// value lands and nothing below the field block ever moves.
+function referenceRowHTML({ r, cls, valueHTML, marks, prov, valueTitle }) {
+  const title = [
+    valueTitle ? `Value: ${valueTitle}` : '',
+    r.selector ? `selector: ${r.selector}` : '',
+    r.key ? `key: ${r.key}` : '',
+  ].filter(Boolean).join('\n');
+  return `
+    <div class="ref-field ${cls}" data-ref-slot="${esc(slotKey(r))}"${title ? ` title="${esc(title)}"` : ''}>
+      <dt><span class="ref-label">${esc(referenceLabel(r))}</span>
+        <span class="ref-mark-dt">federated</span></dt>
+      <dd>
+        <div class="ref-value-row">${valueHTML}${marks.join('')}</div>
+        <p class="ref-prov">${prov}</p>
+      </dd>
+    </div>`;
+}
+
+function serviceMarkHTML() {
+  return `<span class="kind-tag ref-service"
+    title="Resolved with a service identity, so this value is visible to everyone who can view this collection">service-resolved</span>`;
+}
+
+const SERVICE_SENTENCE = 'Service-resolved: visible to everyone who can view this collection.';
+
+// First paint. The page payload names the label, the source and the auth mode
+// before anything is resolved, so the only thing still unknown is the value
+// itself — and it is the only thing drawn as a placeholder.
+function referencePlaceholderHTML(ref) {
+  const r = normalizeReference(ref);
+  const service = r.authMode === 'service' || r.serviceResolved;
+  return referenceRowHTML({
+    r,
+    cls: 'is-resolving',
+    valueHTML: '<span class="skel-line ref-skel-value" aria-hidden="true"></span>'
+      + '<span class="sr-only">Resolving this value from its source…</span>',
+    marks: service ? [serviceMarkHTML()] : [],
+    prov: `${esc(clip(r.sourceName || r.sourceId || 'Its source', 32))} · resolving…`
+      + (service ? ` ${SERVICE_SENTENCE}` : ''),
+  });
+}
+
+function referenceFieldHTML(r, sourcesById) {
+  const source = clip(r.sourceName || r.sourceId || 'An unnamed source', 32);
+  const value = referenceValueText(r.value);
+  // A field value is a value, not a document: an overlong one is shown clipped
+  // with the whole of it in the field's tooltip, so one runaway string cannot
+  // resize the row that was reserved for it.
+  const shown = value === null ? null : clip(value, 64);
+  const age = fmtAgo(r.resolvedAt) ?? 'at an unrecorded time';
+  const at = r.resolvedAt ? ` (${fmtDateTime(r.resolvedAt)})` : '';
+  const service = resolveAuthMode(r, sourcesById) === 'service';
+  const marks = [];
+  let cls = '';
+  let valueHTML;
+  let prov;
+
+  if (r.error) {
+    // Refused or unanswered. The reference is shown either way: the reader has
+    // to be able to tell "the source would not say" from "there is nothing".
+    cls = 'is-error';
+    const why = `${esc(source)} did not answer: ${esc(endSentence(clip(referenceErrorText(r.error), 70)))}`;
+    if (value !== null) {
+      valueHTML = `<span class="ref-value">${esc(shown)}</span>`;
+      marks.push('<span class="badge badge-last-known sm">last known good</span>');
+      prov = `${why} Showing the value last resolved ${esc(age)}${at}; it may have changed since.`;
+    } else {
+      valueHTML = '<span class="ref-value is-unresolved">Not resolved</span>';
+      marks.push('<span class="badge badge-unresolved sm">unresolved</span>');
+      prov = `${why} Not an empty value — Canon has no cached answer and will not invent one.`;
+    }
+  } else if (value === null) {
+    valueHTML = '<span class="ref-value is-unresolved">No value returned</span>';
+    marks.push('<span class="badge badge-unresolved sm">no value</span>');
+    prov = `${esc(source)} answered ${esc(age)}${at} without a value for this key.`;
+  } else if (r.stale) {
+    cls = 'is-stale';
+    valueHTML = `<span class="ref-value">${esc(shown)}</span>`;
+    marks.push('<span class="badge badge-stale sm">stale</span>');
+    prov = `${esc(source)} · last confirmed ${esc(age)}${at}, past its freshness window.
+      Still the best known value, not confirmed recently.`;
+  } else {
+    valueHTML = `<span class="ref-value">${esc(shown)}</span>`;
+    prov = `${esc(source)} · resolved ${esc(age)}${at}${r.fromCache ? ' · from cache, within its freshness window' : ''}.`;
+  }
+
+  if (service) {
+    marks.push(serviceMarkHTML());
+    prov += ` ${SERVICE_SENTENCE}`;
+  }
+  return referenceRowHTML({ r, cls, valueHTML, marks, prov, valueTitle: value !== shown ? value : null });
+}
+
+// The endpoint itself failing is different from a single reference failing:
+// the declared references stay on the page, stated as unresolved, because
+// dropping them would read as "this page has no such value".
+function referenceUnreachableHTML(ref, err) {
+  const r = normalizeReference(ref);
+  const service = r.authMode === 'service' || r.serviceResolved;
+  return referenceRowHTML({
+    r,
+    cls: 'is-error',
+    valueHTML: '<span class="ref-value is-unresolved">Not resolved</span>',
+    marks: [
+      '<span class="badge badge-unresolved sm">unresolved</span>',
+      ...(service ? [serviceMarkHTML()] : []),
+    ],
+    prov: `Canon could not reach its own resolver: ${esc(endSentence(clip(err?.message ?? 'the request failed')))}
+      The reference is still on this page; only its value is missing.`,
+  });
+}
+
+async function renderReferences(pageId, declared) {
+  const block = app.querySelector('.field-block');
+  if (!block || state.features.references === false) {
+    if (block) block.querySelectorAll('[data-ref-slot]').forEach((el) => el.remove());
+    return;
+  }
+  let rows;
+  let sourcesById = null;
+  try {
+    // Both at once, and rendered in one pass: the placeholders hold the space
+    // until every value is ready, so nothing on the page moves twice.
+    const [r, byId] = await Promise.all([
+      api('GET', `/pages/${pageId}/references`),
+      loadSourcesById(),
+    ]);
+    state.features.references = true;
+    sourcesById = byId;
+    rows = (Array.isArray(r) ? r : (r?.references ?? [])).map(normalizeReference);
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) {
+      // Not built yet: the reference block is not there at all.
+      state.features.references = false;
+      if (block.isConnected) block.querySelectorAll('[data-ref-slot]').forEach((el) => el.remove());
+      return;
+    }
+    if (!block.isConnected) return;
+    for (const ref of declared) {
+      const slot = block.querySelector(`[data-ref-slot="${cssEscape(slotKey(ref))}"]`);
+      if (slot) slot.outerHTML = referenceUnreachableHTML(ref, err);
+    }
+    return;
+  }
+  if (!block.isConnected) return; // the view moved on while we were resolving
+
+  const seen = new Set();
+  for (const row of rows) {
+    const slot = block.querySelector(`[data-ref-slot="${cssEscape(slotKey(row))}"]`);
+    if (slot) { slot.outerHTML = referenceFieldHTML(row, sourcesById); seen.add(slotKey(row)); }
+    else block.insertAdjacentHTML('beforeend', referenceFieldHTML(row, sourcesById)); // not declared in the page payload
+  }
+  // A declared reference the resolver said nothing about is still a reference.
+  for (const ref of declared) {
+    if (seen.has(slotKey(ref))) continue;
+    const slot = block.querySelector(`[data-ref-slot="${cssEscape(slotKey(ref))}"]`);
+    if (slot && slot.classList.contains('is-resolving')) {
+      slot.outerHTML = referenceUnreachableHTML(ref, { message: 'the resolver returned no answer for this reference' });
+    }
+  }
+}
+
+function slotKey(ref) {
+  const r = normalizeReference(ref);
+  return String(r.id ?? `${r.sourceId}:${r.selector}:${r.key}`);
+}
+
+// Attribute-selector escaping without depending on CSS.escape being present.
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, '\\$&');
 }
 
 // Related pages — the same graph the answer engine expands along, surfaced on
@@ -1106,6 +1460,7 @@ async function viewEditor(id) {
             ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>` : ''}
             ${!rules.owner && !rules.approver && !rules.effectiveDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
+          <div id="editor-refs"></div>
           <div class="panel editor-actions">
             <button class="btn primary" type="submit">Save draft</button>
             <button class="btn" type="button" id="ed-publish">Publish…</button>
@@ -1182,6 +1537,122 @@ async function viewEditor(id) {
       toast(`This page is being edited by ${editor}.`, 'error');
     } else toastError(err);
   }
+
+  renderEditorReferences(id, page.collectionId);
+}
+
+// ---------------------------------------------------------------------------
+// Authoring references — POST /pages/:id/references, DELETE /references/:id.
+// Feature-detected off the same two endpoints as the reader-side block: with
+// no /sources and no resolver there is nothing to reference, and the panel is
+// simply not there.
+
+async function renderEditorReferences(pageId, collectionId) {
+  const host = document.getElementById('editor-refs');
+  if (!host) return;
+  let refs = [];
+  try {
+    const r = await api('GET', `/pages/${pageId}/references`);
+    state.features.references = true;
+    refs = (Array.isArray(r) ? r : (r?.references ?? [])).map(normalizeReference);
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) { state.features.references = false; return; }
+    return; // a resolver hiccup is not a reason to offer authoring it cannot serve
+  }
+  const sourcesById = await loadSourcesById();
+  if (!sourcesById || !host.isConnected) return; // no registered sources: nothing to reference
+
+  const sources = [...sourcesById.values()].filter((s) => {
+    const scope = sourceScopeIds(s);
+    return !scope.length || scope.includes(collectionId);
+  });
+
+  host.innerHTML = `
+    <div class="panel">
+      <h2 class="h-small">Federated values</h2>
+      <p class="muted editor-ref-note">Values Canon resolves from another system when this page is
+        read. They are page-level and take effect immediately — they are not part of this draft.</p>
+      ${refs.length ? `
+        <ul class="editor-ref-list">
+          ${refs.map((r) => `
+            <li class="editor-ref">
+              <span class="editor-ref-main">
+                <span class="editor-ref-label">${esc(referenceLabel(r))}</span>
+                <span class="muted editor-ref-src">${esc(clip(r.sourceName || sourcesById.get(r.sourceId)?.name || r.sourceId || 'unknown source', 40))}${resolveAuthMode(r, sourcesById) === 'service' ? ' · service-resolved' : ''}</span>
+              </span>
+              <button type="button" class="btn subtle" data-drop-ref="${esc(r.id)}"
+                title="Remove this reference">Remove</button>
+            </li>`).join('')}
+        </ul>` : '<p class="muted">No federated values on this page.</p>'}
+      ${sources.length
+        ? '<button type="button" class="btn" id="add-ref">Add a federated value</button>'
+        : '<p class="muted">No source is referenceable from this collection.</p>'}
+    </div>`;
+
+  const reload = () => renderEditorReferences(pageId, collectionId);
+  const gone = (err) => {
+    if (err.status !== 404 && err.status !== 405) return false;
+    state.features.references = false;
+    host.innerHTML = '';
+    toast('Authoring federated values is not available yet.', 'info');
+    return true;
+  };
+
+  host.querySelector('#add-ref')?.addEventListener('click', () => {
+    openModal({
+      title: 'Add a federated value',
+      submitLabel: 'Add reference',
+      body: `
+        <p class="muted">Canon will not store this value. It holds the key below and asks the source
+          for the value every time the page is read, showing what answered and when.</p>
+        <label>Source
+          <select name="sourceId" required>
+            ${sources.map((s) => `<option value="${esc(s.id)}" data-mode="${esc(s.authMode ?? 'per_asker')}">${esc(s.name)} (${esc(s.kind ?? 'source')})</option>`).join('')}
+          </select>
+        </label>
+        <div class="notice notice-locked" data-service-warn hidden>
+          This source is resolved with a service identity: the value will be visible to everyone who
+          can view this collection, whatever the source system itself would have allowed them to see.
+        </div>
+        <label>Selector <input name="selector" required maxlength="120" placeholder="e.g. in_network_deductible"></label>
+        <label>Key <input name="key" required maxlength="200" placeholder="the identifier this page already carries, e.g. PLAN-4471"></label>
+        <label>Label <input name="label" maxlength="120" placeholder="how it reads on the page (optional)"></label>`,
+      onSubmit: async (form) => {
+        try {
+          await api('POST', `/pages/${pageId}/references`, {
+            sourceId: form.sourceId.value,
+            selector: form.selector.value.trim(),
+            key: form.key.value.trim(),
+            ...(form.label.value.trim() ? { label: form.label.value.trim() } : {}),
+          });
+        } catch (err) { if (gone(err)) return; throw err; }
+        toast('Reference added.', 'ok');
+        reload();
+      },
+    });
+    const form = document.querySelector('#modal-root form');
+    const warn = form.querySelector('[data-service-warn]');
+    const sync = () => { warn.hidden = form.sourceId.selectedOptions[0]?.dataset.mode !== 'service'; };
+    form.sourceId.addEventListener('change', sync);
+    sync();
+  });
+
+  host.querySelectorAll('[data-drop-ref]').forEach((btn) => {
+    btn.addEventListener('click', () => openModal({
+      title: 'Remove this federated value',
+      submitLabel: 'Remove',
+      danger: true,
+      body: `<p>The page will stop asking for this value. Nothing in the source system changes.
+        Continue?</p>`,
+      onSubmit: async () => {
+        try {
+          await api('DELETE', `/references/${btn.dataset.dropRef}`);
+        } catch (err) { if (gone(err)) return; throw err; }
+        toast('Reference removed.', 'ok');
+        reload();
+      },
+    }));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,6 +1883,288 @@ async function viewAudit() {
   form.action.addEventListener('change', load);
   form.actor.addEventListener('change', load);
   await load();
+}
+
+// ---------------------------------------------------------------------------
+// Sources — registered external systems (DATA-BACKBONE.md §6)
+//
+//   GET /sources | POST /sources | PUT /sources/:id | DELETE /sources/:id
+//   Source: { id, name, kind, baseUrl, authMode: 'per_asker'|'service',
+//             freshnessWindowMs, createdAt }
+//
+// The one screen in Canon where a choice has consequences a reader will live
+// with: authMode decides whose permissions resolve a value, and `service`
+// means the administrator is publishing that value to the whole collection.
+// The two modes are therefore not offered as two equal radio buttons.
+
+const SOURCE_KIND_SUGGESTIONS = ['hris', 'benefits', 'claims', 'crm', 'finance', 'ticketing'];
+
+const FRESHNESS_UNITS = [
+  ['minutes', 60000],
+  ['hours', 3600000],
+  ['days', 86400000],
+];
+
+// Split a millisecond window back into the largest unit that divides it
+// evenly, so an edit form shows "6 hours" rather than 21600000.
+function splitFreshness(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return { value: 15, unit: 60000 };
+  for (const [, size] of [...FRESHNESS_UNITS].reverse()) {
+    if (n >= size && n % size === 0) return { value: n / size, unit: size };
+  }
+  return { value: Math.max(1, Math.round(n / 60000)), unit: 60000 };
+}
+
+// "Which collections may reference this source" is the other half of the
+// administrator's decision. An empty scope is Canon-wide. The field name is
+// read tolerantly because the shape has travelled under a few names.
+function sourceScopeIds(s) {
+  const raw = s?.collectionIds ?? s?.collections ?? s?.scope ?? [];
+  if (!Array.isArray(raw)) return [];
+  return raw.map((c) => (typeof c === 'string' ? c : c?.id)).filter(Boolean);
+}
+
+function sourceScopeCell(s, collections) {
+  const ids = sourceScopeIds(s);
+  if (!ids.length) {
+    return `<span class="kind-tag">Canon-wide</span>
+      <span class="muted source-mode-note">Any collection may reference it.</span>`;
+  }
+  const names = ids.map((id) => collections.find((c) => c.id === id)?.name ?? id);
+  return `<span class="muted source-mode-note source-scope-list">${names.map((n) => `<span class="role-tag">${esc(n)}</span>`).join(' ')}</span>`;
+}
+
+function authModeCell(mode) {
+  if (mode === 'service') {
+    return `<span class="kind-tag ref-service">service</span>
+      <span class="muted source-mode-note">Published to every collection that references it.</span>`;
+  }
+  return `<span class="kind-tag">per-asker</span>
+    <span class="muted source-mode-note">Resolved as the reader; invisible to anyone the source would refuse.</span>`;
+}
+
+function sourceFormBody(source, collections = []) {
+  const f = splitFreshness(source?.freshnessWindowMs ?? 900000);
+  const isService = source?.authMode === 'service';
+  const scope = sourceScopeIds(source);
+  return `
+    <label>Name <input name="name" required maxlength="120" placeholder="e.g. Benefits Admin"
+      value="${esc(source?.name ?? '')}"></label>
+    <label>Kind <input name="kind" required maxlength="60" list="source-kind-list"
+      placeholder="e.g. benefits" value="${esc(source?.kind ?? '')}"></label>
+    <datalist id="source-kind-list">
+      ${SOURCE_KIND_SUGGESTIONS.map((k) => `<option value="${esc(k)}"></option>`).join('')}
+    </datalist>
+    <label>Base URL <input name="baseUrl" required maxlength="400" placeholder="https://…"
+      value="${esc(source?.baseUrl ?? '')}"></label>
+
+    <fieldset class="choice-set">
+      <legend>Whose permissions resolve this source's values?</legend>
+      <label class="choice">
+        <input type="radio" name="authMode" value="per_asker" ${isService ? '' : 'checked'}>
+        <span class="choice-main">
+          <span class="choice-title">The reader's own identity <span class="kind-tag">per-asker</span></span>
+          <span class="choice-note">Every value is fetched as the person reading the page. Someone the
+            source would refuse sees the refusal here too, stated plainly. Choose this wherever the
+            source can accept a caller identity.</span>
+        </span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="authMode" value="service" ${isService ? 'checked' : ''}>
+        <span class="choice-main">
+          <span class="choice-title">A shared service identity <span class="kind-tag ref-service">service</span></span>
+          <span class="choice-note">Canon resolves with one account, so the source's own access rules no
+            longer apply reader by reader. <strong>Choosing this publishes the value to the collection:
+            it becomes visible to everyone who can view any collection this source is referenced
+            from.</strong> Values resolved this way are marked as service-resolved on every page that
+            shows them.</span>
+        </span>
+      </label>
+    </fieldset>
+    <div class="notice notice-locked" data-service-warn ${isService ? '' : 'hidden'}>
+      You are choosing to publish this source's values to the collection. Anyone who can view a
+      collection that references <strong data-service-name>${esc(source?.name ?? 'this source')}</strong>
+      will be able to read them, whatever the source system itself would have allowed them to see.
+    </div>
+
+    <div class="field-pair">
+      <label>Freshness window <input type="number" name="freshnessValue" min="1" step="1" required
+        value="${esc(f.value)}"></label>
+      <label>Unit
+        <select name="freshnessUnit">
+          ${FRESHNESS_UNITS.map(([label, size]) => `<option value="${size}" ${size === f.unit ? 'selected' : ''}>${label}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+    <p class="muted type-help">Past this window a value is still shown, marked stale with its age,
+      rather than presented as current. Set it from how fast this field actually changes and what
+      the compliance owner will accept — never one global default.</p>
+
+    ${collections.length ? `
+      <label>Which collections may reference this source
+        <select name="collectionIds" multiple size="${Math.min(5, Math.max(3, collections.length))}">
+          ${collections.map((c) => `<option value="${esc(c.id)}" ${scope.includes(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+        </select>
+      </label>
+      <p class="muted type-help">Select none to leave it Canon-wide — every collection may reference
+        it. Selecting collections limits it to those, and a page anywhere else cannot ask this
+        source at all.</p>` : ''}`;
+}
+
+function wireSourceForm(form) {
+  const warn = form.querySelector('[data-service-warn]');
+  const nameEl = form.querySelector('[data-service-name]');
+  const sync = () => {
+    const service = [...form.querySelectorAll('input[name=authMode]')].some((r) => r.checked && r.value === 'service');
+    warn.hidden = !service;
+    if (nameEl) nameEl.textContent = form.name.value.trim() || 'this source';
+  };
+  form.querySelectorAll('input[name=authMode]').forEach((r) => r.addEventListener('change', sync));
+  form.name.addEventListener('input', sync);
+  sync();
+}
+
+function gatherSource(form) {
+  const unit = Number(form.freshnessUnit.value) || 60000;
+  const count = Math.max(1, Number(form.freshnessValue.value) || 1);
+  const scopeEl = form.querySelector('select[name=collectionIds]');
+  const body = {
+    name: form.name.value.trim(),
+    kind: form.kind.value.trim(),
+    baseUrl: form.baseUrl.value.trim(),
+    authMode: [...form.querySelectorAll('input[name=authMode]')].find((r) => r.checked)?.value ?? 'per_asker',
+    freshnessWindowMs: count * unit,
+  };
+  if (scopeEl) body.collectionIds = [...scopeEl.selectedOptions].map((o) => o.value);
+  return body;
+}
+
+function openSourceModal(source, collections, onDone) {
+  openModal({
+    title: source ? `Edit ${source.name}` : 'Register a source',
+    submitLabel: source ? 'Save source' : 'Register source',
+    body: sourceFormBody(source, collections),
+    onSubmit: async (form) => {
+      const body = gatherSource(form);
+      if (source) await api('PUT', `/sources/${source.id}`, body);
+      else await api('POST', '/sources', body);
+      state.sourcesById = null;
+      toast(source ? `Source "${body.name}" updated.` : `Source "${body.name}" registered.`, 'ok');
+      onDone();
+    },
+  });
+  wireSourceForm(document.querySelector('#modal-root form'));
+}
+
+function sourcesUnavailableHTML() {
+  return `
+    <div class="empty-state">
+      <h2>Federated sources are not available yet</h2>
+      <p>This Canon server does not serve <code>/sources</code>. Pages carry only the values
+        stored in the record.</p>
+      <p><a class="btn" href="#/">Back to collections</a></p>
+    </div>`;
+}
+
+async function viewSources() {
+  if (!(await detectSources())) {
+    app.innerHTML = `<div class="page-wide">${sourcesUnavailableHTML()}</div>`;
+    return;
+  }
+  let sources = [];
+  try {
+    const r = await api('GET', '/sources');
+    sources = Array.isArray(r) ? r : (r?.sources ?? []);
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) {
+      state.features.sources = false;
+      const link = document.getElementById('nav-sources');
+      if (link) link.hidden = true;
+      app.innerHTML = `<div class="page-wide">${sourcesUnavailableHTML()}</div>`;
+      return;
+    }
+    throw err;
+  }
+  state.sourcesById = new Map(sources.map((s) => [s.id, s]));
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { /* names are a nicety */ }
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <div>
+          <h1>Sources</h1>
+          <p class="muted sources-lede">External systems Canon reads from and never copies. A page
+            holds a reference — the key to ask with — and the value is resolved when the page is
+            read, shown with the source that answered and the time it answered.</p>
+        </div>
+        <div class="actions"><button class="btn primary" id="new-source">Register a source</button></div>
+      </div>
+
+      ${sources.length ? `
+        <div class="table-scroll"><table class="table sources-table">
+          <thead><tr><th>Name</th><th>Kind</th><th>Resolved as</th><th>Referenceable from</th><th>Freshness window</th><th></th></tr></thead>
+          <tbody>
+            ${sources.map((s) => `
+              <tr>
+                <td>
+                  <span class="source-name">${esc(s.name ?? '(unnamed)')}</span>
+                  ${s.baseUrl ? `<span class="muted source-url">${esc(s.baseUrl)}</span>` : ''}
+                </td>
+                <td><span class="role-tag">${esc(s.kind ?? '—')}</span></td>
+                <td class="source-mode">${authModeCell(s.authMode)}</td>
+                <td class="source-scope">${sourceScopeCell(s, collections)}</td>
+                <td class="nowrap">${esc(fmtDuration(s.freshnessWindowMs))}</td>
+                <td class="t-right nowrap">
+                  <button class="btn subtle" data-edit-source="${esc(s.id)}">Edit</button>
+                  <button class="btn subtle" data-delete-source="${esc(s.id)}">Delete</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table></div>` : `
+        <div class="empty-state">
+          <h2>No sources registered</h2>
+          <p>Register the system that owns a fact — the HRIS for headcount, the benefits
+            administrator for a deductible — and pages can reference its values instead of
+            asserting numbers Canon does not own and cannot keep true.</p>
+          <p><button class="btn primary" id="new-source-empty">Register the first source</button></p>
+        </div>`}
+    </div>`;
+
+  const reload = () => route();
+  app.querySelector('#new-source')?.addEventListener('click', () => openSourceModal(null, collections, reload));
+  app.querySelector('#new-source-empty')?.addEventListener('click', () => openSourceModal(null, collections, reload));
+
+  app.querySelectorAll('[data-edit-source]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const source = sources.find((s) => s.id === btn.dataset.editSource);
+      if (source) openSourceModal(source, collections, reload);
+    });
+  });
+
+  app.querySelectorAll('[data-delete-source]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const source = sources.find((s) => s.id === btn.dataset.deleteSource);
+      if (!source) return;
+      openModal({
+        title: `Delete ${source.name}`,
+        submitLabel: 'Delete source',
+        danger: true,
+        body: `
+          <p>Canon will no longer resolve values from <strong>${esc(source.name)}</strong>.</p>
+          <p class="muted">Pages that reference it keep their references and will show them as
+            unresolved, naming this source — a reference is never silently dropped, because a
+            missing value must not read as "there is no such value".</p>`,
+        onSubmit: async () => {
+          await api('DELETE', `/sources/${source.id}`);
+          state.sourcesById = null;
+          toast(`Source "${source.name}" deleted.`, 'ok');
+          reload();
+        },
+      });
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

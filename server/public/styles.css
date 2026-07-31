@@ -267,6 +267,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 .badge-in_review { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
 .badge-canonical { color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); }
 .badge-archived { color: var(--muted); background: var(--surface-2); border: 1px solid var(--surface-2); }
+/* Federated values: stale is a caution, not an alarm — the same amber the
+   record already uses for "waiting on someone". */
+.badge-stale { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
+.badge-last-known { color: var(--muted); border: 1px dashed var(--border-strong); background: transparent; }
+.badge-unresolved { color: var(--danger); border: 1px solid var(--danger); background: var(--danger-soft); }
 
 .kind-tag {
   font-size: 0.68rem;
@@ -440,6 +445,101 @@ label.check input { width: auto; display: inline; margin: 0; }
   margin-bottom: 0.15rem;
 }
 .field-block dd { margin: 0; font-size: 0.94rem; }
+
+/* ---------- federated values (references) ------------------------------- */
+
+/* A federated field carries its own provenance, so it takes a full row of the
+   block rather than a compact cell. Label and value are drawn from the page
+   payload at first paint and only the value is a placeholder, and the
+   provenance line reserves its height — so the row is its final size before
+   anything is resolved and nothing below it ever moves. */
+.ref-field {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(8rem, 11rem) minmax(0, 1fr);
+  gap: 0 1.5rem;
+  padding-top: 0.6rem;
+  margin-top: 0.15rem;
+  border-top: 1px solid var(--border);
+}
+.ref-field + .ref-field { margin-top: 0; }
+.ref-field dt { min-width: 0; overflow-wrap: anywhere; }
+.ref-label { display: inline-block; }
+
+.ref-mark-dt {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.02rem 0.4rem;
+  margin-top: 0.15rem;
+}
+
+/* One line, and never two: the badges that arrive with a value (stale,
+   unresolved, last known good) must not be able to wrap the row taller than
+   the placeholder reserved. The value yields space to them and ellipsizes. */
+.ref-value-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  height: 1.6rem; /* fixed, not minimum: text and placeholder measure alike */
+}
+.ref-value-row > .badge, .ref-value-row > .kind-tag { flex: 0 0 auto; }
+/* One line, always: the row's height is reserved before the value exists, so
+   no value a source returns may change it. The whole value is in the tooltip. */
+.ref-value {
+  font-weight: 600;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-value.is-unresolved { font-weight: 550; color: var(--muted); font-style: italic; }
+.ref-field.is-stale .ref-value { color: var(--amber); }
+
+/* Exactly three lines: reserved before resolution, and clamped after, so the
+   row a placeholder claimed is the row the value gets — whatever a source
+   returns. The full text of any clamped line is on the field's tooltip. */
+.ref-prov {
+  margin: 0.15rem 0 0;
+  min-height: 4.35em;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.kind-tag.ref-service { color: var(--amber); border-color: var(--amber); }
+
+/* Centred rather than baseline-aligned: an empty box has no baseline, and
+   letting it set one would make the placeholder row a different height from
+   the resolved row — the exact shift this whole arrangement exists to avoid. */
+.ref-skel-value {
+  display: block;
+  align-self: center;
+  width: 6.5rem;
+  height: 0.85rem;
+  margin: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ---------- document body ---------------------------------------------- */
 
@@ -862,6 +962,81 @@ label.check input { width: auto; display: inline; margin: 0; }
 .related-link:hover { background: var(--surface-2); text-decoration: none; }
 .related-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- sources ------------------------------------------------------ */
+
+.sources-lede { margin: 0.35rem 0 0; max-width: 46rem; }
+.table-scroll { overflow-x: auto; }
+.sources-table { table-layout: fixed; min-width: 44rem; }
+.sources-table td { vertical-align: top; }
+.sources-table th:nth-child(1), .sources-table td:nth-child(1) { width: 24%; }
+.sources-table th:nth-child(2), .sources-table td:nth-child(2) { width: 9%; }
+.sources-table th:nth-child(3), .sources-table td:nth-child(3) { width: 22%; }
+.sources-table th:nth-child(4), .sources-table td:nth-child(4) { width: 19%; }
+.sources-table th:nth-child(5), .sources-table td:nth-child(5) { width: 13%; }
+.sources-table th:nth-child(6), .sources-table td:nth-child(6) { width: 13%; }
+.source-name { font-weight: 600; display: block; overflow-wrap: anywhere; }
+.source-url { display: block; font-size: 0.8rem; overflow-wrap: anywhere; }
+.source-mode-note { display: block; font-size: 0.8rem; margin-top: 0.2rem; }
+.source-scope-list .role-tag { display: inline-block; margin: 0.1rem 0.15rem 0 0; }
+
+.editor-ref-note { font-size: 0.82rem; margin: 0 0 0.6rem; }
+.editor-ref-list { list-style: none; margin: 0 0 0.75rem; padding: 0; }
+.editor-ref {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--border);
+}
+.editor-ref:first-child { border-top: none; padding-top: 0; }
+.editor-ref-main { min-width: 0; }
+.editor-ref-label { display: block; font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; }
+.editor-ref-src { display: block; font-size: 0.78rem; overflow-wrap: anywhere; }
+
+/* authMode is a governance decision, not a toggle: each mode states its
+   consequence where it is chosen, so the two are never read as equivalent. */
+.choice-set {
+  margin: 1rem 0 0;
+  padding: 0.85rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.choice-set legend {
+  font-size: 0.8rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  padding: 0 0.35rem;
+}
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 0.5rem 0 0;
+  padding: 0.7rem 0.8rem;
+  font-weight: 400;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.choice:hover { border-color: var(--border-strong); }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.choice input { width: auto; display: block; margin: 0.28rem 0 0; flex: 0 0 auto; }
+.choice-main { display: block; min-width: 0; }
+.choice-title { display: block; font-weight: 600; margin-bottom: 0.2rem; }
+.choice-title .kind-tag { margin-left: 0.3rem; font-weight: 600; }
+.choice-note { display: block; font-size: 0.84rem; line-height: 1.5; color: var(--muted); }
+.choice-note strong { color: var(--text); font-weight: 600; }
+
+.field-pair { display: flex; gap: 0.75rem; align-items: flex-end; }
+.field-pair label:first-child { flex: 1 1 auto; }
+.field-pair label:last-child { flex: 0 0 9rem; }
+
+.modal [data-service-warn] { margin-top: 0.9rem; font-size: 0.86rem; }
+
 /* ---------- toasts ------------------------------------------------------ */
 
 .toasts {
@@ -899,6 +1074,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   align-items: flex-start;
   justify-content: center;
   padding: 10vh 1rem 2rem;
+  overflow: auto; /* a tall dialog must still reach its own buttons */
   z-index: 90;
 }
 .modal {
@@ -928,4 +1104,10 @@ label.check input { width: auto; display: inline; margin: 0; }
   .answer, .refusal, .ask-skeleton { padding-left: 1.1rem; padding-right: 1.1rem; }
   .citation-foot { padding-left: 1.1rem; }
   .ask-form-foot { align-items: flex-start; }
+  .ref-field { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .ref-prov { min-height: 7.25em; -webkit-line-clamp: 5; line-clamp: 5; }
+  .modal-backdrop { padding-top: 4vh; }
+  .field-pair { flex-direction: column; align-items: stretch; }
+  .field-pair label:last-child { flex: 1 1 auto; }
+  .source-mode { max-width: none; }
 }
