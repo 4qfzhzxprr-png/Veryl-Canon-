@@ -132,7 +132,7 @@ async function seedCanon(canon: Rig['canon']) {
     const page = (await canon('POST', '/pages', admin.id, { collectionId, type: 'policy', title })).json;
     await canon('PUT', `/pages/${page.id}/draft`, admin.id, {
       body,
-      fields: { ownerId: admin.id, approverId: approver.id },
+      fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01' },
     });
     await canon('POST', `/pages/${page.id}/submit`, admin.id, {});
     await canon('POST', `/pages/${page.id}/approve`, approver.id, {});
