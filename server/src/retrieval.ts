@@ -43,6 +43,16 @@ export interface RetrieveRequest {
   // Graph expansion, step 3. On by default; depth is clamped below.
   expand?: boolean;
   depth?: number;
+  // The two narrowings the Knowledge API adds (STUDIO-CONTRACT.md §4), so a
+  // Studio app's answer is bounded by the app's permissions, the person's
+  // permissions, and the Registry's collection limit at once. Both only ever
+  // narrow, and both are applied in `hydrate` — the single gate every
+  // candidate passes through, direct or expanded — which is before any
+  // passage is built and long before anything is generated.
+  /** A second actor who must also be able to see a page for it to be a candidate. */
+  alsoVisibleTo?: string;
+  /** An allow-list of collection ids; absent means no such bound. */
+  collectionIds?: string[];
 }
 
 // Reciprocal Rank Fusion (Cormack, Clarke & Buettcher, SIGIR 2009):
@@ -99,6 +109,12 @@ export function parsePageLinks(body: string): string[] {
 // The minimal slice of CanonStore this service needs; CanonStore satisfies it.
 export interface RetrievalHost {
   getActor(id: string): Actor;
+}
+
+/** The Knowledge API's extra narrowing, carried into the candidate SQL. */
+interface Narrowing {
+  alsoVisibleTo?: string;
+  collectionIds?: string[];
 }
 
 interface HydratedPage {
@@ -160,7 +176,7 @@ export class RetrievalService {
     const seen = new Set<string>();
     for (const [pageId, entry] of ordered) {
       if (candidates.length >= limit) break;
-      const page = this.hydrate(actorId, pageId, canonicalOnly);
+      const page = this.hydrate(actorId, pageId, canonicalOnly, request);
       if (!page) continue;
       seen.add(pageId);
       candidates.push({
@@ -180,7 +196,7 @@ export class RetrievalService {
     // ---- step 3: graph expansion along real edges ----------------------
     if (request.expand ?? true) {
       const depth = Math.min(Math.max(request.depth ?? DEFAULT_DEPTH, 0), MAX_DEPTH);
-      candidates.push(...this.expand(actorId, candidates, seen, depth, terms, canonicalOnly));
+      candidates.push(...this.expand(actorId, candidates, seen, depth, terms, canonicalOnly, request));
     }
 
     candidates.sort((a, b) => b.score - a.score || a.pageId.localeCompare(b.pageId));
@@ -232,6 +248,11 @@ export class RetrievalService {
       collectionId: request.collectionId,
       status: canonicalOnly ? 'canonical' : undefined,
       limit: LEXICAL_POOL,
+      // The Knowledge API's narrowing reaches the pool as well as the
+      // hydration gate, so a page outside the intersection never occupies a
+      // slot in the lexical ranking either.
+      alsoVisibleTo: request.alsoVisibleTo,
+      collectionIds: request.collectionIds,
     };
     const queries = terms.length > 1 ? [terms.join(' '), ...terms] : [...terms];
     const scores = new Map<string, number>();
@@ -279,17 +300,41 @@ export class RetrievalService {
   // an invisible page returns nothing rather than being filtered out later.
   // Unpublished and archived pages return nothing too, and with
   // canonicalOnly so does anything that is not a Canonical non-Note.
-  private hydrate(actorId: string, pageId: string, canonicalOnly: boolean): HydratedPage | null {
+  //
+  // `narrowing` is the Knowledge API's other two gates (STUDIO-CONTRACT.md
+  // §4), in this same SQL: a second actor who must also be able to see the
+  // page, and an allow-list of collections. Absent, nothing changes for
+  // anyone. Present, they can only take pages away.
+  private hydrate(
+    actorId: string,
+    pageId: string,
+    canonicalOnly: boolean,
+    narrowing: Narrowing = {},
+  ): HydratedPage | null {
     const clause = canonicalOnly ? "AND p.status = 'canonical' AND p.type != 'note'" : "AND p.status != 'archived'";
+    // An empty allow-list is "nowhere", not "no constraint".
+    if (narrowing.collectionIds && narrowing.collectionIds.length === 0) return null;
+    const scope = narrowing.collectionIds
+      ? `AND p.collection_id IN (${narrowing.collectionIds.map(() => '?').join(', ')})`
+      : '';
+    const second = narrowing.alsoVisibleTo
+      ? 'JOIN collection_members m2 ON m2.collection_id = p.collection_id AND m2.actor_id = ?'
+      : '';
     const row = this.db
       .prepare(
         `SELECT p.id, p.collection_id, p.type, p.status, p.parent_id, p.current_version, v.title, v.body
          FROM pages p
          JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
-         WHERE p.id = ? ${clause}`,
+         ${second}
+         WHERE p.id = ? ${clause} ${scope}`,
       )
-      .get(actorId, pageId) as Record<string, unknown> | undefined;
+      .get(
+        actorId,
+        ...(narrowing.alsoVisibleTo ? [narrowing.alsoVisibleTo] : []),
+        pageId,
+        ...(narrowing.collectionIds ?? []),
+      ) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       pageId: row.id as string,
@@ -328,6 +373,7 @@ export class RetrievalService {
     depth: number,
     terms: string[],
     canonicalOnly: boolean,
+    narrowing: Narrowing = {},
   ): RetrievalCandidate[] {
     const added: RetrievalCandidate[] = [];
     let frontier = candidates.map((c) => ({ pageId: c.pageId, score: c.score }));
@@ -335,13 +381,13 @@ export class RetrievalService {
       const next: { pageId: string; score: number }[] = [];
       for (const node of frontier) {
         if (added.length >= MAX_EXPANDED) break;
-        const source = this.hydrate(actorId, node.pageId, false);
+        const source = this.hydrate(actorId, node.pageId, false, narrowing);
         if (!source) continue;
         for (const edge of this.neighbours(source)) {
           if (added.length >= MAX_EXPANDED) break;
           if (seen.has(edge.pageId)) continue;
           seen.add(edge.pageId);
-          const page = this.hydrate(actorId, edge.pageId, canonicalOnly);
+          const page = this.hydrate(actorId, edge.pageId, canonicalOnly, narrowing);
           if (!page) continue;
           const score = node.score * EXPANSION_DAMPING;
           added.push(

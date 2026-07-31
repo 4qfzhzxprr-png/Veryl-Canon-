@@ -35,6 +35,14 @@ export interface SearchFilter {
   status?: string;
   ownerId?: string;
   limit?: number;
+  // The two narrowings the Knowledge API adds (STUDIO-CONTRACT.md §4). Both
+  // are optional, both only ever narrow, and both are applied in the SQL that
+  // already filters by `actorId`'s permissions — so there is one permission
+  // filter here, extended, rather than a second one somewhere else.
+  /** A second actor who must also be able to see a result for it to be returned. */
+  alsoVisibleTo?: string;
+  /** An allow-list of collection ids; absent means no such bound. */
+  collectionIds?: string[];
 }
 
 export class SearchIndex {
@@ -110,6 +118,19 @@ export class SearchIndex {
       clauses.push('AND p.owner_id = ?');
       params.push(filter.ownerId);
     }
+    // An empty allow-list means exactly that — nothing is in scope — so it is
+    // answered without a query rather than by an `IN ()` that SQLite would
+    // read as "no constraint". Where the limits are silent, less, not more.
+    if (filter.collectionIds) {
+      if (filter.collectionIds.length === 0) return [];
+      clauses.push(`AND p.collection_id IN (${filter.collectionIds.map(() => '?').join(', ')})`);
+      params.push(...filter.collectionIds);
+    }
+    // The second reader, as a second membership join: a result must be visible
+    // to both actors, decided in SQL before ranking rather than after it.
+    const second = filter.alsoVisibleTo
+      ? 'JOIN collection_members m2 ON m2.collection_id = p.collection_id AND m2.actor_id = ?'
+      : '';
     const limit = Math.min(Math.max(filter.limit ?? 25, 1), 100);
 
     const rows = this.db
@@ -119,11 +140,15 @@ export class SearchIndex {
          FROM page_search
          JOIN pages p ON p.id = page_search.page_id
          JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
+         ${second}
          WHERE page_search MATCH ? ${clauses.join(' ')}
          ORDER BY CASE WHEN p.status = 'canonical' THEN 0 ELSE 1 END, bm25(page_search)
          LIMIT ${limit}`,
       )
-      .all(actorId, match, ...params) as Record<string, unknown>[];
+      .all(actorId, ...(filter.alsoVisibleTo ? [filter.alsoVisibleTo] : []), match, ...params) as Record<
+        string,
+        unknown
+      >[];
 
     return rows.map((r) => ({
       pageId: r.id as string,

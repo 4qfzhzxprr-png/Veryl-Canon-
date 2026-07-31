@@ -1,5 +1,6 @@
-import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
+import { createServer, IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { AgentAuth, AgentSession, passportAuthUnavailable, runInAgentRequestScope } from './agentauth.js';
+import { KNOWLEDGE_ROUTES } from './knowledge.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
 import { CanonStore } from './store.js';
@@ -31,6 +32,14 @@ type Handler = (ctx: {
    * and `refuseUnpermittedSource()` in agentauth.ts.
    */
   agent: AgentSession | null;
+  /**
+   * The request's raw headers. Almost every handler ignores them — identity
+   * is already resolved into `actorId` and `agent`. Veryl Studio's Knowledge
+   * API reads `X-On-Behalf-Of` from here, because a Studio app's call carries
+   * two identities: the app's passport and the person it is acting for
+   * (STUDIO-CONTRACT.md §3).
+   */
+  headers: IncomingHttpHeaders;
 }) => unknown;
 
 interface Route {
@@ -215,6 +224,12 @@ const routes: Route[] = [
   route('POST', '/proposals/:id/reject', ({ store, actorId, params, body }) =>
     store.rejectProposal(actorId, params.id!, body ?? {}),
   ),
+  // Veryl Studio's Knowledge API (STUDIO-CONTRACT.md). Its handlers live in
+  // knowledge.ts, mounted here as ordinary routes so they meet the same
+  // passport authentication and the same Registry enforcement as everything
+  // else; what they add on top is the person the app is acting for, and the
+  // three-way intersection that follows from naming both.
+  ...KNOWLEDGE_ROUTES.map((r) => route(r.method, r.path, r.handler)),
 ];
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -265,7 +280,16 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
       // The Registry's half of the intersection, applied before the store
       // applies Canon's own permissions. Neither side can widen the other.
-      const limits = session ? agentAuth!.enforce(session, { method: req.method ?? '', pathname: url.pathname, body }) : null;
+      const limits = session
+        ? agentAuth!.enforce(session, {
+            method: req.method ?? '',
+            pathname: url.pathname,
+            body,
+            // Carried for the audit log only: a Registry refusal of a Studio
+            // app's call still names the person the call was made for.
+            onBehalfOf: (req.headers['x-on-behalf-of'] as string) ?? undefined,
+          })
+        : null;
       // Awaited: grounded answers are async (the embedding provider interface
       // is) and so is the outbox flush, which waits on a mail relay. Awaiting
       // a plain value changes nothing for every other handler.
@@ -275,7 +299,7 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       // That is how the reference layer refuses an individual reference whose
       // source the Registry withheld while still serving the page around it.
       const result = await runInAgentRequestScope(agentAuth, session, () =>
-        match.handler({ store, actorId, params, query: url.searchParams, body, agent: session }),
+        match.handler({ store, actorId, params, query: url.searchParams, body, agent: session, headers: req.headers }),
       );
       // Almost everything here is JSON; a handler that needs another content
       // type (the audit CSV download) returns a RawResponse and writes itself.

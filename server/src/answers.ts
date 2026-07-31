@@ -44,6 +44,15 @@ export interface AskRequest {
   question: string;
   collectionId?: string;
   limit?: number;
+  // Veryl Studio's Knowledge API asks on behalf of a person, so the candidates
+  // an answer may draw on are narrowed by that person's permissions and by the
+  // app's Registry collection limit as well as by the asking actor's own
+  // permissions (STUDIO-CONTRACT.md §4). Both are optional, both only ever
+  // narrow, and both are applied to the candidate set BEFORE generation —
+  // filtering citations afterwards cannot un-leak what the text already merged
+  // (DATA-BACKBONE.md §5, "permission filtering before ranking, not after").
+  alsoVisibleTo?: string;
+  collectionIds?: string[];
 }
 
 // A passage handed to the generator: verbatim text from one published,
@@ -193,6 +202,8 @@ export class AnswerService {
       limit: request.limit,
       canonicalOnly: true, // Canonical pages only, enforced in the candidate SQL
       expand: true, // multi-hop: the policy states the rule, its child procedure the steps
+      alsoVisibleTo: request.alsoVisibleTo,
+      collectionIds: request.collectionIds,
     });
 
     // Belt and braces over the SQL filter: nothing that is not a Canonical,

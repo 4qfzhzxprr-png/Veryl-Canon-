@@ -233,6 +233,43 @@ const RULES: Rule[] = [
   // If a future tier ever wants a certified agent to accept another agent's
   // proposal, it takes a deliberate change here AND there, plus a paragraph in
   // FEATURES.md — never a quiet route addition.
+  // Veryl Studio's Knowledge API (STUDIO-CONTRACT.md). A Studio app is an
+  // agent and reaches Canon through this same door: its passport is verified
+  // by the Registry, and the Registry's limits are applied here, before the
+  // handler, exactly as for any other agent. There is no second credential
+  // model and no second limits vocabulary — `read`, `comment` and `write`
+  // mean on `/knowledge/...` what they mean everywhere else.
+  //
+  // What the Knowledge API adds — the person the app is acting for, and the
+  // third gate that follows — is settled inside the handler, in knowledge.ts,
+  // because it is a Canon permission question rather than a Registry one.
+  { method: 'GET', pattern: /^\/knowledge\/whoami$/, action: 'read', scope: NONE },
+  {
+    method: 'GET',
+    pattern: /^\/knowledge\/collections$/,
+    action: 'read',
+    scope: () => ({ kind: 'filtered', filter: 'collections' }),
+  },
+  {
+    method: 'GET',
+    pattern: /^\/knowledge\/collections\/([^/]+)(?:\/tree)?$/,
+    action: 'read',
+    scope: (g) => ({ kind: 'collection', id: g[0] ?? '' }),
+  },
+  { method: 'GET', pattern: /^\/knowledge\/pages\/([^/]+)$/, action: 'read', scope: PAGE },
+  { method: 'GET', pattern: /^\/knowledge\/pages\/([^/]+)\/versions$/, action: 'read', scope: PAGE },
+  { method: 'GET', pattern: /^\/knowledge\/pages\/([^/]+)\/versions\/[^/]+$/, action: 'read', scope: PAGE },
+  { method: 'GET', pattern: /^\/knowledge\/search$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'search' }) },
+  { method: 'POST', pattern: /^\/knowledge\/ask$/, action: 'read', scope: () => ({ kind: 'bodyCollection' }) },
+
+  // The write surface. `write` on the app's side, and — settled in the
+  // handler — `edit` on both Canon sides, so an app cannot write where the
+  // person it acts for could not. Approval is deliberately absent: the
+  // Canonical mark is granted by a person in Canon, never through an app.
+  { method: 'POST', pattern: /^\/knowledge\/pages$/, action: 'write', scope: () => ({ kind: 'bodyCollection' }) },
+  { method: 'PUT', pattern: /^\/knowledge\/pages\/([^/]+)\/draft$/, action: 'write', scope: PAGE },
+  { method: 'POST', pattern: /^\/knowledge\/pages\/([^/]+)\/(?:publish|submit)$/, action: 'write', scope: PAGE },
+  { method: 'POST', pattern: /^\/knowledge\/pages\/([^/]+)\/comments$/, action: 'comment', scope: PAGE },
 ];
 
 function classify(method: string, pathname: string): { action: AgentAction; scope: Scope } | null {
@@ -364,10 +401,26 @@ export class AgentAuth {
    * by the store as usual; whichever side denies, the request is refused.
    * Returns the narrowing for responses that span collections.
    */
-  enforce(session: AgentSession, req: { method: string; pathname: string; body?: unknown }): Enforcement {
+  enforce(
+    session: AgentSession,
+    req: {
+      method: string;
+      pathname: string;
+      body?: unknown;
+      /**
+       * The person a Veryl Studio app is acting for, from `X-On-Behalf-Of`
+       * (STUDIO-CONTRACT.md §3). It plays no part in this gate — the
+       * Registry's limits are about the app alone — but a refusal here is
+       * still a refusal of a call made for someone, and the audit log has to
+       * be able to say who. Absent for every other agent request.
+       */
+      onBehalfOf?: string;
+    },
+  ): Enforcement {
+    const onBehalfOf = req.onBehalfOf?.trim() || undefined;
     const classified = classify(req.method, req.pathname);
     if (!classified) {
-      this.deny(session, 'route', { method: req.method, path: req.pathname });
+      this.deny(session, 'route', { method: req.method, path: req.pathname, onBehalfOf });
       throw new CanonError('forbidden', `This route is not available to agents: ${req.method} ${req.pathname}`, {
         reason: 'route_not_available_to_agents',
       });
@@ -378,7 +431,7 @@ export class AgentAuth {
     // guessed at (REGISTRY-CONTRACT.md §7): membership of our fixed
     // vocabulary is the only thing that grants anything.
     if (!session.permittedActions.includes(action)) {
-      this.deny(session, 'action', { action });
+      this.deny(session, 'action', { action, onBehalfOf });
       throw new CanonError('forbidden', `The Registry does not permit this agent to ${action}`, {
         reason: 'action_not_permitted',
         action,
@@ -388,14 +441,14 @@ export class AgentAuth {
 
     const collectionId = this.collectionFor(scope, req.body);
     if (scope.kind === 'newCollection' && !session.permittedCollections.includes('*')) {
-      this.deny(session, 'collection', { action, newCollection: true });
+      this.deny(session, 'collection', { action, newCollection: true, onBehalfOf });
       throw new CanonError('forbidden', 'The Registry permits this agent only in named collections, so it cannot create one', {
         reason: 'collection_not_permitted',
         permittedCollections: session.permittedCollections,
       });
     }
     if (collectionId && !permitsCollection(session.permittedCollections, collectionId)) {
-      this.deny(session, 'collection', { action, collectionId });
+      this.deny(session, 'collection', { action, collectionId, onBehalfOf });
       throw new CanonError('forbidden', 'The Registry does not permit this agent in this collection', {
         reason: 'collection_not_permitted',
         collectionId,
@@ -407,7 +460,7 @@ export class AgentAuth {
     // redefining a source is not something a named-source grant can cover,
     // because the thing it would redefine is the grant's own subject.
     if (scope.kind === 'sourceAdmin' && !session.permittedSources.includes('*')) {
-      this.deny(session, 'source', { action, sourceAdministration: true });
+      this.deny(session, 'source', { action, sourceAdministration: true, onBehalfOf });
       throw new CanonError(
         'forbidden',
         'The Registry permits this agent only named sources, so it cannot register or change one',
@@ -415,7 +468,7 @@ export class AgentAuth {
       );
     }
     if (scope.kind === 'source' && !permitsSource(session.permittedSources, scope.id)) {
-      this.deny(session, 'source', { action, sourceId: scope.id });
+      this.deny(session, 'source', { action, sourceId: scope.id, onBehalfOf });
       throw new CanonError('forbidden', 'The Registry does not permit this agent to reach this source', {
         reason: 'source_not_permitted',
         sourceId: scope.id,

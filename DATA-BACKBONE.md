@@ -205,7 +205,7 @@ These are the contracts. They name what each product may assume about Canon, and
 - Apps that answer questions ground them the way Canon's own answers are grounded: Canonical pages only, permission-filtered to the asker, cited, and refusing when the record is silent.
 - A permission change or revocation in Canon or the Registry is effective on the next API call. Studio apps never hold data rights of their own; they borrow them, per call, from the record.
 
-The Knowledge API lands in the Next tier ([FEATURES.md](FEATURES.md), what ships first). The contract is stated now so nothing in Core forecloses it — which is Core's standing rule for all deferred work.
+The Knowledge API lands in the Next tier ([FEATURES.md](FEATURES.md), what ships first). The contract is stated now so nothing in Core forecloses it — which is Core's standing rule for all deferred work. It is written out in full in [STUDIO-CONTRACT.md](STUDIO-CONTRACT.md), which is to Studio what [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) is to the Registry, and is built on that contract rather than beside it: a Studio app *is* an agent, and presents an Agent Passport exactly as one.
 
 ## 8. What this means for build order
 
@@ -223,8 +223,9 @@ Beyond the Core plan's open questions, the backbone role raises four of its own:
 - Which embedding provider, and does a regulated design partner accept their record's text being sent to it at all? If not, retrieval runs lexical-plus-graph until a self-hosted model is available — which is one reason semantic retrieval is optional rather than assumed.
 
 - Does Studio need read access to any non-Canonical material — for example, an app that helps a team work on drafts — or is the Canonical-only boundary absolute for apps? Leaning absolute for answers, permitted-with-attribution for working tools.
-- Where an app acts for a person, does Canon record the person, the app, or both as the actor? Leaning both, always: the audit question is "who did what, through what."
 - Does the Registry need a push channel from Canon (agent activity streamed as it happens) or is pull from the audit log sufficient for its compliance views? Resolve alongside the Passport contract discussion.
+
+**Resolved — where an app acts for a person, Canon records both.** The app is the actor in history and in the audit event; the person is named alongside it, on every call, via the `X-On-Behalf-Of` header, and the effective permission is the intersection of the app's Registry limits, the app's Canon permissions and the person's Canon permissions. See [STUDIO-CONTRACT.md](STUDIO-CONTRACT.md) (sections 3 and 4).
 
 ---
 
