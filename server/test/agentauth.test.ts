@@ -700,7 +700,7 @@ test('a read-certified agent may ask, and the answer respects both sides', async
         'PUT',
         `/pages/${page.id}/draft`,
         { actor: dana.id },
-        { body, fields: { ownerId: dana.id, approverId: iris.id } },
+        { body, fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' } },
       );
       await r.call('POST', `/pages/${page.id}/submit`, { actor: dana.id }, {});
       await r.call('POST', `/pages/${page.id}/approve`, { actor: iris.id }, {});

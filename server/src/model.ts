@@ -7,8 +7,11 @@ export type ActorKind = 'person' | 'agent';
 export type DocType = 'policy' | 'spec' | 'plan' | 'note';
 export const DOC_TYPES: readonly DocType[] = ['policy', 'spec', 'plan', 'note'];
 
-// Page status in Core. `needs_update` joins in the Next tier with automated freshness.
-export type PageStatus = 'draft' | 'in_review' | 'canonical' | 'archived';
+// Page status. `needs_update` joined in the Next tier with automated freshness
+// (FEATURES.md §3 "Verification and freshness"): a Canonical page whose review
+// date has passed is flipped to it by the sweep in freshness.ts, and returns to
+// Canonical through the ordinary review workflow — there is no second path.
+export type PageStatus = 'draft' | 'in_review' | 'canonical' | 'needs_update' | 'archived';
 
 // Collection roles, ranked. A higher role implies every lower one.
 export type Role = 'view' | 'comment' | 'edit' | 'approve' | 'admin';
@@ -28,13 +31,59 @@ export interface TypeRules {
   requiresApprover: boolean;
   allowsEffectiveDate: boolean;
   reviewed: boolean;
+  // Freshness (FEATURES.md §3). Which types may carry a review date, and which
+  // must carry one before they can publish. Two flags rather than one because
+  // the two questions are genuinely different, exactly as they are for the
+  // effective date: a Spec may be dated for review without being made to be.
+  //
+  // Policy REQUIRES one — FEATURES.md §1 states it in those words ("A Policy
+  // requires an owner, a review date, and an approver"), and a policy nobody
+  // has promised to re-read is the thing freshness exists to prevent.
+  // Spec and Plan ALLOW one: both reach Canonical, so both can go stale, but a
+  // plan with a real end date and a spec that describes shipped behaviour are
+  // ordinary, and forcing a date on them would teach people to type a year out
+  // and forget it.
+  // Note allows NONE. A Note never carries the Canonical mark, so it has no
+  // standing to lose; a review date on one would be a promise about a page the
+  // record never treated as official. "A Note requires nothing" (FEATURES.md §1)
+  // is here read as "a Note carries nothing it cannot honour".
+  allowsReviewDate: boolean;
+  requiresReviewDate: boolean;
 }
 
 export const TYPE_RULES: Record<DocType, TypeRules> = {
-  policy: { requiresOwner: true, requiresApprover: true, allowsEffectiveDate: true, reviewed: true },
-  spec: { requiresOwner: true, requiresApprover: true, allowsEffectiveDate: false, reviewed: true },
-  plan: { requiresOwner: true, requiresApprover: false, allowsEffectiveDate: false, reviewed: true },
-  note: { requiresOwner: false, requiresApprover: false, allowsEffectiveDate: false, reviewed: false },
+  policy: {
+    requiresOwner: true,
+    requiresApprover: true,
+    allowsEffectiveDate: true,
+    reviewed: true,
+    allowsReviewDate: true,
+    requiresReviewDate: true,
+  },
+  spec: {
+    requiresOwner: true,
+    requiresApprover: true,
+    allowsEffectiveDate: false,
+    reviewed: true,
+    allowsReviewDate: true,
+    requiresReviewDate: false,
+  },
+  plan: {
+    requiresOwner: true,
+    requiresApprover: false,
+    allowsEffectiveDate: false,
+    reviewed: true,
+    allowsReviewDate: true,
+    requiresReviewDate: false,
+  },
+  note: {
+    requiresOwner: false,
+    requiresApprover: false,
+    allowsEffectiveDate: false,
+    reviewed: false,
+    allowsReviewDate: false,
+    requiresReviewDate: false,
+  },
 };
 
 // Structured fields carried on a page, stored as data, never parsed from prose.
@@ -42,6 +91,9 @@ export interface PageFields {
   ownerId?: string | null;
   approverId?: string | null;
   effectiveDate?: string | null; // ISO date, Policy only
+  // ISO date (YYYY-MM-DD). Data, never parsed from prose: the freshness sweep
+  // and every structured query read this field, not a sentence in a body.
+  reviewDate?: string | null;
 }
 
 export interface Actor {
@@ -73,6 +125,7 @@ export interface Page {
   ownerId: string | null;
   approverId: string | null;
   effectiveDate: string | null;
+  reviewDate: string | null;
   currentVersion: number | null;
   createdBy: string;
   createdAt: string;

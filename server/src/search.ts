@@ -16,7 +16,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS page_search USING fts5(
 );
 `;
 
-const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical', 'archived'];
+const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical', 'needs_update', 'archived'];
+
+// Ranking by standing, before relevance. Canonical first, because official
+// means something. Needs Update SECOND rather than last: a page past its review
+// date is still the record's own answer — it was approved, it has an owner, and
+// nothing has replaced it — so burying it under drafts would send a searcher to
+// working notes instead of to the official page that needs attention. It ranks
+// below Canonical because the flag is real, and above everything unreviewed
+// because it earned the mark and has only grown old.
+const STATUS_RANK = `CASE p.status WHEN 'canonical' THEN 0 WHEN 'needs_update' THEN 1 ELSE 2 END`;
 
 export interface SearchResult {
   pageId: string;
@@ -33,6 +42,13 @@ export interface SearchFilter {
   collectionId?: string;
   type?: string;
   status?: string;
+  /**
+   * Several statuses at once, AND-ed with nothing and OR-ed among themselves.
+   * The single `status` above stays the query-string surface people use; this
+   * exists for callers that mean a set — retrieval asks for the material
+   * answers may cite, which is Canonical *and* Needs Update (see answers.ts).
+   */
+  statuses?: readonly string[];
   ownerId?: string;
   limit?: number;
 }
@@ -91,6 +107,11 @@ export class SearchIndex {
     if (filter.status && !PAGE_STATUSES.includes(filter.status as PageStatus)) {
       throw new CanonError('invalid', `Unknown page status: ${filter.status}`);
     }
+    for (const status of filter.statuses ?? []) {
+      if (!PAGE_STATUSES.includes(status as PageStatus)) {
+        throw new CanonError('invalid', `Unknown page status: ${status}`);
+      }
+    }
 
     const clauses: string[] = [];
     const params: string[] = [];
@@ -106,6 +127,10 @@ export class SearchIndex {
       clauses.push('AND p.status = ?');
       params.push(filter.status);
     }
+    if (filter.statuses?.length) {
+      clauses.push(`AND p.status IN (${filter.statuses.map(() => '?').join(', ')})`);
+      params.push(...filter.statuses);
+    }
     if (filter.ownerId) {
       clauses.push('AND p.owner_id = ?');
       params.push(filter.ownerId);
@@ -120,7 +145,7 @@ export class SearchIndex {
          JOIN pages p ON p.id = page_search.page_id
          JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
          WHERE page_search MATCH ? ${clauses.join(' ')}
-         ORDER BY CASE WHEN p.status = 'canonical' THEN 0 ELSE 1 END, bm25(page_search)
+         ORDER BY ${STATUS_RANK}, bm25(page_search)
          LIMIT ${limit}`,
       )
       .all(actorId, match, ...params) as Record<string, unknown>[];

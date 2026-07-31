@@ -53,7 +53,7 @@ function publishCanonicalPolicy(
   body: string,
 ) {
   const page = store.createPage(editorId, { collectionId, type: 'policy', title });
-  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId } });
+  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate: '2099-01-01' } });
   store.submitForReview(editorId, page.id);
   return store.approve(approverId, page.id);
 }

@@ -41,7 +41,7 @@ test('API smoke: a policy travels draft -> in review -> canonical over HTTP', as
     ).json;
     await call('PUT', `/pages/${page.id}/draft`, dana.id, {
       body: 'All access is logged.',
-      fields: { ownerId: dana.id, approverId: iris.id },
+      fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' },
     });
 
     const submitted = (await call('POST', `/pages/${page.id}/submit`, dana.id)).json;

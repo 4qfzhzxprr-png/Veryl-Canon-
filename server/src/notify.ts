@@ -57,7 +57,15 @@ function ensureDeliveryColumns(db: DatabaseSync): void {
   }
 }
 
-export type NotificationKind = 'mention' | 'review_requested' | 'draft_approved' | 'draft_sent_back';
+// `review_due` is the freshness sweep's voice (freshness.ts): the owner of a
+// Canonical page whose review date has passed is told, once, that the page is
+// now Needs Update. It rides the same outbox as every other notification.
+export type NotificationKind =
+  | 'mention'
+  | 'review_requested'
+  | 'draft_approved'
+  | 'draft_sent_back'
+  | 'review_due';
 
 export interface Notification {
   id: string;

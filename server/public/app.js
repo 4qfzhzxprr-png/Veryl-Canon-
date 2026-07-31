@@ -17,21 +17,34 @@ const TYPE_HELP = {
   plan: 'What will be done and when. Needs an owner.',
   note: 'Working material. Publishes directly and never carries the Canonical mark.',
 };
+// Mirrors TYPE_RULES in src/model.ts. `reviewDate` is which types may CARRY
+// one; a Policy also requires one before it can publish, which the server
+// enforces and the editor labels.
 const TYPE_FIELDS = {
-  policy: { owner: true, approver: true, effectiveDate: true },
-  spec: { owner: true, approver: true, effectiveDate: false },
-  plan: { owner: true, approver: false, effectiveDate: false },
-  note: { owner: false, approver: false, effectiveDate: false },
+  policy: { owner: true, approver: true, effectiveDate: true, reviewDate: true, reviewDateRequired: true },
+  spec: { owner: true, approver: true, effectiveDate: false, reviewDate: true },
+  plan: { owner: true, approver: false, effectiveDate: false, reviewDate: true },
+  note: { owner: false, approver: false, effectiveDate: false, reviewDate: false },
 };
 const REVIEWED_TYPES = ['policy', 'spec', 'plan'];
 
-const STATUS_LABELS = { draft: 'Draft', in_review: 'In Review', canonical: 'Canonical', archived: 'Archived' };
+const STATUS_LABELS = {
+  draft: 'Draft',
+  in_review: 'In Review',
+  canonical: 'Canonical',
+  // Freshness (FEATURES.md §3): a Canonical page whose review date has passed.
+  // It is still the official record, so it reads as a flag on the page rather
+  // than a demotion to a working note.
+  needs_update: 'Needs Update',
+  archived: 'Archived',
+};
 
 const AUDIT_ACTIONS = [
   'collection.create', 'collection.member_set', 'collection.member_removed',
   'page.create', 'page.view', 'page.move', 'page.archive',
   'draft.start', 'draft.discard',
   'page.publish', 'page.submit', 'page.approve', 'page.send_back', 'page.restore',
+  'page.needs_update',
 ];
 
 const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
@@ -925,7 +938,11 @@ async function viewPage(id) {
   const actions = ['<span id="ask-affordance"></span>'];
   if (!isArchived && !inReview) actions.push(`<a class="btn" href="#/pages/${esc(id)}/edit">Edit</a>`);
   actions.push(`<a class="btn" href="#/pages/${esc(id)}/history">History</a>`);
-  if (reviewed && page.status === 'draft' && draft) actions.push('<button class="btn primary" id="act-submit">Submit for review</button>');
+  // Needs Update submits like a Draft: the way back to Canonical is the review
+  // workflow, not a separate re-certify button (FEATURES.md §3).
+  if (reviewed && (page.status === 'draft' || page.status === 'needs_update') && draft) {
+    actions.push('<button class="btn primary" id="act-submit">Submit for review</button>');
+  }
   if (inReview) {
     actions.push('<button class="btn primary" id="act-approve">Approve</button>');
     actions.push('<button class="btn" id="act-sendback">Send back</button>');
@@ -943,6 +960,7 @@ async function viewPage(id) {
         </div>
         ${draftBanner}
         ${isArchived ? '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>' : ''}
+        ${page.status === 'needs_update' ? `<div class="notice">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed, so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review date, and submit it for review to return it to Canonical.</div>` : ''}
         ${inReview ? `<div class="notice">In review. ${rules.approver ? `Waiting on the named approver, <strong>${esc(actorName(page.approverId))}</strong>.` : 'Waiting on an approver for this collection.'}</div>` : ''}
 
         <dl class="field-block">
@@ -951,6 +969,7 @@ async function viewPage(id) {
           ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(page.ownerId)}</dd></div>` : ''}
           ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(page.approverId)}</dd></div>` : ''}
           ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(page.effectiveDate)}</dd></div>` : ''}
+          ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${fmtDate(page.reviewDate)}${page.status === 'needs_update' ? ' · <span class="muted">past review</span>' : ''}</dd></div>` : ''}
           <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
@@ -1458,7 +1477,9 @@ async function viewEditor(id) {
             ${rules.owner ? `<label>Owner <select name="ownerId">${actorOptions(draft.fields.ownerId)}</select></label>` : ''}
             ${rules.approver ? `<label>Approver <select name="approverId">${actorOptions(draft.fields.approverId)}</select></label>` : ''}
             ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>` : ''}
-            ${!rules.owner && !rules.approver && !rules.effectiveDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
+            ${rules.reviewDate ? `<label>Review date${rules.reviewDateRequired ? ' <span class="muted">(required)</span>' : ''} <input type="date" name="reviewDate" value="${esc(draft.fields.reviewDate ?? '')}"></label>
+            <p class="muted">When this date passes, the page flips to Needs Update and its owner is notified.</p>` : ''}
+            ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
           <div class="panel editor-actions">
@@ -1479,6 +1500,7 @@ async function viewEditor(id) {
     if (rules.owner) fields.ownerId = form.ownerId.value || null;
     if (rules.approver) fields.approverId = form.approverId.value || null;
     if (rules.effectiveDate) fields.effectiveDate = form.effectiveDate.value || null;
+    if (rules.reviewDate) fields.reviewDate = form.reviewDate.value || null;
     return { title: form.title.value.trim(), body: form.body.value, fields };
   };
 
@@ -1755,6 +1777,7 @@ async function viewVersion(id, n) {
         ${version.fields.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(version.fields.ownerId)}</dd></div>` : ''}
         ${version.fields.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(version.fields.approverId)}</dd></div>` : ''}
         ${version.fields.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(version.fields.effectiveDate)}</dd></div>` : ''}
+        ${version.fields.reviewDate ? `<div><dt>Review date</dt><dd>${fmtDate(version.fields.reviewDate)}</dd></div>` : ''}
         ${version.note ? `<div><dt>Version note</dt><dd>${esc(version.note)}</dd></div>` : ''}
       </dl>
       <article class="doc-body">${renderMarkdown(version.body)}</article>

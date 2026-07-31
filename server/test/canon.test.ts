@@ -98,7 +98,7 @@ test('type rules: a policy cannot publish without owner and approver', () => {
   expectCode(() => store.publish(marc.id, page.id), 'workflow');
 
   store.editDraft(marc.id, page.id, {
-    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-09-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-09-01', reviewDate: '2099-01-01' },
   });
   const published = store.publish(marc.id, page.id);
   assert.equal(published.currentVersion, 1);
@@ -117,7 +117,7 @@ test('review workflow: draft -> in review -> canonical, by the named approver on
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
   });
 
   const submitted = store.submitForReview(marc.id, page.id);

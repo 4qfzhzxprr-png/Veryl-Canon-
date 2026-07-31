@@ -27,6 +27,8 @@ import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './im
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
+import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
+import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -58,6 +60,10 @@ export class CanonStore {
   readonly connectors: ConnectorRegistry;
   private readonly sources: SourceService;
   private readonly references: ReferenceService;
+  // Freshness and structured queries (Next tier) live in freshness.ts and
+  // queries.ts; delegates at the end of this class, same as everything above.
+  private readonly freshness: FreshnessService;
+  private readonly queries: QueryService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -74,6 +80,8 @@ export class CanonStore {
     this.connectors = connectors;
     this.sources = new SourceService(db, this);
     this.references = new ReferenceService(db, this, this.sources, this.connectors);
+    this.freshness = new FreshnessService(db, this, this.notifier);
+    this.queries = new QueryService(db, this);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -286,6 +294,7 @@ export class CanonStore {
       ownerId: (row.owner_id as string) ?? null,
       approverId: (row.approver_id as string) ?? null,
       effectiveDate: (row.effective_date as string) ?? null,
+      reviewDate: (row.review_date as string) ?? null,
       currentVersion: (row.current_version as number) ?? null,
       createdBy: row.created_by as string,
       createdAt: row.created_at as string,
@@ -420,6 +429,7 @@ export class CanonStore {
           ownerId: page.ownerId,
           approverId: page.approverId,
           effectiveDate: page.effectiveDate,
+          reviewDate: page.reviewDate,
         } satisfies PageFields),
     };
   }
@@ -459,6 +469,17 @@ export class CanonStore {
     if (fields.effectiveDate && !TYPE_RULES[type].allowsEffectiveDate) {
       throw new CanonError('invalid', `Effective date applies only to Policy pages, not ${type}`);
     }
+    // Freshness: the review date is a typed field, so its shape is checked the
+    // same way the effective date's is, and which types may carry one is
+    // TYPE_RULES' answer rather than a test written at this call site.
+    if (fields.reviewDate) {
+      if (!TYPE_RULES[type].allowsReviewDate) {
+        throw new CanonError('invalid', `A ${type} carries no review date; it never holds the Canonical mark`);
+      }
+      if (!isIsoDate(fields.reviewDate)) {
+        throw new CanonError('invalid', `A review date is an ISO date (YYYY-MM-DD), not '${fields.reviewDate}'`);
+      }
+    }
     for (const key of ['ownerId', 'approverId'] as const) {
       const value = fields[key];
       if (value) this.getActor(value);
@@ -472,6 +493,9 @@ export class CanonStore {
     }
     if (rules.requiresApprover && !fields.approverId) {
       throw new CanonError('workflow', `A ${type} requires a named approver before it can publish`);
+    }
+    if (rules.requiresReviewDate && !fields.reviewDate) {
+      throw new CanonError('workflow', `A ${type} requires a review date before it can publish`);
     }
   }
 
@@ -525,7 +549,7 @@ export class CanonStore {
       .run(page.id, next, content.title, content.body, JSON.stringify(content.fields), actorId, content.note, at);
     this.db
       .prepare(
-        `UPDATE pages SET title = ?, owner_id = ?, approver_id = ?, effective_date = ?,
+        `UPDATE pages SET title = ?, owner_id = ?, approver_id = ?, effective_date = ?, review_date = ?,
          current_version = ?, status = ? WHERE id = ?`,
       )
       .run(
@@ -533,6 +557,7 @@ export class CanonStore {
         content.fields.ownerId ?? null,
         content.fields.approverId ?? null,
         content.fields.effectiveDate ?? null,
+        content.fields.reviewDate ?? null,
         next,
         opts.toStatus ?? 'draft',
         page.id,
@@ -616,8 +641,13 @@ export class CanonStore {
     if (!TYPE_RULES[page.type].reviewed) {
       throw new CanonError('workflow', 'Notes publish directly and never carry the Canonical mark');
     }
-    if (page.status !== 'draft') {
-      throw new CanonError('workflow', `Only a Draft page can be submitted for review (status: ${page.status})`);
+    // Draft, or Needs Update. A page the freshness sweep flipped comes back to
+    // Canonical through THIS workflow and no other (FEATURES.md §3): its owner
+    // edits it and submits, the named approver accepts, and the Canonical mark
+    // is granted by the same act that grants it to anything else. Inventing a
+    // "re-certify" path would be inventing a second meaning for the mark.
+    if (page.status !== 'draft' && page.status !== 'needs_update') {
+      throw new CanonError('workflow', `Only a Draft or Needs Update page can be submitted for review (status: ${page.status})`);
     }
     const draft = this.draftRow(pageId);
     if (!draft) throw new CanonError('workflow', 'Nothing to review: there is no draft');
@@ -856,5 +886,46 @@ export class CanonStore {
 
   resolveReferences(actorId: string, pageId: string): Promise<ResolvedReference[]> {
     return this.references.resolveReferences(actorId, pageId);
+  }
+
+  // ---- freshness and structured queries (Next tier) ---------------------
+  // Thin delegates; the logic lives in freshness.ts and queries.ts.
+
+  // The freshness sweep, behind POST /maintenance/freshness. A deployment also
+  // runs it on a timer, exactly as it runs the notification flush (index.ts).
+  sweepFreshness(actorId: string, options: FreshnessSweepOptions = {}): FreshnessSweepResult {
+    return this.freshness.sweep(actorId, options);
+  }
+
+  runQuery(actorId: string, query: PageQuery = {}): QueryResultPage[] {
+    return this.queries.run(actorId, query);
+  }
+
+  saveQuery(actorId: string, input: { name: string; query?: PageQuery }): SavedQuery {
+    return this.queries.save(actorId, input);
+  }
+
+  listQueries(actorId: string): SavedQuery[] {
+    return this.queries.list(actorId);
+  }
+
+  getQuery(actorId: string, id: string): SavedQuery {
+    return this.queries.get(actorId, id);
+  }
+
+  deleteQuery(actorId: string, id: string): void {
+    this.queries.remove(actorId, id);
+  }
+
+  runSavedQuery(actorId: string, id: string, overrides: Partial<PageQuery> = {}): QueryResultPage[] {
+    return this.queries.runSaved(actorId, id, overrides);
+  }
+
+  collectionHealth(
+    actorId: string,
+    collectionId: string,
+    options: { staleDraftDays?: number; on?: string } = {},
+  ): CollectionHealth {
+    return this.queries.health(actorId, collectionId, options);
   }
 }
