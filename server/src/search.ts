@@ -110,7 +110,11 @@ export class SearchIndex {
       clauses.push('AND p.owner_id = ?');
       params.push(filter.ownerId);
     }
-    const limit = Math.min(Math.max(filter.limit ?? 25, 1), 100);
+    // Bound, and bound as a parameter below rather than spliced into the SQL
+    // as text: a caller reaching the index directly with a non-numeric limit
+    // would otherwise write into the statement.
+    const asked = Number(filter.limit ?? 25);
+    const limit = Number.isFinite(asked) ? Math.min(Math.max(Math.trunc(asked), 1), 100) : 25;
 
     const rows = this.db
       .prepare(
@@ -121,9 +125,9 @@ export class SearchIndex {
          JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
          WHERE page_search MATCH ? ${clauses.join(' ')}
          ORDER BY CASE WHEN p.status = 'canonical' THEN 0 ELSE 1 END, bm25(page_search)
-         LIMIT ${limit}`,
+         LIMIT ?`,
       )
-      .all(actorId, match, ...params) as Record<string, unknown>[];
+      .all(actorId, match, ...params, limit) as Record<string, unknown>[];
 
     return rows.map((r) => ({
       pageId: r.id as string,

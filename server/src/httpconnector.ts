@@ -41,6 +41,12 @@
  * collections and the rest satisfies it without change.
  */
 import type { Asker, Connector as CoreConnector, ResolveResult } from './connectors.js';
+import {
+  OutboundPolicy,
+  OutboundRefused,
+  assertOutboundAllowedResolved,
+  defaultOutboundPolicy,
+} from './outbound.js';
 
 export interface ConnectorSource {
   id: string;
@@ -104,7 +110,8 @@ export type ConnectorFailureCode =
   | 'unreachable' // connection refused, DNS, TLS, socket closed
   | 'source_error' // 5xx, or any status this connector cannot classify
   | 'unparseable' // not JSON, no scalar value, or an answer about something else
-  | 'misconfigured'; // Canon cannot even form the request honestly
+  | 'misconfigured' // Canon cannot even form the request honestly
+  | 'not_permitted'; // this deployment's outbound policy forbids reaching that host
 
 const REFUSAL_CODES: readonly ConnectorFailureCode[] = ['forbidden', 'not_found'];
 
@@ -161,7 +168,18 @@ export interface HttpConnectorOptions {
   valueField?: string;
   /** Injectable for tests. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /**
+   * Which hosts this deployment may reach (outbound.ts). Defaults to the
+   * process-wide policy read from CANON_SOURCE_ALLOWED_HOSTS, which is empty —
+   * no outbound federation — unless a deployment says otherwise.
+   */
+  outbound?: OutboundPolicy;
+  /** How many redirects to follow. Each hop is re-checked. Default 3. */
+  maxRedirects?: number;
 }
+
+/** A source that answers 3xx forever must not become an unbounded walk. */
+export const DEFAULT_MAX_REDIRECTS = 3;
 
 /**
  * Structured lookup over HTTP: `GET {baseUrl}{lookupPath}?key=…&selector=…`
@@ -185,6 +203,8 @@ export class HttpConnector implements Connector, CoreConnector {
   private readonly selectorParam: string;
   private readonly valueField: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly outbound: OutboundPolicy;
+  private readonly maxRedirects: number;
 
   constructor(options: HttpConnectorOptions = {}) {
     this.serviceIdentity = options.serviceIdentity?.trim() || null;
@@ -195,6 +215,8 @@ export class HttpConnector implements Connector, CoreConnector {
     this.selectorParam = options.selectorParam ?? 'selector';
     this.valueField = options.valueField ?? 'value';
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.outbound = options.outbound ?? defaultOutboundPolicy();
+    this.maxRedirects = Math.max(0, options.maxRedirects ?? DEFAULT_MAX_REDIRECTS);
   }
 
   /**
@@ -239,18 +261,59 @@ export class HttpConnector implements Connector, CoreConnector {
     url.searchParams.set(this.keyParam, key);
     url.searchParams.set(this.selectorParam, selector);
 
+    // The outbound policy, at resolution time and not only at registration
+    // (outbound.ts). A source registered before the policy tightened, or a
+    // name that has since come to resolve somewhere private, is refused here
+    // rather than dialled. `not_permitted` is deliberately an "unanswered"
+    // failure: nothing was asked, so nothing was answered, and the reference
+    // layer shows the refusal rather than a value.
     let response: Response;
-    try {
-      response = await this.fetchImpl(url, {
-        method: 'GET',
-        headers: { accept: 'application/json', [this.askerHeader]: identity },
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
-      });
-    } catch (err) {
-      if ((err as Error).name === 'TimeoutError') {
-        throw failure('timeout', `${source.name} did not answer within ${this.requestTimeoutMs}ms`);
+    let target = url;
+    for (let hop = 0; ; hop += 1) {
+      try {
+        await assertOutboundAllowedResolved(target, this.outbound);
+      } catch (err) {
+        if (err instanceof OutboundRefused) {
+          throw failure(
+            'not_permitted',
+            hop === 0
+              ? `Canon may not reach ${source.name} at ${target.origin}: ${err.message}`
+              : `${source.name} redirected to ${target.origin}, which Canon may not reach: ${err.message}`,
+          );
+        }
+        throw err;
       }
-      throw failure('unreachable', `${source.name} could not be reached: ${(err as Error).message}`);
+
+      try {
+        response = await this.fetchImpl(target, {
+          method: 'GET',
+          headers: { accept: 'application/json', [this.askerHeader]: identity },
+          signal: AbortSignal.timeout(this.requestTimeoutMs),
+          // Redirects are followed by hand so every hop is held to the same
+          // policy. Letting fetch follow them would let a permitted host bounce
+          // Canon straight into the private network on the second request.
+          redirect: 'manual',
+        });
+      } catch (err) {
+        if ((err as Error).name === 'TimeoutError') {
+          throw failure('timeout', `${source.name} did not answer within ${this.requestTimeoutMs}ms`);
+        }
+        throw failure('unreachable', `${source.name} could not be reached: ${(err as Error).message}`);
+      }
+
+      if (response.status < 300 || response.status > 399) break;
+      const location = response.headers.get('location');
+      if (!location) {
+        throw failure('unparseable', `${source.name} answered ${response.status} with no location`, response.status);
+      }
+      if (hop >= this.maxRedirects) {
+        throw failure('source_error', `${source.name} redirected more than ${this.maxRedirects} times`, response.status);
+      }
+      try {
+        target = new URL(location, target);
+      } catch {
+        throw failure('unparseable', `${source.name} redirected to an unusable location: ${location}`, response.status);
+      }
     }
 
     // The body is read whatever the status: a source's refusal usually

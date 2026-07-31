@@ -73,6 +73,24 @@ Set `CANON_SMTP_URL` and notifications go out by email; leave it unset and they 
 | `CANON_PRODUCT_NAME` | Optional; the name in the email footer. Defaults to `Veryl Canon`. |
 | `CANON_FLUSH_INTERVAL_MS` | Optional; how often the server runs its own delivery pass. Defaults to 60000. Set `0` to turn it off and drive `POST /notifications/flush` from your own scheduler. |
 
+### Federation: which hosts Canon may reach
+
+A registered Source carries a `baseUrl`, and Canon fetches it server-side when a page's reference resolves. That makes the register of sources a way to aim the server at anything on the network, so **a deployment states which hosts Canon may reach, and nothing else is reachable**. Unset means no outbound federation, not "anything" — the `static:` fixture connector still works, and a source pointing at a real system is refused when it is registered and again when it resolves. See [SECURITY.md](../SECURITY.md).
+
+| Variable | Meaning |
+| --- | --- |
+| `CANON_SOURCE_ALLOWED_HOSTS` | Comma- or space-separated allowlist. Each entry is `host`, `host:port`, or `*.domain` (any subdomain, not the apex); a host with no port permits any port on it. A full URL is accepted and reduced to its host. **Unset or empty means Canon federates with nothing.** |
+| `CANON_SOURCE_ALLOWED_SCHEMES` | Optional; defaults to `https,http`. Set to `https` alone where the record systems support it. No other scheme is ever reachable. |
+| `CANON_SOURCE_ALLOW_PRIVATE` | Optional; `true` permits loopback, link-local and private address ranges, including the cloud metadata address. **Development only** — it is what lets the test suite reach a stub on `127.0.0.1`. |
+| `CANON_SOURCE_SERVICE_IDENTITY` | The identity a `service`-mode source is resolved with. Absent, a service source fails visibly rather than resolving anonymously. |
+| `CANON_SOURCE_TIMEOUT_MS` | Optional; how long to wait for a source. Defaults to 3000. |
+
+### Importing: where an import may read from
+
+| Variable | Meaning |
+| --- | --- |
+| `CANON_IMPORT_ROOTS` | Optional; colon- or comma-separated directories an import may read from. Unset means unrestricted, which is the historical behaviour. Set it in any deployment where `edit` on a collection is not the same trust level as shell access — the import path is operator input, and the server reads it. A file that resolves outside the run's own root (a symlink) is refused whether or not this is set. |
+
 Delivery is an outbox, never an inline send: the notification row is written first, and a delivery pass hands it to the relay. **A real deployment runs that pass on a timer** — the built-in one every `CANON_FLUSH_INTERVAL_MS`, or `POST /notifications/flush` from cron or a Kubernetes CronJob every minute or so. Each pass takes a bounded batch (`{ "limit": n }`, default 25), retries a transient failure with backoff (1, 5, 15, 60 minutes, then dead after five attempts), and never delivers a row twice.
 
 ## API sketch

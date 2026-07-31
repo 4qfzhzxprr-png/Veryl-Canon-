@@ -14,6 +14,15 @@ import {
   isConnectorError,
 } from '../../server/src/httpconnector.js';
 
+// The stub listens on 127.0.0.1, and Canon's outbound policy
+// (server/src/outbound.ts) blocks loopback and permits no host at all until a
+// deployment names one. That default is the point of the policy, so it is not
+// bypassed here: this file sets the development opt-in explicitly, in the two
+// environment variables a developer would set, before any connector is built.
+// The connector under test is the real one, and so is the policy it enforces.
+process.env.CANON_SOURCE_ALLOWED_HOSTS = '127.0.0.1 localhost';
+process.env.CANON_SOURCE_ALLOW_PRIVATE = 'true';
+
 // The connector takes the core's Asker object (server/src/connectors.ts), so
 // tests name a person the same way Canon's reference layer does.
 const asker = (actorId: string) => ({ actorId, kind: 'person' as const, name: actorId, email: null, registryRef: null });

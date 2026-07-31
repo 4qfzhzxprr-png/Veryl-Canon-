@@ -70,6 +70,12 @@ export const EXPANSION_DAMPING = 0.5;
 
 export const PASSAGE_LENGTH = 320;
 
+// A question is a question. Without a ceiling, one POST /ask can hand a
+// multi-megabyte string to the embedding provider — a per-request cost paid by
+// the server, and, with a hosted provider, a per-request bill. Refusing is the
+// honest answer: nothing that long is a question the record can answer.
+export const MAX_QUESTION_LENGTH = 4096;
+
 // The content terms of a question, deduplicated and capped. Stopwords come
 // from embeddings.ts so both channels agree on what a content word is.
 export function contentTerms(question: string): string[] {
@@ -124,6 +130,12 @@ export class RetrievalService {
     this.host.getActor(actorId); // not_found for an unknown asker
     const question = request.question?.trim();
     if (!question) throw new CanonError('invalid', 'Retrieval requires a question');
+    if (question.length > MAX_QUESTION_LENGTH) {
+      throw new CanonError('invalid', `A question may be at most ${MAX_QUESTION_LENGTH} characters`, {
+        limit: MAX_QUESTION_LENGTH,
+        length: question.length,
+      });
+    }
     const limit = Math.min(Math.max(request.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
     const canonicalOnly = request.canonicalOnly ?? false;
     const terms = contentTerms(question);

