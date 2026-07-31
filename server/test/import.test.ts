@@ -34,7 +34,11 @@ function setup() {
   const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
   const marc = store.createActor({ kind: 'person', name: 'Marc', email: 'marc@example.com' });
   const collection = store.createCollection(dana.id, { name: 'Member Benefits' });
-  store.setMember(dana.id, collection.id, marc.id, 'edit');
+  // Running an import takes `admin`, not `edit` (SECURITY.md R6): it names a
+  // server-side path and lands hundreds of pages in one call, which is
+  // administration rather than authoring. Marc is the importing actor
+  // throughout this suite, so Marc administers the collection.
+  store.setMember(dana.id, collection.id, marc.id, 'admin');
   return { store, dana, marc, collection };
 }
 
@@ -353,9 +357,13 @@ test('API: POST /imports returns the run summary and GET /imports/:id recalls it
     const missing = await call('GET', '/imports/nope', dana.id);
     assert.equal(missing.status, 404);
 
+    // 404, not 403: a run id is caller-supplied and therefore guessable, so a
+    // run in a collection the asker holds no role in answers exactly as a run
+    // that does not exist (SECURITY.md R4).
     const outsider = (await call('POST', '/actors', undefined, { kind: 'person', name: 'Outsider' })).json;
     const denied = await call('GET', `/imports/${posted.json.runId}`, outsider.id);
-    assert.equal(denied.status, 403);
+    assert.equal(denied.status, 404);
+    assert.equal(denied.json.error, missing.json.error);
 
     const badSource = await call('POST', '/imports', dana.id, {
       source: 'notion',

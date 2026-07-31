@@ -175,7 +175,13 @@ export type ErrorCode =
   // 401, a lapsed or revoked certification is 403 (forbidden, above), and an
   // unreachable Registry is 503 — refused, never served from stale trust.
   | 'unauthenticated'
-  | 'unavailable';
+  | 'unavailable'
+  // Rate limiting (ratelimit.ts, SECURITY.md R8): the request was well formed
+  // and permitted, and the asker has simply asked for this too often. It is
+  // deliberately its own code rather than `invalid` or `forbidden`, because
+  // neither is true and a client must be able to tell "wait and retry" from
+  // "never do this again". `retryAfterSeconds` travels in the details.
+  | 'rate_limited';
 
 const HTTP_STATUS: Record<ErrorCode, number> = {
   not_found: 404,
@@ -186,6 +192,7 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   workflow: 422,
   unauthenticated: 401,
   unavailable: 503,
+  rate_limited: 429,
 };
 
 export class CanonError extends Error {

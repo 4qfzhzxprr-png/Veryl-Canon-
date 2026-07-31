@@ -98,7 +98,24 @@ A registered Source carries a `baseUrl`, and Canon fetches it server-side when a
 
 | Variable | Meaning |
 | --- | --- |
-| `CANON_IMPORT_ROOTS` | Optional; colon- or comma-separated directories an import may read from. Unset means unrestricted, which is the historical behaviour. Set it in any deployment where `edit` on a collection is not the same trust level as shell access — the import path is operator input, and the server reads it. A file that resolves outside the run's own root (a symlink) is refused whether or not this is set. |
+| `CANON_IMPORT_ROOTS` | Optional; colon- or comma-separated directories an import may read from. Unset means unrestricted, which is the historical behaviour. Set it in any deployment where `admin` on a collection is not the same trust level as shell access — the import path is operator input, and the server reads it. A file that resolves outside the run's own root (a symlink) is refused whether or not this is set. |
+
+Running an import takes **`admin`** on the target collection, not `edit`: it names a server-side path, reads it, and lands up to two thousand pages in one call. Reading a run's record (`GET /imports`, `GET /imports/:id`) stays at `view` — the bar is on aiming the run, not on seeing what it did.
+
+### Rate limiting
+
+Four buckets, each a token bucket per actor, in process and per server. They cover only the routes where one cheap request buys a lot of work; **nothing that reads the record is limited**, because a limiter that can lock somebody out of a policy at the moment they need it has cost more than it saved. A refusal is `429` with `{ "error": "rate_limited", "bucket": …, "retryAfterSeconds": … }`.
+
+| Variable | Meaning |
+| --- | --- |
+| `CANON_RATE_LIMIT` | Optional; `off` turns every bucket off in one move, for a deployment whose front door already limits. |
+| `CANON_RATE_LIMIT_ASK` | `POST /ask` and `POST /knowledge/ask`, per actor. `burst/perMinute`, or `off`. Defaults to `12/12`. Retrieval runs over the whole visible corpus and then a generator; with a hosted embedding provider it is also a per-request bill. |
+| `CANON_RATE_LIMIT_REFERENCES` | `GET /pages/:id/references`, per actor. Defaults to `60/60`. This is the route that reaches an external system, once per reference, with Canon's own service identity on the request. |
+| `CANON_RATE_LIMIT_IMPORT` | `POST /imports`, per actor. Defaults to `2/0.5` — two back to back, then one every two minutes. An import is an operator's act measured in minutes, not in requests. |
+| `CANON_RATE_LIMIT_AUTH` | Failed Agent Passport authentications, keyed by the connection's origin rather than by actor — the actor is precisely what an unverified passport is asserting. Defaults to `20/20`. **Only a failure spends a token**, so a busy honest agent never meets this bucket. When SSO lands, the login route belongs in it. |
+
+The limiter is in process: several Canon processes limit per process. That is proportionate for the alpha and it is stated rather than implied — a distributed limiter needs a shared store Canon does not have.
+
 ### Freshness
 
 The sweep runs on a timer, exactly as the outbox flush does, and for the same reason: "stale knowledge announces itself" is only true if nobody has to remember to press anything.

@@ -17,7 +17,7 @@ import {
   TYPE_RULES,
 } from './model.js';
 import { SearchIndex } from './search.js';
-import { Comment, CommentAnchor, CommentService } from './comments.js';
+import { Comment, CommentAnchor, CommentService, CreatedComment } from './comments.js';
 import { Notification, NotificationTransport, Notifier } from './notify.js';
 import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
 import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
@@ -773,20 +773,47 @@ export class CanonStore {
   ): AuditEvent[] {
     this.getActor(actorId);
     // Permission filtering happens in the SQL that generates the rows, not
-    // after they are read: an event naming a collection reaches a reader only
-    // where that reader is a member of it. Events naming no collection — an
-    // agent session, a refused passport, an ask that named none — are not
-    // collection-scoped and stay, which is exactly the narrowing the Registry
-    // contract already fixes for agents (REGISTRY-CONTRACT.md §4.2) and is now
-    // the same rule for people. Before this, any actor could read the whole
-    // log, including page ids, titles and send-back comments from collections
-    // they hold no role in.
+    // after they are read. Two rules, because the log holds two kinds of
+    // event:
+    //
+    //   1. AN EVENT NAMING A COLLECTION reaches a reader only where that
+    //      reader holds a role in it. Before this, any actor could read the
+    //      whole log, including page ids, titles and send-back comments from
+    //      collections they hold no role in.
+    //
+    //   2. AN EVENT NAMING NO COLLECTION — an agent session, a refused
+    //      passport, source administration, an ask that named none — reaches
+    //      the actor it is about, and otherwise only an operator, which Core
+    //      spells "admin on at least one collection" (SECURITY.md R5).
+    //      These are the events with no collection to check and the most to
+    //      give away: an `agent.session` event carries an agent's entire
+    //      permitted-collections and permitted-sources lists, which is a map
+    //      of the record's shape drawn for somebody holding no role in any of
+    //      it, and an `answer.ask` event carries the question text, which is
+    //      often the most sensitive sentence anybody types into Canon.
+    //      Leaving them open was the residual of F2 and it is now closed.
+    //
+    // The operator stand-in is the same one notify.ts (`flushFor`) and
+    // sources.ts (`requireSourceAdmin`) already use, deliberately: Core has no
+    // organisation-level administrator role, and inventing a second definition
+    // of "operator" here would be worse than reusing the one that exists. When
+    // that role arrives, these three checks change together.
+    //
+    // This narrows for agents as well as people, because an agent is an actor.
+    // It does not contradict REGISTRY-CONTRACT.md §4.2 — that rule is about
+    // narrowing a cross-collection response to `permittedCollections`, and
+    // agentauth's `narrow` still applies it on top of whatever survives here.
+    // A limit that runs before another limit cannot widen it.
     const clauses: string[] = [
-      `(audit_events.collection_id IS NULL
-         OR EXISTS (SELECT 1 FROM collection_members m
-                     WHERE m.collection_id = audit_events.collection_id AND m.actor_id = ?))`,
+      `(CASE WHEN audit_events.collection_id IS NULL
+              THEN audit_events.actor_id = ?
+                   OR EXISTS (SELECT 1 FROM collection_members m
+                               WHERE m.actor_id = ? AND m.role = 'admin')
+              ELSE EXISTS (SELECT 1 FROM collection_members m
+                            WHERE m.collection_id = audit_events.collection_id AND m.actor_id = ?)
+         END)`,
     ];
-    const params: (string | number)[] = [actorId];
+    const params: (string | number)[] = [actorId, actorId, actorId];
     if (filter.actorId) {
       clauses.push('actor_id = ?');
       params.push(filter.actorId);
@@ -827,7 +854,15 @@ export class CanonStore {
   // ---- comments, mentions, notifications (Epic C, M2) ------------------
   // Thin delegates; the logic lives in comments.ts and notify.ts.
 
-  createComment(actorId: string, pageId: string, input: { body: string; anchor?: Partial<CommentAnchor> | null }): Comment {
+  // Returns the comment plus what became of its mentions: an `@` naming an
+  // actor with no role in this collection is NOT notified (a mention email
+  // carries the page title and the comment text), and is reported back to the
+  // commenter rather than dropped in silence. See comments.ts, MentionOutcome.
+  createComment(
+    actorId: string,
+    pageId: string,
+    input: { body: string; anchor?: Partial<CommentAnchor> | null },
+  ): CreatedComment {
     return this.commentService.create(actorId, pageId, input);
   }
 

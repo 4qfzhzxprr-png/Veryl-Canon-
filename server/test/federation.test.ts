@@ -215,7 +215,12 @@ test('sources: a scoped source is listed and visible only to members of its coll
 
   assert.deepEqual(new Set(store.listSources(vera.id).map((s) => s.id)), new Set([scoped.id, canonWide.id]));
   assert.deepEqual(store.listSources(outsider.id).map((s) => s.id), [canonWide.id]);
-  expectCode(() => store.getSource(outsider.id, scoped.id), 'forbidden');
+  // Not `forbidden`: a source the asker cannot see reads exactly as one that
+  // was never registered, so `get` cannot confirm what `list` just omitted
+  // (SECURITY.md R4). Same code, same message, whether the id is real or not.
+  const hidden = expectCode(() => store.getSource(outsider.id, scoped.id), 'not_found');
+  const invented = expectCode(() => store.getSource(outsider.id, 'no-such-source'), 'not_found');
+  assert.equal(hidden.message.replace(scoped.id, 'X'), invented.message.replace('no-such-source', 'X'));
 });
 
 test('references: adding one requires edit, and the source must be in scope for the page', () => {

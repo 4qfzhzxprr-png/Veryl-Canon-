@@ -164,6 +164,11 @@ export class SourceService {
   update(actorId: string, id: string, input: Partial<SourceInput>): Source {
     const actor = this.host.getActor(actorId);
     const before = this.row(id);
+    // Same rule as `get`: you cannot administer what you cannot see, and a
+    // source you cannot see answers as one that does not exist (SECURITY.md
+    // R4). A member who can see it and simply lacks admin still gets the
+    // explanatory `forbidden` from requireSourceAdmin below.
+    this.requireVisible(actorId, before);
     const merged = this.validate({
       name: input.name ?? before.name,
       kind: input.kind ?? before.kind,
@@ -204,6 +209,7 @@ export class SourceService {
   remove(actorId: string, id: string): void {
     const actor = this.host.getActor(actorId);
     const source = this.row(id);
+    this.requireVisible(actorId, source); // see `update`, and SECURITY.md R4
     this.requireSourceAdmin(actorId, source.collectionIds);
     // Pages referencing this source would resolve to nothing. Refuse visibly
     // rather than leave dangling references behind; the table belongs to
@@ -359,15 +365,20 @@ export class SourceService {
   // Reading a source's registration is not reading its values: metadata only,
   // and it carries no secret material (see the header). A scoped source is
   // visible to members of its collections; a Canon-wide one to any actor.
+  //
+  // A source the caller cannot see reads as NOT FOUND, not as forbidden
+  // (SECURITY.md R4). `list` above already omits it, so the two answers to the
+  // same question — "is there a source with this id?" — used to disagree: the
+  // listing said no and `get` said "yes, and you may not have it". The source
+  // register is an inventory of the external systems Canon federates with, and
+  // an inventory that can be confirmed one id at a time is still disclosed.
+  // The refusal is therefore the identical error `row` raises for an id that
+  // was never registered, so the two are indistinguishable.
   private requireVisible(actorId: string, source: Source): void {
     this.host.getActor(actorId);
     if (source.collectionIds.length === 0) return;
     const visible = source.collectionIds.some((id) => this.host.roleOf(actorId, id) !== null);
-    if (!visible) {
-      throw new CanonError('forbidden', 'This source is scoped to collections you are not a member of', {
-        sourceId: source.id,
-      });
-    }
+    if (!visible) throw new CanonError('not_found', `No such source: ${source.id}`);
   }
 
   private requireRole(actorId: string, collectionId: string, needed: Role): void {

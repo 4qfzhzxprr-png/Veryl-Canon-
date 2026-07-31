@@ -24,7 +24,9 @@ Findings were confirmed by writing the exploit as a test first. Every fix below 
 
 **Test counts after this work:** `server` 171 (was 148), `registry-stub` 10, `source-stub` 13. All pass.
 
-**Not in scope.** Deployment and infrastructure (TLS termination, network policy, secret storage, backups), the Node runtime and its `node:sqlite` dependency, and denial of service by request volume — Canon has no rate limiting and is expected to sit behind something that does.
+**Second pass, §3.** Everything in §3 below was originally left undone on purpose: each one is a behaviour change, and a security review should not land those on its own authority. The team has since decided on R3 through R8 and they are now implemented, tested the same way — each fix's test verified red by reverting the fix and watching it fail. **Test counts after that work:** `server` 220, `registry-stub` 10, `source-stub` 13, `studio-stub` 8. All pass. R1 and R2 remain open and are being taken up with SSO.
+
+**Not in scope.** Deployment and infrastructure (TLS termination, network policy, secret storage, backups), the Node runtime and its `node:sqlite` dependency, and denial of service by request volume — Canon is expected to sit behind something that absorbs that. (R8 has since added per-actor limits on the four routes where one cheap request buys a lot of work. It is a cost control and a brute-force brake, not a DoS defence, and the sentence above still holds.)
 
 ---
 
@@ -58,7 +60,7 @@ Also unchanged: response content is not filtered. A permitted source that return
 
 **This is a behaviour change and it is deliberate.** It is recorded here rather than done silently: an administrator's view of the log is now bounded by their collection memberships. That preserves CORE-PLAN's M4 exit ("an administrator can answer *who did what, when* from the audit log alone") for the collections they administer, and it removes the ability of a contributor in one collection to read the operational history of another. If the design partner's compliance lead needs an org-wide view, the right answer is an org-level administrator role — which `sources.ts` and `notify.ts` already work around with "admin on at least one collection" — not an unfiltered query.
 
-Residual, deliberately not changed: events that name **no** collection (`agent.session`, `agent.auth_failed`, `answer.ask` with no collection named) stay visible to every actor, because that is the rule the Registry contract states for agents and diverging for people would be a second, undocumented rule. See R5.
+Residual at the time, since closed: events that name **no** collection (`agent.session`, `agent.auth_failed`, `source.*`, `answer.ask` with no collection named) stayed visible to every actor. They now reach the actor they are about plus holders of `admin` on some collection — see **R5**, which carries the argument and the cost.
 
 ### F3 — An import could follow a symlink out of the export directory · **Medium · fixed**
 
@@ -114,9 +116,9 @@ A spreadsheet treats a cell beginning `=`, `+`, `-`, `@`, tab or CR as a formula
 
 ---
 
-## 3. Recommendations — real issues, deliberately not fixed here
+## 3. Recommendations — the behaviour changes, and what the team decided
 
-Each of these is a behaviour change the team should decide on rather than something a security review should land on its own.
+Each of these was a behaviour change the team had to decide on rather than something a security review should land on its own. R1 and R2 are still open and belong with SSO. R3 through R8 were decided and are now implemented; each carries its decision, what changed, and — where the recommendation was not followed exactly — the argument for the version that shipped instead.
 
 ### R1 — There is no authentication · **Critical in production, accepted for the alpha**
 
@@ -128,31 +130,90 @@ This is the documented alpha design (`api.ts`: "people get SSO later"; [REGISTRY
 
 Any actor can list every actor with their email. The web UI's identity picker depends on it. The fix belongs with SSO (R1), where "who may see the directory" becomes answerable.
 
-### R3 — A mention notifies any actor, including non-members
+### R3 — A mention notified any actor, including non-members · **fixed (behaviour change)**
 
-`comments.ts` resolves `@<actorId>` against the whole actor table and emails whoever it finds. A commenter on a page in a restricted collection can therefore email the page's title and their own comment to someone with no role in that collection. **Recommendation: filter mentions to actors who hold at least `view` on the page's collection, and report the dropped mentions to the commenter rather than silently.** Not done here because it changes what a commenter sees happen, and because "mention someone to bring them in" may be a deliberate workflow the design partner wants.
+`comments.ts` resolved `@<actorId>` against the whole actor table and emailed whoever it found. A commenter on a page in a restricted collection therefore emailed the page's title and their own comment to someone with no role in that collection. The notification's *subject* and *body* are the leak: the subject is the page title, the body is the comment verbatim.
 
-### R4 — Existence is checked before permission
+**Decision: withhold the notification, and tell the commenter.** A mention now reaches only an actor who holds a role in the page's collection. The comment itself lands in full, with the mention text intact; no notification is written for anyone else; and `POST /pages/:id/comments` answers with `mentions: { notified: [...], withheld: [{ actorId, reason: "no_access" }] }`, so the person who typed the `@` is told which ones did not go anywhere. The withheld ids are on the `comment.create` audit event too.
 
-`store.getCollection`, `store.getPage`, `store.getVersion` and `sources.get` all throw `not_found` for a missing id before checking whether the asker may see it, so a `403` versus a `404` tells an outsider whether an id is real. The source-stub deliberately checks entitlement before existence; Canon does the opposite.
+The two rejected alternatives, since the recommendation left the choice open:
 
-**Deferred, with reason:** the identifiers are random UUIDs, so this confirms a guessed or leaked id rather than enabling enumeration, and the fix — returning `not_found` for both cases — inverts error semantics that the API sketch, the web UI and roughly a dozen existing tests depend on. It should be decided deliberately, in one pass, rather than as a side effect of this review.
+- **Refusing the comment** is disproportionate — it throws away writing over an addressing mistake — and it turns a restricted collection's membership into something probeable one `@` at a time from an error message.
+- **Notifying without content** still leaks: that a page exists, and that they were named on it. It also produces a notification nobody can act on — a link the recipient cannot open, with no way to tell whether it matters.
 
-### R5 — Audit events with no collection are visible to everyone
+"Mention someone to bring them in" survives as a workflow; it just becomes a deliberate one, where the commenter is told to go and grant access rather than believing they have already summoned somebody. **Not done, and named here as the loose end:** `server/public/app.js` does not yet surface `mentions.withheld` in the comment box. The API reports it; the web UI still needs a line of copy for it, and that file was being changed by another stream while this landed.
 
-The residual from F2. `agent.session` events carry an agent's full permitted-collections and permitted-sources lists; `answer.ask` events carry the question text. **Recommendation: narrow these to the acting actor plus holders of `admin` on some collection**, which is the "operator" stand-in `notify.ts` and `sources.ts` already use. Not done here because it would diverge from the rule REGISTRY-CONTRACT §4.2 states for agents, and the two should change together.
+### R4 — Existence was checked before permission · **fixed where it counts, and only there**
 
-### R6 — An import requires only `edit`
+`store.getCollection`, `store.getPage`, `store.getVersion`, `sources.get` and `ImportService.getRun` all threw `not_found` for a missing id before checking whether the asker may see it, so a `403` versus a `404` told an outsider whether an id is real.
 
-`POST /imports` reads a server-side path chosen by the caller. `edit` on one collection is a low bar for that. **Recommendation: raise it to `admin`, and set `CANON_IMPORT_ROOTS` in every deployment.** Not done here because it would lock out the workflow the importer was built for and the decision belongs to whoever runs the partner migration.
+**Decision: fix the two places where the oracle is real, leave the rest 403 on purpose, and write down the rule that decides which is which.** The rule: *existence may be disclosed to somebody holding a role in the collection that governs the object; it may not be disclosed to somebody holding none, when the id space is guessable or when a listing already hides the object.*
 
-### R7 — Internal error messages reach the client
+**Fixed — the import run register.** A run id is **caller-supplied** (`ImportInput.runId`, which exists so an interrupted migration can be resumed), so it is whatever an operator typed: `migration-1`, `confluence-2026-07`. That is the one guessable id space in Canon, and a guessable id space with a distinguishable refusal is enumerable. `getRun` now answers a run in a collection the caller holds no role in with exactly the error — same code, same message — that a run id nobody ever used gets.
 
-`api.ts`'s catch-all returns `{ error: 'internal', message: err.message }` with a 500. That message can carry SQLite text and absolute server paths (an import summary's `path`, for instance, is a server filesystem path returned to the caller and written to the audit log by design). **Recommendation: log the detail, return a correlation id.** Not done here because the import path in the summary is a deliberate product feature and untangling the two is a design question.
+**Fixed — the source register.** `list` already omits a source scoped to collections the asker is not in; `get` said "yes, that exists, and you may not have it", so the two answers to the same question disagreed and the narrowing could be undone one id at a time. `get`, `update` and `remove` now answer `not_found`, word for word identical to an id that was never registered. The source register is an inventory of the external systems Canon federates with, which is worth not confirming. A member who *can* see the source and simply lacks `admin` still gets the explanatory `forbidden`.
 
-### R8 — No rate limiting
+**Deliberately left distinguishable: pages, collections, versions, comments, proposals, saved queries, drafts.** Three reasons, and they are a judgement rather than a rule:
 
-Nothing bounds requests per actor. `POST /ask` is the expensive one. Assumed to be handled by whatever sits in front of Canon; recorded because that assumption is not written down anywhere else.
+1. Every one of those ids is a random UUID. A 403 confirms an id the asker already had; it does not let anyone find one.
+2. The 403 is load-bearing product behaviour. A page link is shared out of band constantly in a wiki, and the person who follows one without access needs to be told *"you need view on this collection — ask its admin"*, not *"that page does not exist"*. The second answer makes a working record look broken and turns every access request into a support ticket.
+3. Indistinguishable errors make real debugging miserable, and this is a product people operate.
+
+**Also deliberately left as it is:** `POST /imports` with a run id already used for a different export answers `conflict`. That does confirm the id is taken — but it names nothing else (not the collection, not the path, not the actor), and the alternative is silently writing into another collection's run, which is far worse than the leak. Recorded rather than quietly kept.
+
+### R5 — Audit events with no collection were visible to everyone · **fixed (behaviour change)**
+
+The residual from F2. `agent.session` events carry an agent's full permitted-collections and permitted-sources lists — a map of the record's shape, drawn for somebody holding no role in any of it. `answer.ask` events carry the question text, which is often the most sensitive sentence anybody types into Canon. `source.create` / `source.update` / `source.delete` name every external system Canon federates with.
+
+**Decision: taken as recommended.** An event naming no collection now reaches the actor it is about, plus holders of `admin` on at least one collection. Both halves are in the SQL that generates the rows, alongside F2's membership filter, so the same single query answers both rules.
+
+Two things are stated rather than glossed:
+
+- **This narrows for agents as well as people**, because an agent is an actor and Canon has one actor model. It does not contradict REGISTRY-CONTRACT §4.2 — that rule is about narrowing a cross-collection *response* to `permittedCollections`, and `agentauth`'s `narrow` still applies it on top of whatever survives the store. A limit that runs before another limit cannot widen it. An agent still reads its own `agent.session` events; it reads nobody else's.
+- **"Admin on at least one collection" is a stand-in, and a coarse one.** An administrator of any collection can read every collection-less event, including asks by people in teams they have nothing to do with. It is used here because `notify.ts` (`flushFor`) and `sources.ts` (`requireSourceAdmin`) already define "operator" that way, and a second, different definition of operator would be worse than one coarse one. When an organisation-level administrator role arrives, **those three checks change together** — that is the whole list.
+
+The cost, named: an ordinary member can no longer see that an agent asked a question. The compliance question CORE-PLAN §6 actually asks — "zero agent actions outside Registry-granted permissions, verified by audit log review" — is an administrator's, and administrators still see all of it.
+
+### R6 — An import required only `edit` · **fixed (behaviour change)**
+
+`POST /imports` reads a server-side path chosen by the caller and lands up to `MAX_FILES_PER_RUN` (2000) pages in one call, with titles and bodies taken verbatim from files nobody in Canon has reviewed. The summary it returns names the server path back to the caller.
+
+**Decision: taken as recommended — `admin` on the target collection.** CORE-PLAN §2 puts this on the administrator's side of the line ("Administrator. Sets up collections, permissions, and document types"), and §4 files import under Epic E, "Trust and arrival", with the audit log rather than under Epic B's daily writing loop. A contributor who needs a corpus imported asks the person who set the collection up — the same conversation they already have about permissions.
+
+Reading a run's record (`GET /imports`, `GET /imports/:id`) deliberately stays at `view`: the bar belongs on aiming the run, not on seeing what it did to a collection you belong to. `CANON_IMPORT_ROOTS` is unchanged, still opt-in, and still recommended for every deployment — the README's wording now says `admin` rather than `edit` where it names the trust level involved.
+
+**Surveyed while in there, and left alone.** The other bulk or destructive operations were checked against the same argument and all of them already sit in the right place: the freshness sweep (`admin`, and unclassified for agents entirely), the notification flush (`admin`), source registration and removal (`admin`, plus `"*"` for agents), collection membership changes (`admin`), and reference removal (`edit` on the page's own collection — one object, one page). `movePage` moves a branch with its children and stays at `edit`: it is reorganising a collection you already write to, which is authoring. `archivePage` and `restore` act on one page and stay at `edit` for the same reason. No second change was warranted.
+
+### R7 — Internal error messages reached the client · **fixed**
+
+`api.ts`'s catch-all returned `{ error: 'internal', message: err.message }` with a 500 — SQLite statement text, absolute server filesystem paths, whatever happened to be in the throw.
+
+**Decision: taken as recommended.** An unexpected error now mints a UUID, logs `[error <id>] METHOD path` with the whole error and its stack to the server's log, and answers the caller with `{ error: "internal", message: "Canon could not complete this request. Quote the error id when reporting it.", errorId }`. Correlatable, not disclosed: an operator holding the id from a bug report finds the one line that explains it.
+
+**`CanonError` is untouched, and that is the point of doing it this way.** Its messages are written for the person reading them — *"This page is being edited by Marc"*, *"A policy requires a named approver before it can publish"*, *"Only the named approver can grant the Canonical mark"* — and every one of them is composed here, from the record, for a caller the store has already decided may know it. Blanking those in the name of security would make Canon unusable and protect nothing.
+
+The tangle the original note worried about turned out not to be one: an import summary's `path` is a *success* payload returned to the caller who supplied that path, not an error message, so the product feature and the leak were never the same code.
+
+### R8 — No rate limiting · **fixed, proportionately**
+
+Nothing bounded requests per actor.
+
+**Decision: an in-process token bucket per actor, on the four routes that spend somebody else's resources, and on nothing that reads the record.** `server/src/ratelimit.ts` is new; `api.ts` maps routes to buckets in a table of its own, deliberately separate from the route table, the way `agentauth.ts` keeps its classification separate.
+
+| Bucket | Route | Default | Why |
+| --- | --- | --- | --- |
+| `ask` | `POST /ask`, `POST /knowledge/ask` | 12 burst, 12/min | Retrieval over the whole visible corpus, then generation. With a hosted embedding provider, also a per-request bill. |
+| `references` | `GET /pages/:id/references` | 60 burst, 60/min | Reaches an external system, once per reference, with Canon's own service identity on the request. |
+| `import` | `POST /imports` | 2 burst, 0.5/min | Walks an operator-named directory and writes a page per document. An operator's act measured in minutes. |
+| `auth` | Agent Passport authentication | 20 burst, 20/min | The brute-forceable door. |
+
+Every limit is configurable (`CANON_RATE_LIMIT_ASK` and friends, written `burst/perMinute` or `off`; `CANON_RATE_LIMIT=off` disables the lot). See `server/README.md`.
+
+Three decisions inside this one worth naming:
+
+- **Nothing that reads the record is limited.** `GET /pages/:id`, `/search`, `/collections`, `/audit`, `/notifications` and the whole Knowledge read surface have no bucket, and a test asserts it. The one failure this must not have is a person unable to read a policy at the moment they need it: a limiter that can do that has cost more than the load it prevented. A new route is unlimited by default — the opposite of `agentauth`'s default, and for the opposite reason.
+- **The auth bucket is keyed by the connection's origin, not by actor**, because the actor is precisely what an unverified passport is asserting; keying a brute-force limiter by the credential being guessed would limit nothing. **Only a failed authentication spends a token**, so a busy honest agent never meets this bucket at all. When SSO lands (R1), its login route belongs in this bucket, on this key. `X-Forwarded-For` is deliberately not trusted — behind a proxy that collapses origins this bucket degrades to a per-proxy limit, which is honest but weaker, and a deployment in that shape should limit logins at the proxy.
+- **It is in process.** Several Canon processes limit per process. That is proportionate for the alpha and it is written down rather than implied; a distributed limiter needs a shared store Canon does not have, and building one here would have been the wrong-sized change.
 
 ---
 
@@ -200,7 +261,7 @@ The assumptions the design rests on. If one of these stops being true, re-read t
 
 2. **A collection admin is trusted with the network the server sits on.** F1's allowlist moves that trust from a collection admin to whoever writes `CANON_SOURCE_ALLOWED_HOSTS` — but everything inside the allowlist is still reachable, and DNS is still resolved rather than pinned. Add a host to that list and you are asserting it is safe for Canon to fetch, follow redirects within, and read responses from.
 
-3. **The importer's path is chosen by someone trusted with the filesystem.** `edit` on one collection currently buys the ability to name any server path. The symlink fix contains a run to its root; `CANON_IMPORT_ROOTS` bounds the root; neither is on by default in the way that matters (R6).
+3. **The importer's path is chosen by someone trusted with the filesystem.** `admin` on one collection buys the ability to name any server path (R6 raised it from `edit`). The symlink fix contains a run to its root; `CANON_IMPORT_ROOTS` bounds the root, and is still off by default. The trust level is now the right one; the bound on it is still opt-in.
 
 4. **The Registry is honest and reachable.** Canon holds no agent trust of its own. A compromised Registry is a compromised Canon for every agent, immediately and completely. The sixty-second cache means it is also a *sixty-second* Canon — revocation is bounded, but so is any window in which the Registry lies.
 
@@ -232,3 +293,18 @@ The assumptions the design rests on. If one of these stops being true, re-read t
 | `server/test/security.test.ts` | **New.** 23 tests: one per finding, plus two property tests. |
 | `server/README.md` | The new environment variables, documented. |
 | `source-stub/test/connector.test.ts` | Sets the development outbound policy explicitly, so the real policy is exercised rather than bypassed. |
+
+### The second pass: R3–R8
+
+| File | Change |
+| --- | --- |
+| `server/src/ratelimit.ts` | **New.** Token buckets per actor, the four bucket definitions and their defaults, and the environment parsing (R8). |
+| `server/src/model.ts` | New `rate_limited` error code, 429 (R8). |
+| `server/src/comments.ts` | A mention reaches only an actor with a role in the page's collection; the outcome — notified and withheld — is returned to the commenter and recorded on the audit event (R3). |
+| `server/src/sources.ts` | A source the asker cannot see answers `not_found`, identically to one that was never registered, on `get`, `update` and `remove` (R4). |
+| `server/src/import.ts` | `getRun` answers `not_found` for a run in a collection the asker holds no role in — run ids are caller-supplied and therefore guessable (R4); running an import takes `admin` rather than `edit` (R6). |
+| `server/src/store.ts` | `queryAudit` narrows collection-less events to the actor they name plus holders of `admin` on some collection (R5); `createComment` returns the mention outcome (R3). |
+| `server/src/api.ts` | A 500 returns a correlation id and logs the detail server-side, leaving `CanonError` messages untouched (R7); the rate-limit table, the per-actor take, and the check-before/charge-on-failure of passport authentication (R8). |
+| `server/test/security.test.ts` | Eight more tests, one per behaviour change, each verified red by reverting its fix. |
+| `server/test/{agentauth,answers,federation,import}.test.ts` | Four existing tests updated to the new behaviour, each with the reason in a comment. |
+| `server/README.md` | The rate-limit variables, and import's trust level corrected to `admin`. |

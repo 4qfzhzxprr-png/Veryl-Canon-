@@ -18,6 +18,7 @@ import {
   isBlockedAddress,
   outboundPolicyFromEnv,
 } from '../src/outbound.js';
+import { RateLimiter } from '../src/ratelimit.js';
 import { RegistryClient } from '../src/registry.js';
 import { MAX_QUESTION_LENGTH } from '../src/retrieval.js';
 import { parseSmtpUrl } from '../src/smtp.js';
@@ -539,4 +540,301 @@ test('secrets: a malformed CANON_SMTP_URL is not echoed back with its password',
   const err = expectCode(() => parseSmtpUrl('smtp://canon:hunter2@ relay.internal:587'), 'invalid');
   assert.equal(err.message.includes('hunter2'), false, 'the password must not reach the message');
   assert.equal(err.message, 'CANON_SMTP_URL is not a URL');
+});
+
+// ---------------------------------------------------------------------------
+// R3 — a mention notified any actor, including non-members
+
+test('mentions: an actor with no role in the collection is not notified, and the commenter is told', () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+  const secret = store.createCollection(dana.id, { name: 'Board papers', restricted: true });
+  store.setMember(dana.id, secret.id, marc.id, 'comment');
+  const page = store.createPage(dana.id, { collectionId: secret.id, type: 'note', title: 'Redundancy plan' });
+
+  const comment = store.createComment(marc.id, page.id, {
+    body: `@${dana.id} @${outsider.id} is the headcount figure current?`,
+  });
+
+  // The comment itself lands in full, mention text and all.
+  assert.match(comment.body, new RegExp(outsider.id));
+  assert.deepEqual(comment.mentions.notified, [dana.id]);
+  assert.deepEqual(comment.mentions.withheld, [{ actorId: outsider.id, reason: 'no_access' }]);
+
+  // The leak was the notification's subject (the page title) and its body (the
+  // comment text). Neither was written.
+  assert.deepEqual(store.listNotifications(outsider.id), []);
+  const mine = store.listNotifications(dana.id);
+  assert.equal(mine.length, 1);
+  assert.match(mine[0]!.subject, /Redundancy plan/);
+
+  // And the record says who was reached for, so an admin can act on it.
+  const [event] = store.queryAudit(dana.id, { action: 'comment.create' });
+  assert.deepEqual(event!.details.mentions, [dana.id]);
+  assert.deepEqual(event!.details.mentionsWithheld, [outsider.id]);
+});
+
+// ---------------------------------------------------------------------------
+// R4 — existence was checked before permission
+//
+// Two places, chosen because a listing already hid the object or because the
+// id is guessable. Everything else stays 403 on purpose; see SECURITY.md R4.
+
+test('oracle: a source you cannot see answers exactly as one that was never registered', () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+  const collection = store.createCollection(dana.id, { name: 'Benefits' });
+  const scoped = store.createSource(dana.id, {
+    name: 'Benefits Admin',
+    kind: 'static',
+    baseUrl: 'static:benefits',
+    authMode: 'service',
+    freshnessWindowMs: 1000,
+    collectionIds: [collection.id],
+  });
+
+  // The listing already omits it; `get` must not put it back one id at a time.
+  assert.deepEqual(store.listSources(outsider.id), []);
+  const hidden = expectCode(() => store.getSource(outsider.id, scoped.id), 'not_found');
+  const invented = expectCode(() => store.getSource(outsider.id, 'a4f0b1c2-0000-4000-8000-000000000000'), 'not_found');
+  assert.equal(
+    hidden.message.replace(scoped.id, '<id>'),
+    invented.message.replace('a4f0b1c2-0000-4000-8000-000000000000', '<id>'),
+    'the two refusals are word for word the same',
+  );
+  // Administering one you cannot see answers the same way, for the same reason.
+  expectCode(() => store.deleteSource(outsider.id, scoped.id), 'not_found');
+  // A member who can see it and simply lacks admin still gets the explanation.
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  store.setMember(dana.id, collection.id, marc.id, 'edit');
+  expectCode(() => store.deleteSource(marc.id, scoped.id), 'forbidden');
+});
+
+test('oracle: an import run in a collection you hold no role in reads as no such run', () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+  const collection = store.createCollection(dana.id, { name: 'Imported' });
+  const root = mkdtempSync(join(tmpdir(), 'canon-sec-runs-'));
+  writeFileSync(join(root, 'Page_1.html'), '<html><head><title>Page</title></head><body><p>x</p></body></html>');
+  try {
+    // A run id is CALLER-SUPPLIED, and an operator's is a word, not a UUID.
+    store.runImport(dana.id, {
+      source: 'google-docs',
+      path: root,
+      collectionId: collection.id,
+      runId: 'migration-1',
+    });
+    assert.equal(store.getImportRun(dana.id, 'migration-1').runId, 'migration-1');
+
+    const taken = expectCode(() => store.getImportRun(outsider.id, 'migration-1'), 'not_found');
+    const free = expectCode(() => store.getImportRun(outsider.id, 'migration-2'), 'not_found');
+    assert.equal(
+      taken.message.replace('migration-1', '<id>'),
+      free.message.replace('migration-2', '<id>'),
+      'a guessable id space must not answer differently for an id that is real',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R5 — audit events naming no collection were visible to everyone
+
+test('audit: an event naming no collection reaches its actor and an operator, and nobody else', async () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const collection = store.createCollection(dana.id, { name: 'Benefits' }); // dana is admin: the operator
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  store.setMember(dana.id, collection.id, marc.id, 'edit'); // a member, not an operator
+  const bot = store.createActor({ kind: 'agent', name: 'PolicyBot', registryRef: 'passport:bot-1' });
+  store.setMember(dana.id, collection.id, bot.id, 'view');
+
+  // An ask that names no collection: the event carries the question text.
+  await store.ask(bot.id, { question: 'What is the parental leave allowance for contractors?' });
+  const asks = (actorId: string) => store.queryAudit(actorId, { action: 'answer.ask' });
+
+  assert.equal(asks(bot.id).length, 1, 'the actor the event is about reads it');
+  assert.equal(asks(dana.id).length, 1, 'an operator reads it');
+  assert.match(String(asks(dana.id)[0]!.details.question), /parental leave/);
+  assert.equal(asks(marc.id).length, 0, 'an ordinary member of a collection does not');
+
+  // The F2 narrowing is unchanged: a collection-scoped event still reaches
+  // every member of that collection, operator or not.
+  assert.equal(
+    store.queryAudit(marc.id, { action: 'collection.member_set' }).length > 0,
+    true,
+    'collection-scoped events still reach members',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// R6 — an import required only `edit`
+
+test('imports: running one takes admin on the target collection, not edit', () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  const collection = store.createCollection(dana.id, { name: 'Imported' });
+  store.setMember(dana.id, collection.id, marc.id, 'edit');
+  const root = mkdtempSync(join(tmpdir(), 'canon-sec-import-role-'));
+  writeFileSync(join(root, 'Page_1.html'), '<html><head><title>Page</title></head><body><p>x</p></body></html>');
+  try {
+    const refused = expectCode(
+      () => store.runImport(marc.id, { source: 'google-docs', path: root, collectionId: collection.id }),
+      'forbidden',
+    );
+    assert.equal(refused.details.needed, 'admin');
+    assert.equal(store.tree(dana.id, collection.id).length, 0, 'nothing was read and nothing was written');
+
+    const summary = store.runImport(dana.id, { source: 'google-docs', path: root, collectionId: collection.id });
+    assert.equal(summary.counts.imported, 1);
+    // Reading what an import did to a collection you belong to stays at `view`:
+    // the bar is on aiming the run, not on seeing what it did.
+    assert.equal(store.getImportRun(marc.id, summary.runId).runId, summary.runId);
+    assert.equal(store.listImportRuns(marc.id).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R7 — internal error messages reached the client
+
+test('errors: an unexpected failure returns a correlation id, never the internal message', async () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  // Stand-in for any bug that throws something other than a CanonError. The
+  // message is exactly the kind that used to be handed to the caller.
+  const internal = 'SQLITE_ERROR: no such column: secret (near "SELECT" in /srv/canon/data/canon.db)';
+  (store as unknown as { listActors: () => never }).listActors = () => {
+    throw new Error(internal);
+  };
+
+  const logged: string[] = [];
+  const realError = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(' '));
+  const server = createApi(store);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const res = await fetch(`${base}/actors`, { headers: { 'x-actor-id': dana.id } });
+    assert.equal(res.status, 500);
+    const body = (await res.json()) as { error: string; message: string; errorId: string };
+    assert.equal(body.error, 'internal');
+    assert.equal(body.message.includes('SQLITE_ERROR'), false, 'no SQL reaches the caller');
+    assert.equal(body.message.includes('/srv/canon'), false, 'no server path reaches the caller');
+    assert.match(body.errorId, /^[0-9a-f-]{36}$/);
+    // Correlatable: the detail is in the server's log, under that id.
+    assert.ok(
+      logged.some((line) => line.includes(body.errorId) && line.includes('SQLITE_ERROR')),
+      'the detail was logged against the id',
+    );
+
+    // A CanonError's message is a product feature and is untouched.
+    const missing = await fetch(`${base}/collections/nope`, { headers: { 'x-actor-id': dana.id } });
+    assert.equal(missing.status, 404);
+    assert.equal(((await missing.json()) as { message: string }).message, 'No such collection: nope');
+  } finally {
+    console.error = realError;
+    server.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// R8 — no rate limiting
+
+test('limits: an expensive route is bucketed per actor, and reading the record never is', async () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  const collection = store.createCollection(dana.id, { name: 'Benefits' });
+  store.setMember(dana.id, collection.id, marc.id, 'view');
+  const page = store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Handbook' });
+
+  // A deliberately tiny bucket: two questions, no refill inside the test.
+  const limiter = new RateLimiter({ ask: { burst: 2, perMinute: 0 } });
+  const server = createApi(store, null, limiter);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const ask = (actorId: string) =>
+    fetch(`${base}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': actorId },
+      body: JSON.stringify({ question: 'Is vault access logged?' }),
+    });
+  try {
+    assert.equal((await ask(dana.id)).status, 200);
+    assert.equal((await ask(dana.id)).status, 200);
+    const refused = await ask(dana.id);
+    assert.equal(refused.status, 429);
+    const body = (await refused.json()) as { error: string; bucket: string };
+    assert.equal(body.error, 'rate_limited');
+    assert.equal(body.bucket, 'ask');
+
+    // Per actor: one caller's burst is not another's.
+    assert.equal((await ask(marc.id)).status, 200);
+
+    // THE ONE THING THIS MUST NOT DO: lock somebody out of the record. Dana's
+    // ask bucket is empty and every read still answers.
+    for (const path of [`/pages/${page.id}`, '/collections', '/search?q=handbook', '/audit', '/notifications']) {
+      const res = await fetch(`${base}${path}`, { headers: { 'x-actor-id': dana.id } });
+      assert.equal(res.status, 200, `${path} must never be rate limited`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('limits: a failed passport costs a token, a successful one costs nothing', async () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
+  const verified = {
+    agentId: 'agent-1',
+    name: 'PolicyBot',
+    certified: true,
+    permittedCollections: ['*'],
+    permittedSources: [],
+    permittedActions: ['read'],
+    checkedAt: new Date().toISOString(),
+    recheckAfterSeconds: 60,
+  };
+  const auth = new AgentAuth({
+    db,
+    store,
+    registry: new RegistryClient({
+      baseUrl: 'http://registry.invalid',
+      cacheTtlMs: 0, // never cached, so every request really asks
+      fetchImpl: async (_url, init) => {
+        const passport = (JSON.parse(String(init?.body ?? '{}')) as { passport?: string }).passport ?? '';
+        return passport === 'vap_good'
+          ? new Response(JSON.stringify(verified), { status: 200, headers: { 'content-type': 'application/json' } })
+          : new Response(JSON.stringify({ error: 'unknown_passport', message: 'No such passport' }), {
+              status: 404,
+              headers: { 'content-type': 'application/json' },
+            });
+      },
+    }),
+  });
+  const limiter = new RateLimiter({ auth: { burst: 2, perMinute: 0 } });
+  const server = createApi(store, auth, limiter);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const present = (passport: string) => fetch(`${base}/collections`, { headers: { 'x-agent-passport': passport } });
+  try {
+    // Five honest sessions spend nothing: brute force is a run of failures.
+    for (let i = 0; i < 5; i += 1) assert.equal((await present('vap_good')).status, 200);
+
+    assert.equal((await present('vap_guess-1')).status, 401);
+    assert.equal((await present('vap_guess-2')).status, 401);
+    const stopped = await present('vap_guess-3');
+    assert.equal(stopped.status, 429, 'the third guess in a row is refused before the Registry is asked');
+    assert.equal(((await stopped.json()) as { bucket: string }).bucket, 'auth');
+  } finally {
+    server.close();
+  }
 });

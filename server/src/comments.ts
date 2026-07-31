@@ -58,6 +58,44 @@ export function parseMentions(body: string): string[] {
   return [...ids];
 }
 
+// What became of the mentions in a comment (SECURITY.md R3).
+//
+// A mention used to notify whoever it named, member or not — and a mention
+// notification carries the page's TITLE in its subject and the comment's full
+// TEXT in its body, delivered by email. So `@`-ing somebody with no role in a
+// restricted collection mailed them the two things the collection exists to
+// keep from them. The subject and the body are the leak; the notification is
+// the delivery mechanism.
+//
+// Three answers were available and this is why this one was chosen:
+//
+//   - REFUSE THE COMMENT. Disproportionate: it throws away writing over an
+//     addressing mistake, and it makes a restricted collection's membership
+//     probeable one `@` at a time from an error message.
+//   - NOTIFY WITHOUT CONTENT. Still leaks — that a page exists, that they were
+//     named on it — and produces a notification nobody can act on: a link the
+//     recipient cannot open with no way to know whether it matters.
+//   - WITHHOLD, AND TELL THE COMMENTER. What happens now. The comment lands in
+//     full, the mention stays in the text, no notification is written, and the
+//     response names the actors who were not notified. "Mention someone to
+//     bring them in" stays a workflow — it just becomes a deliberate one,
+//     where the commenter is told to go and grant access rather than believing
+//     they have already summoned somebody.
+//
+// The withheld ids are on the `comment.create` audit event too, so the record
+// answers "who tried to pull an outsider into this collection" as well.
+export interface MentionOutcome {
+  /** Mentioned actors who hold a role here and were notified. */
+  notified: string[];
+  /** Mentioned actors with no role in this collection. Not notified. */
+  withheld: { actorId: string; reason: 'no_access' }[];
+}
+
+/** What `create` returns: the stored comment, plus what became of its mentions. */
+export interface CreatedComment extends Comment {
+  mentions: MentionOutcome;
+}
+
 // The minimal slice of CanonStore this service needs; CanonStore satisfies it.
 export interface CommentHost {
   getActor(id: string): Actor;
@@ -75,7 +113,11 @@ export class CommentService {
     private readonly notifier: Notifier,
   ) {}
 
-  create(actorId: string, pageId: string, input: { body: string; anchor?: Partial<CommentAnchor> | null }): Comment {
+  create(
+    actorId: string,
+    pageId: string,
+    input: { body: string; anchor?: Partial<CommentAnchor> | null },
+  ): CreatedComment {
     const page = this.page(pageId);
     this.requireRole(actorId, page.collectionId, 'comment');
     if (page.status === 'archived') throw new CanonError('workflow', 'Archived pages are read-only');
@@ -109,14 +151,30 @@ export class CommentService {
         // not an actor id; plain text
       }
     }
+    // A mention notification carries the page title and the comment text, so
+    // it may only reach somebody who could have read both anyway. See
+    // MentionOutcome above for why this withholds rather than refuses.
+    const notified: Actor[] = [];
+    const withheld: { actorId: string; reason: 'no_access' }[] = [];
+    for (const recipient of mentioned) {
+      if (this.host.roleOf(recipient.id, page.collectionId)) notified.push(recipient);
+      else withheld.push({ actorId: recipient.id, reason: 'no_access' });
+    }
 
     this.audit(author, 'comment.create', {
       collectionId: page.collectionId,
       pageId,
-      details: { commentId: id, anchored: anchor !== null, mentions: mentioned.map((a) => a.id) },
+      details: {
+        commentId: id,
+        anchored: anchor !== null,
+        mentions: notified.map((a) => a.id),
+        // Named only when there were any, so an ordinary comment's event does
+        // not grow a field that is always empty.
+        ...(withheld.length ? { mentionsWithheld: withheld.map((w) => w.actorId) } : {}),
+      },
     });
 
-    for (const recipient of mentioned) {
+    for (const recipient of notified) {
       this.notifier.send(recipient.id, {
         kind: 'mention',
         subject: `${author.name} mentioned you on "${page.title}"`,
@@ -124,7 +182,7 @@ export class CommentService {
         link: `/pages/${pageId}#comment-${id}`,
       });
     }
-    return this.getComment(id);
+    return { ...this.getComment(id), mentions: { notified: notified.map((a) => a.id), withheld } };
   }
 
   list(actorId: string, pageId: string): Comment[] {

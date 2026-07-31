@@ -251,7 +251,10 @@ test('ask: every ask is on the audit record, refusals included', async () => {
   const agent = store.createActor({ kind: 'agent', name: 'Answer Agent', registryRef: 'passport:answers-1' });
   store.setMember(dana.id, collection.id, agent.id, 'view');
   await store.ask(agent.id, { question: 'Is vault access logged?' });
-  const byAgent = store.queryAudit(marc.id, { action: 'answer.ask', actorId: agent.id });
+  // Read as dana, who administers the collection: an ask that names no
+  // collection is an operator's event now (SECURITY.md R5) — it carries the
+  // question text and belongs to the asker plus admins, not to every member.
+  const byAgent = store.queryAudit(dana.id, { action: 'answer.ask', actorId: agent.id });
   assert.equal(byAgent.length, 1);
   assert.equal(byAgent[0]!.actorKind, 'agent');
 });
