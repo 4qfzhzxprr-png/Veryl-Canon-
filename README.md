@@ -55,6 +55,8 @@ See [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) for the Agent Passport contract
 
 See [idp-stub/](idp-stub/) for the same thing on the people side: a standalone OpenID Connect provider, so Canon's single sign-on can be built, tested and demonstrated before a design partner's identity tenant is wired up. Canon's side of it is [`server/src/auth.ts`](server/src/auth.ts), and [SECURITY.md](SECURITY.md) F10 records what it closed.
 
+See [OPERATIONS.md](OPERATIONS.md) for running Canon: install with the [Dockerfile](Dockerfile) or without it, upgrade, **back up and restore** (the audit log is a compliance artefact and has exactly one copy until you make another), rotate secrets, read the logs, what each timer does and what breaks if it stops, and a first-hour checklist. [CONFIGURATION.md](CONFIGURATION.md) is every environment variable in one table, with its default, its meaning, whether a real deployment needs it, and which are development-only. [docker-compose.yml](docker-compose.yml) brings up a demo stack — Canon plus the stubs, which are never for production.
+
 See [STUDIO-CONTRACT.md](STUDIO-CONTRACT.md) for the Knowledge API contract between Canon and Veryl Studio — how an app authenticates (it is an agent, so it presents a passport), how it names the person it acts for, and the three-way intersection that decides what the two of them may read and write — and [studio-stub/](studio-stub/) for a working Studio app built on it.
 
 ## Naming

@@ -6,8 +6,17 @@ import { IMPORTS_SCHEMA } from './import.js';
 import { NOTIFICATIONS_SCHEMA } from './notify.js';
 import { PROPOSALS_SCHEMA } from './proposals.js';
 import { QUERIES_SCHEMA } from './queries.js';
+import { Migration, runMigrations } from './migrate.js';
 import { REFERENCES_SCHEMA } from './references.js';
 import { SOURCES_SCHEMA } from './sources.js';
+
+// Connection settings, not schema. They are applied on every open and they are
+// deliberately outside the migration runner: SQLite refuses to change journal
+// mode inside a transaction, and every migration runs in one.
+const PRAGMAS = `
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+`;
 
 // Storage separates by lifecycle (DATA-BACKBONE.md §4): the current record
 // (actors, collections, members, pages, drafts), immutable history
@@ -15,9 +24,6 @@ import { SOURCES_SCHEMA } from './sources.js';
 // and live elsewhere. History is append-only and that is enforced here, at
 // the storage layer, not just in application code.
 const SCHEMA = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS actors (
   id           TEXT PRIMARY KEY,
   kind         TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
@@ -118,8 +124,19 @@ BEFORE DELETE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
 `;
 
-export function openDb(path: string): DatabaseSync {
-  const db = new DatabaseSync(path);
+/**
+ * The bootstrap, exactly as it stood before migrations existed, and now the
+ * body of migration 1. Every statement in it is `CREATE … IF NOT EXISTS`, so
+ * running it on a database that already has the tables does nothing — which is
+ * what lets a fresh database and one written by the previous build converge on
+ * the same version 1 without either being special-cased.
+ *
+ * A module's DDL still lives beside its logic in a `_SCHEMA` constant; adding
+ * one to this list is how a purely additive table arrives. A change to an
+ * existing table is a numbered migration in `MIGRATIONS` below and never an
+ * edit here — see OPERATIONS.md "Adding a table".
+ */
+export function applyBaselineSchema(db: DatabaseSync): void {
   db.exec(SCHEMA);
   db.exec(COMMENTS_SCHEMA); // comments (Epic C, M2); DDL lives with its logic in comments.ts
   db.exec(NOTIFICATIONS_SCHEMA); // notifications outbox (Epic C, M2); DDL in notify.ts
@@ -133,5 +150,29 @@ export function openDb(path: string): DatabaseSync {
   // pages. A record created by an earlier build is brought up to date here, as
   // notify.ts does for its delivery columns; a fresh database already matches.
   ensurePageFreshnessSchema(db);
+}
+
+/**
+ * The migration list. Append only; never reorder, never renumber, never edit a
+ * released migration — a partner's database has already run it, and the version
+ * number is the only record that it did.
+ */
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: 'baseline',
+    // Owns its transaction because the freshness rebuild it folds in needs
+    // foreign keys off around a BEGIN of its own; re-applied on every open
+    // because it is idempotent by construction. See migrate.ts on `always`.
+    ownTransaction: true,
+    always: true,
+    up: applyBaselineSchema,
+  },
+];
+
+export function openDb(path: string): DatabaseSync {
+  const db = new DatabaseSync(path);
+  db.exec(PRAGMAS);
+  runMigrations(db, MIGRATIONS);
   return db;
 }
