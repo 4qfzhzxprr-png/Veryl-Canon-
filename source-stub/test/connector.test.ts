@@ -13,6 +13,7 @@ import {
   HttpConnector,
   isConnectorError,
 } from '../../server/src/httpconnector.js';
+import { OutboundTransport, pinnedHttpRequest } from '../../server/src/pinnedhttp.js';
 
 // The stub listens on 127.0.0.1, and Canon's outbound policy
 // (server/src/outbound.ts) blocks loopback and permits no host at all until a
@@ -140,14 +141,17 @@ test('connector: the asker reaches the source, and the source enforces it', asyn
     );
     assert.equal(jo.code, 'forbidden');
 
-    // And the identity really is on the wire, under the header the source reads.
+    // And the identity really is on the wire, under the header the source
+    // reads. The seam is the outbound transport rather than fetch, because
+    // Canon no longer uses fetch for a source request: it resolves the name
+    // itself and connects to the address it checked (server/src/pinnedhttp.ts).
     const seen: string[] = [];
-    const watching: typeof fetch = (input, init) => {
-      const headers = new Headers(init?.headers);
-      seen.push(headers.get('x-asker') ?? '(none)');
-      return fetch(input, init);
+    const watching: OutboundTransport = (request) => {
+      const asker = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-asker')?.[1];
+      seen.push(asker ?? '(none)');
+      return pinnedHttpRequest(request);
     };
-    const watcher = new HttpConnector({ fetchImpl: watching });
+    const watcher = new HttpConnector({ transport: watching });
     await watcher.resolve(source, { selector: 'deductible', key: 'plan-gold-2026', asker: asker('person-jo') });
     assert.deepEqual(seen, ['person-jo']);
 
@@ -156,7 +160,7 @@ test('connector: the asker reaches the source, and the source enforces it', asyn
     // service resolution is a decision to publish a value, not a way around
     // the source's access model.
     const serviceSource = sourceFor(baseUrl, 'service');
-    const asService = new HttpConnector({ serviceIdentity: 'svc-canon', fetchImpl: watching });
+    const asService = new HttpConnector({ serviceIdentity: 'svc-canon', transport: watching });
     seen.length = 0;
     const value = await asService.resolve(serviceSource, {
       selector: 'deductible',
@@ -364,11 +368,11 @@ test('connector: it refuses to ask a question it cannot ask honestly', async () 
 
     // A misconfigured connector never reaches the source at all.
     let calls = 0;
-    const counting: typeof fetch = (input, init) => {
+    const counting: OutboundTransport = (request) => {
       calls += 1;
-      return fetch(input, init);
+      return pinnedHttpRequest(request);
     };
-    const silent = new HttpConnector({ fetchImpl: counting });
+    const silent = new HttpConnector({ transport: counting });
     await expectFailure(silent.resolve(source, { selector: 'deductible', key: '', asker: asker('person-jo') }));
     assert.equal(calls, 0);
   } finally {

@@ -15,5 +15,5 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "../registry-stub/src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "../registry-stub/src/**/*.ts", "../source-stub/src/**/*.ts"]
 }

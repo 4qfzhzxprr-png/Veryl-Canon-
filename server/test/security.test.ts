@@ -164,7 +164,7 @@ test('ssrf: the connector re-checks at resolution time, not only at registration
   const connector = new HttpConnector({
     outbound: NOTHING,
     serviceIdentity: 'svc-canon',
-    fetchImpl: () => assert.fail('nothing may be fetched when the policy forbids the host'),
+    transport: () => assert.fail('nothing may be fetched when the policy forbids the host'),
   });
   const source = {
     id: 's1',
@@ -235,7 +235,7 @@ test('ssrf: a name that resolves to a private address is refused at resolution',
   const connector = new HttpConnector({
     outbound: byName,
     serviceIdentity: 'svc',
-    fetchImpl: () => assert.fail('nothing may be fetched when the name resolves somewhere private'),
+    transport: () => assert.fail('nothing may be fetched when the name resolves somewhere private'),
   });
   await assert.rejects(
     connector.resolve(

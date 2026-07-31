@@ -43,16 +43,24 @@ import { lookup } from 'node:dns/promises';
 //   * At resolution time it also resolves the hostname and refuses if ANY
 //     address it resolves to is blocked. That closes the ordinary
 //     "allowlisted-name-that-points-at-169.254.169.254" case.
-//   * It does NOT pin the address Canon then connects to. Node's global fetch
-//     offers no supported hook for supplying the resolved socket address, so
-//     between the check and the connection a DNS answer can change: a
-//     deliberate rebinding attack, from an operator-allowlisted host, can still
-//     land on an internal address. The allowlist is what makes that
-//     uninteresting in practice — the attacker must already control a name the
-//     operator chose to trust — but the window is real and is not closed here.
-//     Closing it needs a connect-time hook (a custom dispatcher, or a plain
-//     node:http request with a fixed `lookup`), which is a larger change than a
-//     security review should make on its own.
+//   * It PINS the address the socket then connects to. `resolveOutboundTarget`
+//     below resolves the name once, judges every address it got, and hands the
+//     surviving addresses back to the caller; `pinnedhttp.ts` connects with a
+//     `lookup` that returns exactly one of them and nothing else. The DNS
+//     answer cannot change between the check and the connection, because the
+//     connection does not consult DNS again. That is what closes the
+//     rebinding window the M4 review left open (SECURITY.md F1).
+//
+//   What is still NOT closed, stated plainly:
+//
+//   * A host inside the allowlist is reachable, and everything it can be made
+//     to say is readable. That is what an allowlist entry means.
+//   * The pin is only as good as the one DNS answer it was built from. Canon
+//     does not validate DNSSEC, so a resolver that lies once still gets one
+//     lie through — it just cannot follow it with a second, different one.
+//   * A host that legitimately resolves to several addresses is judged on all
+//     of them and refused if any is blocked. That is availability lost in
+//     exchange for the guarantee, deliberately.
 
 export type OutboundRefusalCode =
   | 'not_configured' // the deployment permits no outbound federation
@@ -264,6 +272,41 @@ export function isBlockedAddress(address: string): boolean {
   return false; // not an address at all: a hostname, judged by the allowlist
 }
 
+/**
+ * One spelling per address, so "did the socket land where we said" can be
+ * asked as a string comparison. Returns null for anything that is not a
+ * literal address — a hostname has no canonical address form and must never
+ * compare equal to one.
+ */
+export function canonicalAddress(address: string): string | null {
+  const text = address.trim().replace(/^\[|\]$/g, '').split('%')[0] ?? '';
+  const family = isIP(text);
+  if (family === 4) {
+    const quad = parseIpv4(text);
+    return quad ? quad.join('.') : null;
+  }
+  if (family === 6) {
+    const groups = parseIpv6(text);
+    if (!groups) return null;
+    // An IPv4-mapped v6 address and its v4 spelling are the same host, and a
+    // socket may report either, so both canonicalise to the v4 form.
+    if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+      const hi = groups[6]!;
+      const lo = groups[7]!;
+      return [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff].join('.');
+    }
+    return groups.map((g) => g.toString(16)).join(':');
+  }
+  return null;
+}
+
+/** Are these two literal addresses the same host? False if either is not one. */
+export function sameAddress(a: string, b: string): boolean {
+  const left = canonicalAddress(a);
+  const right = canonicalAddress(b);
+  return left !== null && right !== null && left === right;
+}
+
 // ---- the checks ----------------------------------------------------------
 
 function hostOf(url: URL): string {
@@ -331,30 +374,90 @@ export function assertOutboundAllowed(url: URL, policy: OutboundPolicy = default
   }
 }
 
+// ---- resolution, and the pin --------------------------------------------
+
+/** One answer from a resolver: a literal address and its family (4 or 6). */
+export interface ResolvedAddress {
+  readonly address: string;
+  readonly family: number;
+}
+
 /**
- * The structural checks plus name resolution: every address the host resolves
- * to must be reachable too. Used at resolution time, where the extra DNS
- * round trip is affordable and the answer is the current one.
+ * The name-resolution seam. Injected rather than reached for, so a test can
+ * hand the policy a resolver that answers differently on the second call —
+ * which is what a DNS-rebinding attack is — without monkey-patching the
+ * process's DNS.
+ */
+export type AddressResolver = (hostname: string) => Promise<ResolvedAddress[]>;
+
+/** The real one: the operating system's resolver, in the order it answers. */
+export const systemResolver: AddressResolver = async (hostname) => {
+  const answers = await lookup(hostname, { all: true, verbatim: true });
+  return answers.map(({ address, family }) => ({ address, family }));
+};
+
+/**
+ * A checked destination: the hostname (which is what a TLS certificate must
+ * match, whatever address the socket goes to) and the addresses the policy
+ * permits, in resolver order. The caller connects to one of these and to
+ * nothing else — see `pinnedhttp.ts`.
+ */
+export interface PinnedTarget {
+  readonly url: URL;
+  /** Hostname as written, brackets stripped. The certificate is checked against this. */
+  readonly host: string;
+  readonly port: number;
+  readonly addresses: readonly ResolvedAddress[];
+}
+
+/**
+ * The structural checks, then name resolution, then the address policy applied
+ * to every address that came back — and then the surviving addresses are
+ * handed to the caller so the connection can be made to one of *those* rather
+ * than to whatever a second lookup would say. This is the whole of the
+ * rebinding fix: resolve once, judge what you resolved, connect to what you
+ * judged.
  *
  * A host that will not resolve is refused rather than attempted — the request
  * would fail anyway, and refusing here keeps the failure honest.
+ *
+ * `CANON_SOURCE_ALLOW_PRIVATE` relaxes *which* addresses are permitted. It
+ * does not relax the pin: a development deployment still connects to the
+ * address it resolved and checked, because a guarantee that only holds in
+ * production is a guarantee nobody has tested.
  */
-export async function assertOutboundAllowedResolved(
+export async function resolveOutboundTarget(
   url: URL,
   policy: OutboundPolicy = defaultOutboundPolicy(),
-): Promise<void> {
+  resolver: AddressResolver = systemResolver,
+): Promise<PinnedTarget> {
   assertOutboundAllowed(url, policy);
-  if (policy.allowPrivate) return;
   const host = hostOf(url);
-  if (isIP(host) !== 0) return; // a literal: assertOutboundAllowed already judged it
-  let addresses: { address: string }[];
+  const port = effectivePort(url);
+  const literal = isIP(host);
+  if (literal !== 0) {
+    // assertOutboundAllowed already judged the literal; there is nothing to
+    // resolve and nothing that could change under us.
+    return { url, host, port, addresses: [{ address: host, family: literal }] };
+  }
+
+  let answers: ResolvedAddress[];
   try {
-    addresses = await lookup(host, { all: true, verbatim: true });
+    answers = await resolver(host);
   } catch (err) {
     throw new OutboundRefused('blocked_address', `${host} could not be resolved: ${(err as Error).message}`, host);
   }
-  for (const { address } of addresses) {
-    if (isBlockedAddress(address)) {
+  if (answers.length === 0) {
+    throw new OutboundRefused('blocked_address', `${host} resolved to no address`, host);
+  }
+  for (const { address } of answers) {
+    // A resolver that answers with a name rather than an address would leave
+    // the socket resolving something itself, which is exactly what the pin
+    // exists to prevent.
+    if (isIP(address) === 0) {
+      throw new OutboundRefused('blocked_address', `${host} resolves to ${address}, which is not an address`, host);
+    }
+    if (!policy.allowPrivate && isBlockedAddress(address)) {
       throw new OutboundRefused(
         'blocked_address',
         `${host} resolves to ${address}, a loopback, link-local or private address`,
@@ -362,6 +465,12 @@ export async function assertOutboundAllowedResolved(
       );
     }
   }
+  return {
+    url,
+    host,
+    port,
+    addresses: answers.map(({ address, family }) => ({ address, family: family || isIP(address) })),
+  };
 }
 
 /**

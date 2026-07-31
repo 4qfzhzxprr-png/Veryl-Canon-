@@ -32,7 +32,7 @@ Findings were confirmed by writing the exploit as a test first. Every fix below 
 
 Severity is judged for the alpha as it is described in CORE-PLAN.md: one design partner, a real corpus, real Registry, network-adjacent but not public. Every "High" is something a person with an ordinary account can do today.
 
-### F1 — Server-side request forgery through federated sources · **High · fixed**
+### F1 — Server-side request forgery through federated sources · **High · fixed; the DNS-rebinding residual is now closed too, see the follow-up below**
 
 `sources.ts` stored an operator-supplied `baseUrl` and validated nothing about it; `httpconnector.ts` fetched it server-side when a reference resolved. A collection admin — or an agent holding `"*"` over sources, which `agentauth.ts` requires for source administration but which the Registry can grant — could register a source at `http://169.254.169.254/latest/meta-data/`, at `http://localhost:PORT`, or at any host inside the deployment's network, attach a reference to a page, and read the response back out through the reference's value. Canon became a proxy into the private network with an audit trail that said "reference resolved".
 
@@ -46,9 +46,34 @@ Severity is judged for the alpha as it is described in CORE-PLAN.md: one design 
 - At resolution time the hostname is also resolved and every address it resolves to is checked, so an allowlisted name that points at an internal address is refused before the request is made.
 - Redirects are followed by hand, three hops maximum, with the full policy re-applied to every hop. A permitted host cannot bounce Canon into the private network on the second request.
 
-**What this does not stop, stated plainly.** The policy checks the resolved addresses but does not *pin* them: Node's global `fetch` offers no supported hook for supplying the socket address, so between the DNS check and the connection an answer can change. A deliberate DNS-rebinding attack from a host the operator has allowlisted can still land on an internal address. What makes that uninteresting in practice is the allowlist — the attacker must already control a name the operator chose to trust — but the window is real and is not closed. Closing it needs a connect-time hook (a custom dispatcher, or dropping to `node:http` with a fixed `lookup`), which is a bigger change than a security review should make on its own. **Recommendation: do it before the first live connector.**
+**What this did not stop, stated plainly** — *as the review stood; superseded by the follow-up immediately below, which is left in place rather than deleted so the record of what was open, and for how long, survives.* The policy checks the resolved addresses but does not *pin* them: Node's global `fetch` offers no supported hook for supplying the socket address, so between the DNS check and the connection an answer can change. A deliberate DNS-rebinding attack from a host the operator has allowlisted can still land on an internal address. What makes that uninteresting in practice is the allowlist — the attacker must already control a name the operator chose to trust — but the window is real and is not closed. Closing it needs a connect-time hook (a custom dispatcher, or dropping to `node:http` with a fixed `lookup`), which is a bigger change than a security review should make on its own. **Recommendation: do it before the first live connector.**
 
 Also unchanged: response content is not filtered. A permitted source that returns a scalar returns it, and that is the whole point of federation.
+
+#### F1 follow-up — the connection is now pinned to the address that was checked · **done**
+
+The recommendation above was taken before the first live connector, as it asked. Canon no longer uses global `fetch` for a source request. `outbound.ts` gained `resolveOutboundTarget`, and a new module [`server/src/pinnedhttp.ts`](server/src/pinnedhttp.ts) makes the request over `node:http`/`node:https` with a per-request `lookup`.
+
+**What is guaranteed at connect time, precisely.**
+
+- The hostname is resolved **once** per request hop, through an injectable resolver seam (`AddressResolver`), and the full address policy is applied to **every** address that answer contained. One blocked address among several refuses the whole host.
+- The socket then connects to an address **from that same answer**, supplied by a `lookup` that ignores its hostname argument. There is no second name resolution anywhere between the check and the connection, so there is no second answer for an attacker to make differ from the first. `pinnedhttp.ts` also compares the socket's own `remoteAddress` against the pinned address and fails the request if they differ — a check that should be unreachable, asserted rather than assumed.
+- The transport seam is handed an **address**, never a hostname. No substitute transport, in a test or in a future integration, can reintroduce a lookup.
+- **Every redirect hop repeats the whole of it** — resolve, judge, pin — because a redirect is exactly where rebinding hides. Three hops maximum, as before.
+- **TLS still binds to the name, not to the pinned address.** Only `lookup` is overridden: the request carries the real hostname, so SNI and Node's default `checkServerIdentity` see the name the operator allowlisted, and `rejectUnauthorized` stays on. A certificate for the wrong name is refused even when the address is correct. This mattered enough to test end to end, in a child process with a private CA, because closing an SSRF hole by opening a man-in-the-middle one would have been a worse trade than doing nothing.
+- Everything the connector guaranteed before survives unchanged: the request timeout and its typed failures, `refused` (403/404 — a real answer, do not retry) versus `unanswered` (timeout, 5xx, unreachable, unparseable), and no value invented on any path. `CANON_SOURCE_ALLOWED_HOSTS`, `CANON_SOURCE_ALLOW_PRIVATE` and `CANON_SOURCE_TIMEOUT_MS` keep their names and their meanings. `CANON_SOURCE_ALLOW_PRIVATE` relaxes *which* addresses are permitted; it does not relax the pin, so the development path exercises the same code the deployment does.
+
+**What is still not guaranteed, equally precisely.**
+
+- **The allowlist is still the trust boundary.** Everything inside it is reachable and everything it returns is readable. Pinning stops a name being re-pointed; it does not make a trusted host trustworthy.
+- **One lie still gets through.** The pin is only as good as the single DNS answer it was built from. Canon does not validate DNSSEC and does not authenticate its resolver, so a resolver that lies once is believed once — for HTTPS the certificate check is what catches that, and for plain HTTP nothing does. An operator allowlisting an `http://` host is trusting the network path as well as the host.
+- **A multi-address host loses some availability.** All of its addresses must pass the policy or the host is refused; within one hop the addresses are tried in resolver order and only a *connection* failure earns the next one, so a host that accepts a connection and then misbehaves is not retried against a sibling address. A TLS or protocol failure stops at the address that produced it rather than shopping for a friendlier one.
+- **Dual-stack ordering is the operating system's, not Canon's.** The resolver's `verbatim` order is preserved and the first address is tried first; a v6-first answer in an environment with no working v6 costs a connection attempt before the v4 fallback, inside the same request timeout. Global `fetch`'s happy-eyeballs was slightly better at this.
+- **Response content is still not filtered**, exactly as above. That remains the point of federation.
+
+Also added while here, and additive rather than a change of meaning: a source's answer is read up to 1 MiB and refused as `unparseable` beyond it. A federated value is a scalar; a source streaming megabytes at Canon is not answering the question.
+
+**Tested** in [`server/test/pinning.test.ts`](server/test/pinning.test.ts) (13 tests), against actual rebinding rather than by assertion of intent: a scripted resolver that answers with one address the first time and a different one the second, two real servers on `127.0.0.1` and `127.0.0.2` sharing a port and returning different values — so *which value comes back is proof of which address the socket reached* — a rebinding answer the policy blocks being refused with nothing dialled, the same trick through a redirect hop, the TLS name-versus-address test above, the failure classifications, and the whole federation path end to end through `CanonStore` against the real `source-stub`. Sensitivity was checked by breaking the pin deliberately and watching the pinning and TLS tests go red.
 
 ### F2 — The audit log was readable in full by any actor · **High · fixed (behaviour change)**
 
@@ -198,7 +223,7 @@ The assumptions the design rests on. If one of these stops being true, re-read t
 
 1. **Everyone who can reach the port is trusted to be who they say they are.** `X-Actor-Id` is an assertion and `POST /actors` is open. Every authorization control in Canon is downstream of that. The alpha survives because the deployment is closed; a partner corpus on a reachable network without SSO is the single fastest way to make this review worthless.
 
-2. **A collection admin is trusted with the network the server sits on.** F1's allowlist moves that trust from a collection admin to whoever writes `CANON_SOURCE_ALLOWED_HOSTS` — but everything inside the allowlist is still reachable, and DNS is still resolved rather than pinned. Add a host to that list and you are asserting it is safe for Canon to fetch, follow redirects within, and read responses from.
+2. **A collection admin is trusted with the network the server sits on.** F1's allowlist moves that trust from a collection admin to whoever writes `CANON_SOURCE_ALLOWED_HOSTS` — and everything inside the allowlist is still reachable. Add a host to that list and you are asserting it is safe for Canon to fetch, follow redirects within, and read responses from. The connection now goes to the address that was checked and to no other (F1 follow-up), so an allowlisted name can no longer be re-pointed at an internal address between the check and the connect; what remains is the allowlist itself, one unauthenticated DNS answer per hop, and — over plain `http://` — the network path.
 
 3. **The importer's path is chosen by someone trusted with the filesystem.** `edit` on one collection currently buys the ability to name any server path. The symlink fix contains a run to its root; `CANON_IMPORT_ROOTS` bounds the root; neither is on by default in the way that matters (R6).
 
@@ -232,3 +257,20 @@ The assumptions the design rests on. If one of these stops being true, re-read t
 | `server/test/security.test.ts` | **New.** 23 tests: one per finding, plus two property tests. |
 | `server/README.md` | The new environment variables, documented. |
 | `source-stub/test/connector.test.ts` | Sets the development outbound policy explicitly, so the real policy is exercised rather than bypassed. |
+
+### 6.1 Changes made by the F1 follow-up
+
+Recorded separately from the table above, because they were made after the review rather than by it.
+
+| File | Change |
+| --- | --- |
+| `server/src/pinnedhttp.ts` | **New.** The outbound request over `node:http`/`node:https` with a per-request `lookup` that returns only the checked address; TLS still verified against the hostname; one timeout over the whole exchange; a 1 MiB response read cap; the transport seam. |
+| `server/src/outbound.ts` | `assertOutboundAllowedResolved` replaced by `resolveOutboundTarget`, which returns the checked addresses rather than only a verdict; `AddressResolver` seam; `canonicalAddress`/`sameAddress`. |
+| `server/src/httpconnector.ts` | Requests go through the pinned transport instead of global `fetch`; the `fetchImpl` option is replaced by `transport` and `resolver`; each redirect hop re-resolves and re-pins. Failure classification unchanged. |
+| `server/test/pinning.test.ts` | **New.** 13 tests: the rebinding harness, redirect rebinding, TLS name binding, the failure classifications, and the federation path end to end against the real `source-stub`. |
+| `server/test/tlspin-child.ts`, `server/test/tlspin-cert.ts` | The TLS test's separate process and its published-on-purpose test certificate. |
+| `server/tsconfig.json` | Compiles `source-stub/src` too, so a server test can drive the real stub in-process — the arrangement `registry-stub` already had. |
+| `source-stub/test/connector.test.ts` | The two observing seams moved from `fetchImpl` to `transport`. |
+| `server/README.md` | The pin, and what it does and does not promise. |
+
+**Test counts after the follow-up:** `server` 225 (was 212), `registry-stub` 10, `source-stub` 13. All pass.

@@ -42,11 +42,22 @@
  */
 import type { Asker, Connector as CoreConnector, ResolveResult } from './connectors.js';
 import {
+  AddressResolver,
   OutboundPolicy,
   OutboundRefused,
-  assertOutboundAllowedResolved,
+  PinnedTarget,
   defaultOutboundPolicy,
+  resolveOutboundTarget,
+  systemResolver,
 } from './outbound.js';
+import {
+  OutboundResponse,
+  OutboundTimeout,
+  OutboundTooLarge,
+  OutboundTransport,
+  isConnectFailure,
+  pinnedHttpRequest,
+} from './pinnedhttp.js';
 
 export interface ConnectorSource {
   id: string;
@@ -166,8 +177,20 @@ export interface HttpConnectorOptions {
   selectorParam?: string;
   /** Field of the JSON answer holding the value. Default `value`. */
   valueField?: string;
-  /** Injectable for tests. Defaults to global fetch. */
-  fetchImpl?: typeof fetch;
+  /**
+   * How a checked request is put on the wire. Defaults to `pinnedHttpRequest`
+   * (pinnedhttp.ts), which connects to the address the policy validated and to
+   * no other. Injectable for tests — and note that the seam takes an address
+   * rather than a hostname, so no substitute can reintroduce a second lookup.
+   */
+  transport?: OutboundTransport;
+  /**
+   * How a hostname becomes addresses. Defaults to the operating system's
+   * resolver. Injectable so a test can hand the connector a resolver that
+   * answers differently on the second call — a DNS-rebinding attack — without
+   * touching the process's DNS.
+   */
+  resolver?: AddressResolver;
   /**
    * Which hosts this deployment may reach (outbound.ts). Defaults to the
    * process-wide policy read from CANON_SOURCE_ALLOWED_HOSTS, which is empty —
@@ -202,7 +225,8 @@ export class HttpConnector implements Connector, CoreConnector {
   private readonly keyParam: string;
   private readonly selectorParam: string;
   private readonly valueField: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly transport: OutboundTransport;
+  private readonly resolver: AddressResolver;
   private readonly outbound: OutboundPolicy;
   private readonly maxRedirects: number;
 
@@ -214,7 +238,8 @@ export class HttpConnector implements Connector, CoreConnector {
     this.keyParam = options.keyParam ?? 'key';
     this.selectorParam = options.selectorParam ?? 'selector';
     this.valueField = options.valueField ?? 'value';
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.transport = options.transport ?? pinnedHttpRequest;
+    this.resolver = options.resolver ?? systemResolver;
     this.outbound = options.outbound ?? defaultOutboundPolicy();
     this.maxRedirects = Math.max(0, options.maxRedirects ?? DEFAULT_MAX_REDIRECTS);
   }
@@ -267,11 +292,18 @@ export class HttpConnector implements Connector, CoreConnector {
     // rather than dialled. `not_permitted` is deliberately an "unanswered"
     // failure: nothing was asked, so nothing was answered, and the reference
     // layer shows the refusal rather than a value.
-    let response: Response;
+    //
+    // The name is resolved ONCE per hop and the socket is pinned to an address
+    // that resolution produced (pinnedhttp.ts). Between the check and the
+    // connection there is no second lookup for a rebinding attack to answer
+    // differently, and every redirect hop repeats the whole of it — resolve,
+    // judge, pin — because a redirect is exactly where rebinding hides.
+    let response: OutboundResponse;
     let target = url;
     for (let hop = 0; ; hop += 1) {
+      let pinned: PinnedTarget;
       try {
-        await assertOutboundAllowedResolved(target, this.outbound);
+        pinned = await resolveOutboundTarget(target, this.outbound, this.resolver);
       } catch (err) {
         if (err instanceof OutboundRefused) {
           throw failure(
@@ -284,25 +316,10 @@ export class HttpConnector implements Connector, CoreConnector {
         throw err;
       }
 
-      try {
-        response = await this.fetchImpl(target, {
-          method: 'GET',
-          headers: { accept: 'application/json', [this.askerHeader]: identity },
-          signal: AbortSignal.timeout(this.requestTimeoutMs),
-          // Redirects are followed by hand so every hop is held to the same
-          // policy. Letting fetch follow them would let a permitted host bounce
-          // Canon straight into the private network on the second request.
-          redirect: 'manual',
-        });
-      } catch (err) {
-        if ((err as Error).name === 'TimeoutError') {
-          throw failure('timeout', `${source.name} did not answer within ${this.requestTimeoutMs}ms`);
-        }
-        throw failure('unreachable', `${source.name} could not be reached: ${(err as Error).message}`);
-      }
+      response = await this.send(pinned, identity, failure, source.name);
 
       if (response.status < 300 || response.status > 399) break;
-      const location = response.headers.get('location');
+      const location = response.headers.location;
       if (!location) {
         throw failure('unparseable', `${source.name} answered ${response.status} with no location`, response.status);
       }
@@ -321,14 +338,15 @@ export class HttpConnector implements Connector, CoreConnector {
     let payload: unknown;
     let parsedJson = true;
     try {
-      payload = await response.json();
+      payload = JSON.parse(response.body) as unknown;
     } catch {
       parsedJson = false;
     }
     const body = (parsedJson && payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
     const detail = typeof body.message === 'string' ? body.message : `HTTP ${response.status}`;
 
-    if (!response.ok) {
+    // Same rule fetch applied: a 2xx is an answer, everything else is not.
+    if (response.status < 200 || response.status > 299) {
       // The two refusals: a real answer about this reference, not to be retried.
       if (response.status === 403) {
         throw failure('forbidden', `${source.name} refused: ${detail}`, response.status);
@@ -379,6 +397,57 @@ export class HttpConnector implements Connector, CoreConnector {
     }
 
     return { value, resolvedAt: new Date().toISOString() };
+  }
+
+  /**
+   * One hop, to the addresses the policy checked and to nothing else.
+   *
+   * A host may legitimately answer with several addresses — dual-stack is the
+   * ordinary case — so a connection *refused* by the first is tried against
+   * the next, which is what fetch's happy-eyeballs did for us before. Only a
+   * failure to connect earns another attempt: a TLS failure, a protocol
+   * failure or a timeout stops here, because retrying those against a second
+   * address would be shopping for a friendlier answer. Every attempt is
+   * pinned, and the whole hop shares one timeout budget, so `requestTimeoutMs`
+   * still bounds what a page render waits for.
+   */
+  private async send(
+    pinned: PinnedTarget,
+    identity: string,
+    failure: (code: ConnectorFailureCode, message: string, status?: number | null) => ConnectorError,
+    sourceName: string,
+  ): Promise<OutboundResponse> {
+    const deadline = Date.now() + this.requestTimeoutMs;
+    let last: unknown = null;
+    for (const { address, family } of pinned.addresses) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        last = new OutboundTimeout(`no answer within ${this.requestTimeoutMs}ms`);
+        break;
+      }
+      try {
+        return await this.transport({
+          url: pinned.url,
+          method: 'GET',
+          headers: { accept: 'application/json', [this.askerHeader]: identity },
+          timeoutMs: remaining,
+          host: pinned.host,
+          port: pinned.port,
+          address,
+          family,
+        });
+      } catch (err) {
+        last = err;
+        if (!isConnectFailure(err)) break;
+      }
+    }
+    if (last instanceof OutboundTimeout) {
+      throw failure('timeout', `${sourceName} did not answer within ${this.requestTimeoutMs}ms`);
+    }
+    if (last instanceof OutboundTooLarge) {
+      throw failure('unparseable', `${sourceName} answered with more than Canon will read: ${last.message}`);
+    }
+    throw failure('unreachable', `${sourceName} could not be reached: ${(last as Error | null)?.message ?? 'no address answered'}`);
   }
 
   /**
