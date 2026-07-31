@@ -16,6 +16,22 @@ import {
   ROLE_RANK,
   TYPE_RULES,
 } from './model.js';
+import {
+  countOrgRole,
+  explainCollectionAccess,
+  GrantExplanation,
+  groupsOf,
+  isOrgAdministrator,
+  isOrgOperator,
+  isOrgRole,
+  listOrgRoleHolders,
+  OrgRole,
+  orgRoleDetail,
+  orgRoleOf,
+  requireOrgRole,
+  setHandGrant,
+  setHandOrgRole,
+} from './orgrole.js';
 import { SearchIndex } from './search.js';
 import { Comment, CommentAnchor, CommentService, CreatedComment } from './comments.js';
 import { Notification, NotificationTransport, Notifier } from './notify.js';
@@ -156,24 +172,182 @@ export class CanonStore {
     }
   }
 
+  // Granting and withdrawing membership is a HAND GRANT (orgrole.ts): it is
+  // recorded apart from what a directory group grants, and the row every other
+  // query reads — `collection_members` — is recomputed as the stronger of the
+  // two. That is what lets a group be revoked without deleting an
+  // administrator's deliberate grant, and vice versa (SECURITY.md R10).
+  //
+  // Who may do it: `admin` on the collection as before, OR the org-level
+  // `administrator` role. The second is the break-glass path a Canon needs when
+  // a collection's last admin leaves; it is not silent, because the grant it
+  // makes is this very audit event with the administrator's name on it.
   setMember(actorId: string, collectionId: string, memberId: string, role: Role): void {
-    this.requireRole(actorId, collectionId, 'admin');
+    this.requirePermissionAdmin(actorId, collectionId);
     this.getActor(memberId);
-    this.db
-      .prepare(
-        `INSERT INTO collection_members (collection_id, actor_id, role) VALUES (?, ?, ?)
-         ON CONFLICT (collection_id, actor_id) DO UPDATE SET role = excluded.role`,
-      )
-      .run(collectionId, memberId, role);
-    this.audit(actorId, 'collection.member_set', { collectionId, details: { memberId, role } });
+    if (!ROLE_RANK[role]) throw new CanonError('invalid', `Unknown collection role: ${role}`);
+    const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, role);
+    this.audit(actorId, 'collection.member_set', {
+      collectionId,
+      details: {
+        memberId,
+        role,
+        via: 'hand',
+        ...(effective !== role ? { effectiveRole: effective } : {}),
+        ...(mapped.length ? { alsoGrantedByGroups: mapped } : {}),
+      },
+    });
   }
 
-  removeMember(actorId: string, collectionId: string, memberId: string): void {
+  // Withdrawing a hand grant leaves any group-granted access standing — the
+  // alternative would be a removal that a re-confirmation quietly undoes sixty
+  // seconds later. The caller is told what remains rather than left to discover
+  // it: `remaining` names the effective role after the withdrawal and `groups`
+  // says which directory groups are holding it up.
+  removeMember(
+    actorId: string,
+    collectionId: string,
+    memberId: string,
+  ): { removed: boolean; remaining: Role | null; groups: { group: string; role: Role }[] } {
+    this.requirePermissionAdmin(actorId, collectionId);
+    const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, null);
+    this.audit(actorId, 'collection.member_removed', {
+      collectionId,
+      details: {
+        memberId,
+        ...(effective ? { remainingRole: effective, heldByGroups: mapped } : {}),
+      },
+    });
+    return { removed: effective === null, remaining: effective, groups: mapped };
+  }
+
+  // `admin` here, or `administrator` for the whole Canon. Kept in one place so
+  // the two membership calls above can never drift apart.
+  private requirePermissionAdmin(actorId: string, collectionId: string): void {
+    if (this.roleOf(actorId, collectionId) === 'admin') return;
+    if (isOrgAdministrator(this.db, actorId)) {
+      // Existence is still checked, so an org administrator naming a collection
+      // that does not exist gets the same not_found anyone else gets.
+      const row = this.db.prepare('SELECT id FROM collections WHERE id = ?').get(collectionId) as
+        | { id: string }
+        | undefined;
+      if (!row) throw new CanonError('not_found', `No such collection: ${collectionId}`);
+      return;
+    }
     this.requireRole(actorId, collectionId, 'admin');
-    this.db
-      .prepare('DELETE FROM collection_members WHERE collection_id = ? AND actor_id = ?')
-      .run(collectionId, memberId);
-    this.audit(actorId, 'collection.member_removed', { collectionId, details: { memberId } });
+  }
+
+  // ---- organisation-level roles (orgrole.ts) ---------------------------
+  // The store's thin, actorId-first face onto the org role. The logic and the
+  // argument for each role live in orgrole.ts.
+
+  /** This actor's org role. A plain lookup: every actor may know their own, and Canon asks this of itself constantly. */
+  orgRoleOf(actorId: string): OrgRole {
+    return orgRoleOf(this.db, actorId);
+  }
+
+  /** "Is this person an operator of this Canon?" — the question five checks used to ask badly. */
+  isOperator(actorId: string): boolean {
+    return isOrgOperator(this.db, actorId);
+  }
+
+  isAdministrator(actorId: string): boolean {
+    return isOrgAdministrator(this.db, actorId);
+  }
+
+  /** Grant or withdraw an org role. Administering permissions is the administrator's job. */
+  setOrgRole(actorId: string, targetId: string, role: OrgRole): { actorId: string; orgRole: OrgRole } {
+    this.getActor(actorId);
+    requireOrgRole(this.db, actorId, 'administrator', 'Setting an organisation role');
+    const target = this.getActor(targetId);
+    if (!isOrgRole(role)) throw new CanonError('invalid', `Unknown organisation role: ${String(role)}`);
+    // An administrator may stand down, but not the last one: a Canon with no
+    // administrator can never have another without the bootstrap, and the
+    // bootstrap only fires for somebody signing in.
+    if (
+      role !== 'administrator' &&
+      orgRoleOf(this.db, targetId) === 'administrator' &&
+      countOrgRole(this.db, 'administrator') <= 1
+    ) {
+      throw new CanonError(
+        'workflow',
+        'This is the last administrator of this Canon; grant somebody else the role before withdrawing it',
+        { reason: 'last_administrator' },
+      );
+    }
+    setHandOrgRole(this.db, targetId, role, actorId);
+    const now = orgRoleOf(this.db, targetId);
+    this.audit(actorId, 'org_role.set', { details: { memberId: target.id, orgRole: role, effective: now } });
+    return { actorId: target.id, orgRole: now };
+  }
+
+  /**
+   * The organisation's FIRST administrator, granted with nobody's permission —
+   * because there is nobody to ask (orgrole.ts, "Bootstrap").
+   *
+   * Safe by construction rather than by trust: it refuses the moment this Canon
+   * already holds an administrator, so it is callable exactly once in a
+   * record's life and is not a way to escalate. The people-facing door has its
+   * own path to the same rule (`CANON_BOOTSTRAP_ADMIN_SUBJECT`, or the first
+   * person to sign in); this is the one for a record with no door open yet —
+   * the demo seeder, and a dev machine running on `X-Actor-Id`.
+   */
+  bootstrapAdministrator(actorId: string): OrgRole {
+    const actor = this.getActor(actorId);
+    if (countOrgRole(this.db, 'administrator') > 0) {
+      throw new CanonError(
+        'forbidden',
+        'This Canon already has an administrator; ask them for the role rather than bootstrapping a second one',
+        { reason: 'already_bootstrapped' },
+      );
+    }
+    setHandOrgRole(this.db, actor.id, 'administrator', null);
+    this.audit(actor.id, 'org_role.bootstrap', { details: { orgRole: 'administrator', reason: 'first_administrator' } });
+    return 'administrator';
+  }
+
+  /** Who holds an org role. An operator's question about the shape of the Canon they run. */
+  listOrgRoles(actorId: string): { actorId: string; orgRole: OrgRole; hand: OrgRole | null; mapped: OrgRole | null }[] {
+    this.getActor(actorId);
+    requireOrgRole(this.db, actorId, 'operator', 'Listing organisation roles');
+    return listOrgRoleHolders(this.db).map((h) => ({
+      actorId: h.actorId,
+      orgRole: h.role,
+      hand: h.hand,
+      mapped: h.mapped,
+    }));
+  }
+
+  /**
+   * "Why does this person have edit here?" — the whole of one person's access,
+   * with the origin of every piece of it: the org role and where it came from,
+   * the groups their last confirmed ID token carried, and per collection the
+   * hand grant, the group grants, and the effective role.
+   */
+  explainAccess(
+    actorId: string,
+    targetId: string,
+  ): {
+    actorId: string;
+    orgRole: OrgRole;
+    orgRoleHand: OrgRole | null;
+    orgRoleMapped: OrgRole | null;
+    groups: string[];
+    collections: GrantExplanation[];
+  } {
+    this.getActor(actorId);
+    // Your own access is yours to see; anybody else's is an operator's question.
+    if (actorId !== targetId) requireOrgRole(this.db, actorId, 'operator', 'Reading another actor’s access');
+    const target = this.getActor(targetId);
+    const detail = orgRoleDetail(this.db, targetId);
+    return {
+      actorId: target.id,
+      orgRole: detail.role,
+      orgRoleHand: detail.hand,
+      orgRoleMapped: detail.mapped,
+      groups: groupsOf(this.db, targetId),
+      collections: explainCollectionAccess(this.db, targetId),
+    };
   }
 
   listMembers(actorId: string, collectionId: string): { actorId: string; role: Role }[] {
@@ -200,9 +374,9 @@ export class CanonStore {
     this.db
       .prepare('INSERT INTO collections (id, name, description, restricted, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(collection.id, collection.name, collection.description, collection.restricted ? 1 : 0, collection.createdAt);
-    this.db
-      .prepare('INSERT INTO collection_members (collection_id, actor_id, role) VALUES (?, ?, ?)')
-      .run(collection.id, actorId, 'admin');
+    // The creator's own `admin` is a hand grant like any other, so a group
+    // mapping can add to it and neither side can silently erase it.
+    setHandGrant(this.db, collection.id, actorId, 'admin');
     this.audit(actorId, 'collection.create', { collectionId: collection.id, details: { name: collection.name } });
     return collection;
   }
@@ -791,8 +965,8 @@ export class CanonStore {
     //
     //   2. AN EVENT NAMING NO COLLECTION — an agent session, a refused
     //      passport, source administration, an ask that named none — reaches
-    //      the actor it is about, and otherwise only an operator, which Core
-    //      spells "admin on at least one collection" (SECURITY.md R5).
+    //      the actor it is about, and otherwise only an OPERATOR of this Canon
+    //      (orgrole.ts: the `operator` or `administrator` org role).
     //      These are the events with no collection to check and the most to
     //      give away: an `agent.session` event carries an agent's entire
     //      permitted-collections and permitted-sources lists, which is a map
@@ -801,11 +975,17 @@ export class CanonStore {
     //      often the most sensitive sentence anybody types into Canon.
     //      Leaving them open was the residual of F2 and it is now closed.
     //
-    // The operator stand-in is the same one notify.ts (`flushFor`) and
-    // sources.ts (`requireSourceAdmin`) already use, deliberately: Core has no
-    // organisation-level administrator role, and inventing a second definition
-    // of "operator" here would be worse than reusing the one that exists. When
-    // that role arrives, these three checks change together.
+    //      This used to read "admin on at least one collection" — the stand-in
+    //      SECURITY.md R5 named and said would change the day an org-level role
+    //      arrived. It has (SECURITY.md R9/R10 work, orgrole.ts), so the
+    //      question asked here is now the real one. A team lead who administers
+    //      one collection no longer reads every ask in the organisation, and an
+    //      operator who belongs to no collection at all can now do their job.
+    //
+    // The operator half is decided in TypeScript and bound as a parameter
+    // rather than joined in SQL, because it is a property of the ASKER and not
+    // of the row. The filter is still in the statement that generates the rows,
+    // which is the property F2 turns on.
     //
     // This narrows for agents as well as people, because an agent is an actor.
     // It does not contradict REGISTRY-CONTRACT.md §4.2 — that rule is about
@@ -814,14 +994,12 @@ export class CanonStore {
     // A limit that runs before another limit cannot widen it.
     const clauses: string[] = [
       `(CASE WHEN audit_events.collection_id IS NULL
-              THEN audit_events.actor_id = ?
-                   OR EXISTS (SELECT 1 FROM collection_members m
-                               WHERE m.actor_id = ? AND m.role = 'admin')
+              THEN audit_events.actor_id = ? OR ? = 1
               ELSE EXISTS (SELECT 1 FROM collection_members m
                             WHERE m.collection_id = audit_events.collection_id AND m.actor_id = ?)
          END)`,
     ];
-    const params: (string | number)[] = [actorId, actorId, actorId];
+    const params: (string | number)[] = [actorId, isOrgOperator(this.db, actorId) ? 1 : 0, actorId];
     if (filter.actorId) {
       clauses.push('actor_id = ?');
       params.push(filter.actorId);

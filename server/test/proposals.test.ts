@@ -460,6 +460,10 @@ test('API: an agent needs Registry write AND Canon edit to propose, and can neve
   const r = await rig();
   try {
     const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+    // She runs this Canon: `GET /actors` shows the whole directory — including
+    // the agent actor this test then grants a role to — to an operator, not to
+    // whoever administers a collection (SECURITY.md F11, orgrole.ts).
+    r.store.bootstrapAdministrator(dana.id);
     const collection = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Compliance' })).json;
     const page = (
       await r.call(

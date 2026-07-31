@@ -57,6 +57,11 @@ const routes: Route[] = [
   route('POST', '/admin/clients', ({ store, body }) => store.registerClient(body ?? {})),
   route('POST', '/admin/quirk', ({ store, body }) => store.setQuirk(String(body?.quirk ?? 'none'))),
   route('GET', '/admin/quirk', ({ store }) => ({ quirk: store.currentQuirk() })),
+  // Which claim the groups are issued in. A deployment's is configuration, so
+  // a stub that could only ever say `groups` could not test that Canon's own
+  // setting does anything.
+  route('POST', '/admin/groups-claim', ({ store, body }) => store.setGroupsClaim(String(body?.claim ?? 'groups'))),
+  route('GET', '/admin/groups-claim', ({ store }) => ({ claim: store.currentGroupsClaim() })),
 ];
 
 async function readRaw(req: IncomingMessage): Promise<string> {
@@ -211,6 +216,7 @@ export function createIdpApi(store: IdpStore): Server {
           clientId,
           clientSecret,
           codeVerifier: form.get('code_verifier') ?? '',
+          refreshToken: form.get('refresh_token') ?? '',
         });
         send(res, 200, tokens);
         return;

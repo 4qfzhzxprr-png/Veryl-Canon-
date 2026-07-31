@@ -130,6 +130,33 @@ server.listen(port, () => {
   if (!personAuth.oidc && !personAuth.devAuth && !agentAuth) {
     log.warn('no door is open: set CANON_OIDC_ISSUER, CANON_DEV_AUTH or CANON_REGISTRY_URL, or nobody can do anything');
   }
+  if (personAuth.oidc) {
+    // R9. Said out loud beside the agent guarantee below, because they are now
+    // the same promise made twice and an operator should be able to compare
+    // them without reading the code.
+    console.log(
+      personAuth.confirmWindowMs === 0
+        ? 'Sessions are confirmed with the identity provider on EVERY request'
+        : `Sessions are confirmed with the identity provider at least every ${personAuth.confirmWindowMs}ms ` +
+            '(the ceiling is 60000ms and is the revocation guarantee, not a tuning knob)',
+    );
+  }
+  // R10. A mapping is deployment configuration, so what it says is announced
+  // where the rest of the deployment's configuration is announced.
+  if (personAuth.mapping.rules.length > 0) {
+    console.log(
+      `Group mapping live: ${personAuth.mapping.rules.length} rule(s) from the '${personAuth.mapping.claim}' claim ` +
+        '(GET /auth/mapping to read them, GET /auth/access/:actorId to ask why somebody holds what)',
+    );
+    for (const rule of personAuth.mapping.rules) {
+      if (rule.target === 'org' && rule.orgRole === 'administrator') {
+        console.warn(
+          `*** Group '${rule.group}' grants the ADMINISTRATOR role for this Canon. Anyone your identity ***\n` +
+            '*** provider puts in that group can administer permissions here.                            ***',
+        );
+      }
+    }
+  }
   if (personAuth.oidc && personAuth.ephemeralSecret) {
     log.warn(
       'CANON_SESSION_SECRET is unset: session cookies are signed with a key invented at start-up, ' +

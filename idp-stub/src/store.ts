@@ -4,13 +4,18 @@
 
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { base64url, SigningKey, unsignedToken } from './keys.js';
-import { AuthCode, IdpClient, IdpError, IdpUser, Quirk, QUIRKS } from './model.js';
+import { AuthCode, IdpClient, IdpError, IdpUser, Quirk, QUIRKS, RefreshToken } from './model.js';
 
 const CODE_TTL_MS = 60_000;
 const ID_TOKEN_TTL_SEC = 300;
 
 function s256(verifier: string): string {
   return base64url(createHash('sha256').update(verifier).digest());
+}
+
+function normaliseGroups(groups: unknown): string[] {
+  if (!Array.isArray(groups)) return [];
+  return [...new Set(groups.filter((g): g is string => typeof g === 'string' && g.trim() !== '').map((g) => g.trim()))];
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -26,6 +31,7 @@ export interface TokenResponse {
   expires_in: number;
   id_token: string;
   scope: string;
+  refresh_token?: string;
 }
 
 export class IdpStore {
@@ -44,6 +50,15 @@ export class IdpStore {
   private readonly clients = new Map<string, IdpClient>();
   private readonly codes = new Map<string, AuthCode>();
   private readonly accessTokens = new Map<string, { sub: string; expiresAt: number }>();
+  private readonly refreshTokens = new Map<string, RefreshToken>();
+  /**
+   * Which claim the groups are issued in. Configurable because Canon's claim
+   * name is configurable (`CANON_OIDC_GROUPS_CLAIM`), and a provider that only
+   * ever says `groups` cannot prove that the setting does anything: Entra says
+   * `groups`, Okta is usually `groups` but is configured per authorization
+   * server, and plenty of deployments use `roles`.
+   */
+  private groupsClaim = 'groups';
   private quirk: Quirk = 'none';
   private readonly now: () => number;
 
@@ -54,7 +69,14 @@ export class IdpStore {
 
   // ---- administrative face ---------------------------------------------
 
-  seedUser(input: { sub?: string; name: string; email?: string | null; emailVerified?: boolean }): IdpUser {
+  seedUser(input: {
+    sub?: string;
+    name: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    groups?: string[];
+    disabled?: boolean;
+  }): IdpUser {
     if (!input.name?.trim()) throw new IdpError('invalid_request', 'A user requires a name');
     const sub = input.sub?.trim() || `sub-${randomUUID()}`;
     const user: IdpUser = {
@@ -62,6 +84,8 @@ export class IdpStore {
       name: input.name.trim(),
       email: input.email?.trim() || null,
       emailVerified: input.emailVerified ?? true,
+      groups: normaliseGroups(input.groups),
+      disabled: input.disabled === true,
     };
     this.users.set(sub, user);
     return user;
@@ -72,16 +96,32 @@ export class IdpStore {
    * of the administrative face for Canon's purposes: an email address changes,
    * and Canon must land on the same actor because it matched the subject.
    */
-  updateUser(sub: string, patch: { name?: string; email?: string | null }): IdpUser {
+  updateUser(
+    sub: string,
+    patch: { name?: string; email?: string | null; groups?: string[]; disabled?: boolean },
+  ): IdpUser {
     const user = this.users.get(sub);
     if (!user) throw new IdpError('not_found', `No such user: ${sub}`);
     const updated: IdpUser = {
       ...user,
       ...(patch.name === undefined ? {} : { name: patch.name }),
       ...(patch.email === undefined ? {} : { email: patch.email }),
+      ...(patch.groups === undefined ? {} : { groups: normaliseGroups(patch.groups) }),
+      ...(patch.disabled === undefined ? {} : { disabled: patch.disabled === true }),
     };
     this.users.set(sub, updated);
     return updated;
+  }
+
+  /** Which claim groups are issued in. `POST /admin/groups-claim`. */
+  setGroupsClaim(claim: string): { claim: string } {
+    if (!claim.trim()) throw new IdpError('invalid_request', 'A claim name cannot be empty');
+    this.groupsClaim = claim.trim();
+    return { claim: this.groupsClaim };
+  }
+
+  currentGroupsClaim(): string {
+    return this.groupsClaim;
   }
 
   listUsers(): IdpUser[] {
@@ -132,13 +172,13 @@ export class IdpStore {
       jwks_uri: `${this.issuer}/jwks.json`,
       end_session_endpoint: `${this.issuer}/logout`,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: ['RS256'],
-      scopes_supported: ['openid', 'profile', 'email'],
+      scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
       token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
       code_challenge_methods_supported: ['S256'],
-      claims_supported: ['sub', 'iss', 'aud', 'exp', 'iat', 'nonce', 'name', 'email', 'email_verified'],
+      claims_supported: ['sub', 'iss', 'aud', 'exp', 'iat', 'nonce', 'name', 'email', 'email_verified', this.groupsClaim],
     };
   }
 
@@ -210,13 +250,15 @@ export class IdpStore {
     clientId: string;
     clientSecret: string;
     codeVerifier: string;
+    refreshToken?: string;
   }): TokenResponse {
-    if (params.grantType !== 'authorization_code') {
-      throw new IdpError('unsupported', 'Only grant_type=authorization_code is supported');
-    }
     const client = this.clients.get(params.clientId);
     if (!client || !constantTimeEqual(client.clientSecret, params.clientSecret)) {
       throw new IdpError('invalid_client', 'Client authentication failed');
+    }
+    if (params.grantType === 'refresh_token') return this.refresh(client, params.refreshToken ?? '');
+    if (params.grantType !== 'authorization_code') {
+      throw new IdpError('unsupported', 'Only grant_type=authorization_code and refresh_token are supported');
     }
     const record = this.codes.get(params.code);
     if (!record) throw new IdpError('invalid_grant', 'Unknown authorization code');
@@ -250,17 +292,54 @@ export class IdpStore {
 
     const user = this.users.get(record.sub);
     if (!user) throw new IdpError('invalid_grant', 'The authenticated user no longer exists');
+    // A disabled person cannot start a session either. Canon's R9 guarantee is
+    // about the sessions they already hold; this is the ordinary front door.
+    if (user.disabled) throw new IdpError('invalid_grant', 'This account is disabled');
 
+    return this.issue(user, client, record.scope, record.nonce);
+  }
+
+  /**
+   * The refresh grant — what Canon confirms a live session with (SECURITY.md
+   * R9). Three properties this stub has on purpose, because Canon has to
+   * survive all three:
+   *
+   *  - A DISABLED person is refused, which is the whole event under test.
+   *  - The token is ROTATED: the presented one dies and a new one comes back,
+   *    so a client that fails to store the new one loses the session. Real
+   *    providers do this and a stub that did not would hide the bug.
+   *  - The new ID token carries the person's CURRENT claims, groups included,
+   *    which is what makes a group removed here remove access over there.
+   */
+  private refresh(client: IdpClient, presented: string): TokenResponse {
+    const held = presented ? this.refreshTokens.get(presented) : undefined;
+    if (!held) throw new IdpError('invalid_grant', 'Unknown or already-used refresh token');
+    this.refreshTokens.delete(presented);
+    if (held.clientId !== client.clientId) {
+      throw new IdpError('invalid_grant', 'Refresh token was issued to another client');
+    }
+    const user = this.users.get(held.sub);
+    if (!user) throw new IdpError('invalid_grant', 'The authenticated user no longer exists');
+    if (user.disabled) throw new IdpError('invalid_grant', 'This account is disabled');
+    return this.issue(user, client, held.scope, null);
+  }
+
+  private issue(user: IdpUser, client: IdpClient, scope: string, nonce: string | null): TokenResponse {
     const accessToken = `at-${randomUUID()}`;
     this.accessTokens.set(accessToken, { sub: user.sub, expiresAt: this.now() + ID_TOKEN_TTL_SEC * 1000 });
-
-    return {
+    const response: TokenResponse = {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: ID_TOKEN_TTL_SEC,
-      id_token: this.idToken(user, client, record),
-      scope: record.scope,
+      id_token: this.idToken(user, client, nonce),
+      scope,
     };
+    if (this.quirk !== 'no_refresh_token') {
+      const refreshToken = `rt-${randomUUID()}`;
+      this.refreshTokens.set(refreshToken, { token: refreshToken, clientId: client.clientId, sub: user.sub, scope });
+      response.refresh_token = refreshToken;
+    }
+    return response;
   }
 
   userinfo(accessToken: string): Record<string, unknown> {
@@ -268,12 +347,18 @@ export class IdpStore {
     if (!held || held.expiresAt <= this.now()) throw new IdpError('invalid_grant', 'Unknown or expired access token');
     const user = this.users.get(held.sub);
     if (!user) throw new IdpError('not_found', 'No such user');
-    return { sub: user.sub, name: user.name, email: user.email, email_verified: user.emailVerified };
+    return {
+      sub: user.sub,
+      name: user.name,
+      email: user.email,
+      email_verified: user.emailVerified,
+      [this.groupsClaim]: user.groups,
+    };
   }
 
   // ---- ID tokens, honest and otherwise ---------------------------------
 
-  private idToken(user: IdpUser, client: IdpClient, record: AuthCode): string {
+  private idToken(user: IdpUser, client: IdpClient, nonce: string | null): string {
     const issuedAt = Math.floor(this.now() / 1000);
     const quirk = this.quirk;
     const claims: Record<string, unknown> = {
@@ -287,8 +372,12 @@ export class IdpStore {
       email: user.email,
       email_verified: user.emailVerified,
     };
-    if (quirk === 'wrong_nonce') claims.nonce = `not-${record.nonce ?? 'the-nonce'}`;
-    else if (quirk !== 'no_nonce' && record.nonce) claims.nonce = record.nonce;
+    // The group claim is present only when the person is in a group: a
+    // provider that sends an empty array and one that sends nothing at all are
+    // both real, and Canon reads either as "no groups".
+    if (user.groups.length > 0) claims[this.groupsClaim] = user.groups;
+    if (quirk === 'wrong_nonce') claims.nonce = `not-${nonce ?? 'the-nonce'}`;
+    else if (quirk !== 'no_nonce' && nonce) claims.nonce = nonce;
 
     if (quirk === 'alg_none') return unsignedToken(claims);
     // Signed by a key the JWKS does not publish, but announced under the

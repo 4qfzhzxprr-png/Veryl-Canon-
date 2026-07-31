@@ -6,6 +6,7 @@ import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import { CanonStore } from '../src/store.js';
 import type { NotificationTransport } from '../src/notify.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { ConnectorRegistry, ResolveRequest, staticConnectorOf } from '../src/connectors.js';
 
 // Federation (DATA-BACKBONE.md §6): sources, reference fields, resolution.
@@ -15,7 +16,8 @@ import { ConnectorRegistry, ResolveRequest, staticConnectorOf } from '../src/con
 const quiet: NotificationTransport = { deliver() {} };
 
 function setup() {
-  const store = new CanonStore(openDb(':memory:'), quiet);
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
   const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
   const marc = store.createActor({ kind: 'person', name: 'Marc', email: 'marc@example.com' });
   const vera = store.createActor({ kind: 'person', name: 'Vera', email: 'vera@example.com' });
@@ -23,7 +25,10 @@ function setup() {
   const collection = store.createCollection(dana.id, { name: 'Benefits' });
   store.setMember(dana.id, collection.id, marc.id, 'edit');
   store.setMember(dana.id, collection.id, vera.id, 'view');
-  return { store, dana, marc, vera, outsider, collection };
+  // Dana runs this Canon as well as administering its collections: a
+  // Canon-wide (unscoped) source is an org-level act now (orgrole.ts).
+  setHandOrgRole(db, dana.id, 'operator', null);
+  return { db, store, dana, marc, vera, outsider, collection };
 }
 
 function expectCode(fn: () => unknown, code: string) {
@@ -130,8 +135,8 @@ test('sources: registering one requires admin on the collections it is scoped to
   assert.deepEqual(events[0]!.details.collectionIds, [collection.id]);
 });
 
-test('sources: a Canon-wide source (no scope) requires admin somewhere', () => {
-  const { store, dana, vera } = setup();
+test('sources: a Canon-wide source (no scope) takes the operator role, not admin on some collection', () => {
+  const { db, store, dana, vera } = setup();
   const input = {
     name: 'HRIS',
     kind: 'static',
@@ -140,7 +145,15 @@ test('sources: a Canon-wide source (no scope) requires admin somewhere', () => {
     freshnessWindowMs: 1000,
   };
   // Vera holds view on one collection and admin on none.
-  expectCode(() => store.createSource(vera.id, input), 'forbidden');
+  const refusedVera = expectCode(() => store.createSource(vera.id, input), 'forbidden');
+  assert.equal(refusedVera.details.neededOrgRole, 'operator');
+
+  // And so does an administrator of a collection who is not an operator: that
+  // is the whole point of the org role replacing the stand-in.
+  const lead = store.createActor({ kind: 'person', name: 'Team lead' });
+  const theirs = store.createCollection(lead.id, { name: 'Their team' });
+  assert.equal(store.roleOf(lead.id, theirs.id), 'admin');
+  expectCode(() => store.createSource(lead.id, input), 'forbidden');
 
   const source = store.createSource(dana.id, input);
   assert.deepEqual(source.collectionIds, []); // empty scope = referenceable Canon-wide

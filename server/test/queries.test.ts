@@ -8,6 +8,7 @@ import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import type { NotificationTransport } from '../src/notify.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { RegistryClient } from '../src/registry.js';
 import { CanonStore } from '../src/store.js';
 
@@ -30,6 +31,9 @@ function setup() {
   store.setMember(dana.id, collection.id, marc.id, 'edit');
   store.setMember(dana.id, collection.id, iris.id, 'approve');
   store.setMember(dana.id, collection.id, compliance.id, 'view');
+  // Dana runs this Canon: the freshness sweep below is an operator's act now,
+  // not "admin on some collection" (orgrole.ts).
+  setHandOrgRole(db, dana.id, 'operator', null);
   return { db, store, dana, marc, iris, compliance, collection };
 }
 
@@ -334,6 +338,9 @@ test('agents: queries and health are read and narrowed; the freshness sweep is c
   try {
     const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
     const iris = store.createActor({ kind: 'person', name: 'Iris', email: 'iris@example.com' });
+    // The `agent.denied` event at the end of this test names no collection, so
+    // reading it takes the operator role (orgrole.ts).
+    setHandOrgRole(db, dana.id, 'operator', null);
     const permitted = store.createCollection(dana.id, { name: 'Compliance' });
     const withheld = store.createCollection(dana.id, { name: 'Board' });
     store.setMember(dana.id, permitted.id, iris.id, 'approve');

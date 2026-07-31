@@ -832,10 +832,19 @@ test('directory: GET /actors no longer hands the whole organization to anyone', 
     const secrets = r.store.createCollection(zoe.id, { name: 'Zoe’s own' });
     assert.ok(secrets);
 
-    // An operator — admin somewhere — sees the directory, because granting a
-    // role means naming somebody you have not met.
+    // An OPERATOR of this Canon sees the directory, because granting a role
+    // means naming somebody you have not met. F11's residual was that this
+    // read "admin on at least one collection", which handed every actor and
+    // every address to the administrator of one team's collection; the
+    // org-level role (orgrole.ts) is the real question and Dana answers it.
+    r.store.bootstrapAdministrator(dana.id);
     const asDana = await r.call('GET', '/actors', { actor: dana.id });
     assert.equal(asDana.json.length, 3);
+
+    // Zoe administers her own collection and is not an operator, so she sees
+    // colleagues rather than the organisation.
+    const asZoe = await r.call('GET', '/actors', { actor: zoe.id });
+    assert.deepEqual(asZoe.json.map((a: any) => a.name), ['Zoe']);
 
     // An ordinary contributor sees themselves and the people they actually
     // share a collection with, and nobody's address but their own.

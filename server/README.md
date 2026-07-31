@@ -7,7 +7,7 @@ The first running slice of Veryl Canon: the data storage and organization backbo
 - **The record.** Collections with role-based membership (view, comment, edit, approve, admin), pages nesting into trees without depth limit, branch moves that carry children, stable page identity through any move, and the four Core document types (Policy, Spec, Plan, Note) with structured fields stored as data: owner, approver, status, effective date (Policy only), and review date (Policy requires one; Spec and Plan may carry one; a Note carries none, because it never holds the Canonical mark).
 - **Writing and publishing.** Drafts held apart from the published record, the Core page lock (one editor at a time, with a visible "being edited by"), one-step publishing, and append-only version history with restore-as-new-version. History immutability is enforced by the storage layer itself (SQLite triggers), not just application code.
 - **Status and review.** Draft → In Review → Canonical → Needs Update, driven by document type: Notes publish directly and never carry the Canonical mark; Policy and Spec require a named approver; publishing after Canonical drops the mark, because the mark applies to reviewed content. A page the freshness sweep flipped to **Needs Update** returns to Canonical through this same workflow and no other — it may be submitted for review directly, so the return path is edit → submit → approve, exactly as the first grant of the mark was.
-- **Freshness.** Canonical pages carry a review date; when it passes, a sweep flips the page to **Needs Update**, notifies its owner through the existing outbox, and writes a `page.needs_update` audit event. `POST /maintenance/freshness` runs the sweep on demand (admin on a collection required, the same question the notification flush asks); a deployment also runs it on a timer, exactly as it runs the outbox flush. **Idempotent by construction, not by bookkeeping**: the sweep selects Canonical pages, and a page it has already flipped is no longer Canonical, so a second run notifies nobody twice. There is no "already notified" flag to drift out of step with the record. The sweep is deliberately closed to agents — see "Two ways in" below.
+- **Freshness.** Canonical pages carry a review date; when it passes, a sweep flips the page to **Needs Update**, notifies its owner through the existing outbox, and writes a `page.needs_update` audit event. `POST /maintenance/freshness` runs the sweep on demand (the org-level **operator** role required, the same question the notification flush asks — see "Who runs this Canon" below); a deployment also runs it on a timer, exactly as it runs the outbox flush. **Idempotent by construction, not by bookkeeping**: the sweep selects Canonical pages, and a page it has already flipped is no longer Canonical, so a second run notifies nobody twice. There is no "already notified" flag to drift out of step with the record. The sweep is deliberately closed to agents — see "Two ways in" below.
 - **Search.** Full-text search (SQLite FTS5) over the published record only — drafts are never indexed, and archived pages leave search. Results are permission-filtered to collections where the searcher holds at least view, ranked by standing then by relevance — Canonical first, **Needs Update second** (a page past its review date is still the official answer, so it outranks working notes and ranks below current Canonical material), everything else after — and filterable by collection, type, status, and owner. The index is derived and rebuildable from the record; it is never the source of truth.
 - **Structured queries.** `POST /queries/run` takes a typed filter object — `collectionIds`, `types`, `statuses`, `ownerIds`, `approverIds`, `hasOwner`, `hasReviewDate`, `reviewDateBefore/After`, `updatedBefore/After`, `createdBefore/After`, `sort`, `direction`, `limit` — and answers the [FEATURES.md](../FEATURES.md) §6 example directly: *all Canonical policies owned by Compliance with a review date in the next 60 days*. **A filter, not a query language**: the moment a filter is a string somebody builds one by concatenation, and the fields the rules depend on are back inside prose. Every member names a real column, is validated against a fixed vocabulary before any SQL exists (a typo is a `400`, never a silently empty dashboard), and reaches the database as a bound parameter. Permission filtering is in the `SELECT` — the membership join, not a pass afterwards — so a non-member's query returns nothing because nothing was ever selected. Archived pages are excluded unless `statuses` names them. Queries can be saved (`POST /queries`), each owned by its creator and refused at save time if it names a collection the creator cannot see.
 - **Record health.** `GET /collections/:id/health` returns the [FEATURES.md](../FEATURES.md) §8 list in its smallest honest form, built on the query surface above: pages past review, pages currently Needs Update, pages without owners (only of types that *require* one — an unowned Note is not a health problem, and `TYPE_RULES` decides that, not the summary), orphaned pages (parentless and not the collection home, which is read as the first root page until the record carries a home pointer), and drafts untouched for longer than `?draftDays=` (default 30). One bounded scan, with `truncated: true` when it hits the cap rather than a quietly low number.
@@ -64,6 +64,8 @@ npm start
 | `CANON_SESSION_SECRET` | The HMAC key the session cookie is signed with. **Set it.** Without one, a key is invented at start-up: every restart signs everybody out, and no second instance can read the first's cookies. |
 | `CANON_SESSION_TTL_MS` | Optional; idle lifetime, renewed on use. Defaults to 8 hours. |
 | `CANON_SESSION_MAX_LIFETIME_MS` | Optional; the ceiling no amount of renewal passes. Defaults to 24 hours. |
+| `CANON_SESSION_CONFIRM_MS` | Optional; how long a session may be served before it is re-confirmed with the identity provider. **Defaults to 60000, and is clamped to 60000** — the ceiling is the revocation guarantee below, not a tuning knob. `0` re-confirms on every request. |
+| `CANON_BOOTSTRAP_ADMIN_SUBJECT` | Optional but recommended; the IdP subject (`sub`, or `issuer#sub`) of the person who administers this Canon. They are made an **administrator** on every sign-in. With this unset and no administrator in the record, the first person to sign in becomes one, loudly. |
 | `CANON_COOKIE_SECURE` | Optional; `true`/`false` to force the cookie's `Secure` flag. Defaults to on unless `CANON_BASE_URL` is plain `http`. |
 | `CANON_ALLOWED_ORIGINS` | Optional; extra origins a cookie-authenticated write may come from. The redirect URI's own origin is always allowed. |
 
@@ -71,7 +73,75 @@ The routes are `GET /auth/login` (optionally `?return=<path on this server>`; an
 
 **Just-in-time provisioning** matches on the IdP subject, qualified by issuer, and never on the email address. An address changes and can be reassigned; giving a leaver's address to a new hire must not hand them the leaver's history, roles and audit trail. Name and email follow the provider on every sign-in, so attribution stays true.
 
+#### The revocation guarantee, for people
+
+> **Canon confirms a person's session with their identity provider at least once every sixty seconds. Disabling somebody at the provider therefore ends their access to Canon within a minute, whatever session they are holding — and an operator can end it immediately.**
+
+That is the same sentence [REGISTRY-CONTRACT.md](../REGISTRY-CONTRACT.md) §3 states for agents ("revocation in the Registry takes effect in Canon within one minute"), and it is kept the same way, so the two can be compared line for line:
+
+| | Agents (`agentauth.ts`, `registry.ts`) | People (`auth.ts`) |
+| --- | --- | --- |
+| What is re-asked | the Registry's `POST /verify`, with the passport | the provider's token endpoint, with the session's refresh token |
+| How often | at most every `CANON_REGISTRY_TTL_MS`, clamped to **60s** | at most every `CANON_SESSION_CONFIRM_MS`, clamped to **60s** |
+| Who says no | the Registry (revoked, lapsed) | the provider (disabled, grant withdrawn) |
+| On "no" | request refused `403` | request refused `401`, and **every** session that person holds is deleted |
+| On no answer at all | request refused `503`; nothing cached | request refused `503`; **nothing deleted**, so recovery is immediate |
+| Immediately | remove the agent in the Registry | `DELETE /auth/sessions/:actorId`, by an operator |
+
+Three things are worth stating plainly rather than leaving to be discovered:
+
+- **The confirmation is made with a refresh token, which Canon stores.** It is the one credential Canon holds. It belongs to a single session, dies with it (logout, revocation, expiry, or a refused confirmation all delete the row), is sealed at rest with AES-256-GCM under a key derived from `CANON_SESSION_SECRET`, and never leaves Canon except to the provider's own token endpoint. `CANON_OIDC_SCOPE` therefore asks for `offline_access` by default. See [SECURITY.md](../SECURITY.md) §5, where the old assumption "nothing in Canon ever stores a credential" is amended rather than quietly broken.
+- **A session that cannot be confirmed does not survive its first window.** If the provider issues no refresh token, or returns no ID token on refresh, the session is ended and the person signs in again — usually an invisible redirect, because they are still signed in at the provider. A session Canon cannot confirm is a session outside the guarantee, and the guarantee is the point.
+- **A burst of requests past the window costs one round-trip**, not one per request: confirmations are single-flighted per session, which also matters because real providers rotate refresh tokens on use.
+
 **CSRF.** A session cookie is an ambient credential, so an unsafe request carrying one must prove it was meant. Canon requires **both** an acceptable `Origin`/`Referer` **and** a session-bound token in `X-Canon-CSRF` (fetched from `GET /auth/session`). The token is a synchronizer token held server-side beside the session, not a double-submit cookie — a double-submit is forgeable by anyone who can write a cookie on the domain. Requests identified by `X-Actor-Id` or `X-Agent-Passport` are exempt and correctly so: neither is ambient, so no cross-site page can cause one to be sent.
+
+### Who runs this Canon: the organisation role
+
+Canon has collection roles (`view` … `admin`) and, above them, one **organisation role** per actor. It is stored as data, defaults to `member`, and is what five checks now ask instead of "does this actor hold `admin` on *any* collection?" — a stand-in that was wrong in both directions, since a team lead who administers one collection is not an operator of the record and a genuine operator with no collection membership was invisible to it.
+
+| Org role | What it means |
+| --- | --- |
+| `member` | The default, and the absence of a grant. Everything a member can do comes from their collection roles and nothing else. |
+| `operator` | Runs this Canon: flush the notification outbox, run the freshness sweep, register a Canon-wide source, read audit events that name no collection, list the actor directory, end a person's sessions. **No access to any collection's content**, and no way to grant any. |
+| `administrator` | An operator who also administers permissions: sets other people's org roles, and may grant or remove collection membership anywhere. |
+
+**`administrator` does not imply collection access, deliberately.** An administrator holds no `view` anywhere they were not given one: they cannot read a page, search a body, retrieve a passage, or be answered from material they hold no collection role in. Running the system is not the same job as being entitled to the corpus, which is the separation a regulated buyer asks about. What they *can* do is grant themselves a role — a Canon whose last collection admin leaves must not become unadministrable — and that grant is an ordinary `collection.member_set` audit event with their name on it, made before the read rather than discovered after it. Accountable access, not silent access. It is recorded as the residual it is in [SECURITY.md](../SECURITY.md) F11.
+
+**The first administrator.** Nobody can be authorised to make the first grant, because the authority to make it is the thing being granted. So: `CANON_BOOTSTRAP_ADMIN_SUBJECT` names a person at the identity provider and re-asserts the role on every sign-in (recommended — it grants nothing to whoever arrives first, and cannot be locked out); with it unset and no administrator in the record, the first person to sign in becomes one, with a loud console line and an `org_role.bootstrap` audit event naming them. That window is exactly one person wide and closes permanently at the first sign-in. On a dev machine running `CANON_DEV_AUTH=true`, where nobody signs in, `CANON_BOOTSTRAP_ADMIN_ACTOR_ID` names an actor id instead.
+
+```
+GET    /auth/org-roles                      who holds one (operator)
+PUT    /auth/org-roles/:actorId             { role } — member | operator | administrator (administrator)
+GET    /auth/access/:actorId                why this person holds what (yourself, or operator)
+DELETE /auth/sessions/:actorId              end every session this person holds, now (operator)
+GET    /auth/mapping                        the group → role rules, as configured (operator)
+```
+
+### Provisioning from the directory: group claims
+
+A person who signs in with no Canon role sees an empty Canon. That is the right default, and it does not scale to a partner with three hundred staff — so a deployment can map the identity provider's **group claim** onto Canon roles. It is configuration, not a UI: mapping a directory group onto a role in a regulated record is a decision made once, reviewed where the rest of the deployment's configuration is reviewed.
+
+| Variable | Meaning |
+| --- | --- |
+| `CANON_OIDC_GROUPS_CLAIM` | Optional; the ID-token claim the groups arrive in. Defaults to `groups`. Groups are an array of opaque strings; a single bare string is accepted, and anything else reads as *no groups* rather than being guessed at. |
+| `CANON_GROUP_MAP` | The rules, one per line (or separated by `;`), `#` starts a comment. |
+| `CANON_GROUP_MAP_FILE` | Optional; a file of the same rules, appended to the above. |
+
+```sh
+CANON_GROUP_MAP='
+  # who edits Compliance
+  Canon-Compliance-Editors -> collection:8f14e45f-…:edit
+  Canon-Compliance-Leads   -> collection:8f14e45f-…:admin
+  Canon-Operators          -> org:operator
+'
+```
+
+- **Applied on every confirmation, not only at first sign-in.** A group added at the provider grants its role within the same sixty seconds a revocation takes; a group removed there removes exactly what it granted, in the same window.
+- **Mapped access is not hand-granted access, and the two are stored apart.** `collection_members` stays the effective role — the stronger of the two sides — so every membership join in search, retrieval, queries and the graph is untouched; underneath it, `collection_hand_grants` holds what an administrator granted and `collection_group_grants` holds what each group grants. Revoking a group therefore cannot delete a hand grant, and withdrawing a hand grant leaves no phantom mapping. `DELETE /collections/:id/members/:actorId` answers `{ removed, remaining, groups }`, so an administrator taking their grant back is *told* when a directory group is still holding the person's access up.
+- **It never widens the record's own permission model.** A rule grants a collection role from Canon's fixed vocabulary or an org role, and there is no third kind of target: a group cannot make somebody a page's approver, bypass a document type's rules, or reach a collection no rule named. A mapped `edit` is `edit`.
+- **A rule naming a collection or a role that does not exist is refused at configuration time** — the server does not start, and says which rule is wrong. A mapping quietly ignored shows up weeks later as somebody holding less access than the operator believes they granted.
+- **Inspectable, because "why does this person have edit here" is a real question.** `GET /auth/mapping` returns the rules as configured; `GET /auth/access/:actorId` returns the person's org role (hand and mapped halves separately), the groups their last confirmed ID token carried, and per collection the hand grant, the group grants, and the effective role.
 
 ### Dev authentication
 
@@ -286,11 +356,19 @@ GET    /auth/session                        open: which door is open, who you ar
 GET    /auth/login | GET /auth/callback     SSO only
 POST   /auth/logout                         ends the session server-side
 GET    /auth/dev/actors                     dev mode only: the identity picker's directory
+GET    /auth/org-roles | PUT /auth/org-roles/:actorId    who runs this Canon (see above)
+GET    /auth/access/:actorId                             why this person holds what
+DELETE /auth/sessions/:actorId                           end their sessions now (operator)
+GET    /auth/mapping                                     the group → role rules (operator)
 POST   /actors                              DEV MODE ONLY — 404 otherwise; people arrive by SSO, agents by passport
-GET    /actors[?collection=<id>]            a collection's members, or your colleagues; never a global directory
+GET    /actors[?collection=<id>]            a collection's members, or your colleagues; the whole directory
+                                            only to an operator of this Canon
 POST   /collections                         { name, description?, restricted? }
 GET    /collections | /collections/:id | /collections/:id/tree | /collections/:id/members
-PUT    /collections/:id/members/:actorId    { role }
+PUT    /collections/:id/members/:actorId    { role } — collection admin, or an org administrator
+DELETE /collections/:id/members/:actorId    withdraws the HAND grant only
+                                            -> { removed, remaining, groups } — `remaining` names a role a
+                                               directory group is still granting, rather than leaving it a surprise
 POST   /pages                               { collectionId, parentId?, type, title }
 GET    /pages/:id                           page + current published version + its reference descriptors
 PUT    /pages/:id/draft                     { title?, body?, fields? } — acquires the page lock
@@ -315,9 +393,9 @@ POST   /ask                                 { question, collectionId?, limit? }
                                             -> { answer | null, citations: [{ pageId, title, version, snippet }],
                                                  refused, reason? }
 GET    /pages/:id/related?canonical=&limit=  parent, children, and linked pages, permission-filtered
-POST   /notifications/flush                 { limit? } — deliver queued notifications (requires admin somewhere)
+POST   /notifications/flush                 { limit? } — deliver queued notifications (operator)
 POST   /sources                             { name, kind, baseUrl?, authMode, freshnessWindowMs, collectionIds? }
-                                            requires admin on the scoped collections (admin somewhere if unscoped)
+                                            admin on the scoped collections; operator if unscoped (Canon-wide)
 GET    /sources | /sources/:id              sources scoped to your collections, plus Canon-wide ones
 PUT    /sources/:id                         same fields, all optional; admin under the old and the new scope
 DELETE /sources/:id                         refuses (409) while any page still references it
@@ -333,7 +411,7 @@ POST   /proposals/:id/accept                { note? } -> { proposal, page }; peo
                                             409 when the page has moved past the proposal's base version
 POST   /proposals/:id/reject                { comment } — required; people only
 POST   /maintenance/freshness               { on?, limit? } — flip Canonical pages past their review date to
-                                            Needs Update, notify owners, audit. Requires admin on a collection;
+                                            Needs Update, notify owners, audit. Requires the operator role;
                                             idempotent; closed to agents. Run it on a timer.
 POST   /queries/run                         { collectionIds?, types?, statuses?, ownerIds?, approverIds?,
                                               hasOwner?, hasReviewDate?, reviewDateBefore?, reviewDateAfter?,

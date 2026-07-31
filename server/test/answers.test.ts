@@ -251,9 +251,11 @@ test('ask: every ask is on the audit record, refusals included', async () => {
   const agent = store.createActor({ kind: 'agent', name: 'Answer Agent', registryRef: 'passport:answers-1' });
   store.setMember(dana.id, collection.id, agent.id, 'view');
   await store.ask(agent.id, { question: 'Is vault access logged?' });
-  // Read as dana, who administers the collection: an ask that names no
-  // collection is an operator's event now (SECURITY.md R5) — it carries the
-  // question text and belongs to the asker plus admins, not to every member.
+  // Read as Dana, who runs this Canon: an ask that names no collection is an
+  // OPERATOR's event (SECURITY.md R5, now asked through the org-level role in
+  // orgrole.ts rather than through "admin on some collection"). It carries the
+  // question text and belongs to the asker plus operators, nobody else.
+  store.bootstrapAdministrator(dana.id);
   const byAgent = store.queryAudit(dana.id, { action: 'answer.ask', actorId: agent.id });
   assert.equal(byAgent.length, 1);
   assert.equal(byAgent[0]!.actorKind, 'agent');

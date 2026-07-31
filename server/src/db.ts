@@ -5,6 +5,7 @@ import { EMBEDDINGS_SCHEMA } from './embeddings.js';
 import { ensurePageFreshnessSchema } from './freshness.js';
 import { IMPORTS_SCHEMA } from './import.js';
 import { NOTIFICATIONS_SCHEMA } from './notify.js';
+import { ORG_SCHEMA } from './orgrole.js';
 import { PROPOSALS_SCHEMA } from './proposals.js';
 import { QUERIES_SCHEMA } from './queries.js';
 import { Migration, runMigrations } from './migrate.js';
@@ -147,6 +148,7 @@ export function applyBaselineSchema(db: DatabaseSync): void {
   db.exec(REFERENCES_SCHEMA); // reference fields and their labelled cache; DDL in references.ts
   db.exec(PROPOSALS_SCHEMA); // agent proposals (FEATURES.md §5, Next tier); DDL in proposals.ts
   db.exec(QUERIES_SCHEMA); // saved structured queries (Next tier); DDL in queries.ts
+  db.exec(ORG_SCHEMA); // org roles, and hand-granted vs group-granted membership; DDL in orgrole.ts
   // Freshness (Next tier) added `review_date` and the `needs_update` status to
   // pages. A record created by an earlier build is brought up to date here, as
   // notify.ts does for its delivery columns; a fresh database already matches.

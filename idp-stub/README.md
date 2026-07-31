@@ -10,9 +10,30 @@ The three faces of a provider:
 
 - **Discovery** — `GET /.well-known/openid-configuration` and `GET /jwks.json`. The discovery document names the issuer it is served from, and the JWKS publishes one RSA signing key with its `kid`, `use` and `alg`. The private half is never published.
 - **The flow** — `GET /authorize`, `POST /token`, `GET /userinfo`. Authorization Code with **PKCE required and only `S256`**: no `code_challenge` is refused, and `plain` is refused, because a provider that accepts `plain` lets a client believe it has protection it does not have. The `redirect_uri` must match a registered one exactly — never by prefix — and an unregistered one is refused *here* rather than redirected to, which is the difference between a provider and an open redirect. A code is single-use, expires in sixty seconds, is bound to its client and its `redirect_uri`, and dies on any failed check rather than staying available for the next attempt.
-- **Administration** — `POST /admin/users`, `PUT /admin/users/:sub`, `GET /admin/users`, `POST /admin/clients`, `POST /admin/quirk`. This is what the demonstration and the test suite drive.
+- **The refresh grant** — `POST /token` with `grant_type=refresh_token`. The code exchange issues a refresh token; presenting it returns a **new ID token carrying the person's current claims**, and rotates the refresh token so the presented one dies with the exchange, exactly as a real provider does. This is what Canon confirms a live session against ([SECURITY.md](../SECURITY.md) R9): a **disabled** person's refresh is refused with `invalid_grant`, which is the event the whole sixty-second guarantee for people is about.
+- **Administration** — `POST /admin/users`, `PUT /admin/users/:sub`, `GET /admin/users`, `POST /admin/clients`, `POST /admin/quirk`, `POST /admin/groups-claim`. This is what the demonstration and the test suite drive.
 
-ID tokens are RS256, signed with a key generated at start-up, carrying `iss`, `sub`, `aud`, `exp`, `iat`, `nonce`, `name`, `email` and `email_verified`. RS256 because that is the algorithm a Node client can verify with no dependency at all: `crypto.verify('RSA-SHA256', …)` against a public key built from the published JWK.
+ID tokens are RS256, signed with a key generated at start-up, carrying `iss`, `sub`, `aud`, `exp`, `iat`, `nonce`, `name`, `email`, `email_verified` and — when the person is in one — their **groups**. RS256 because that is the algorithm a Node client can verify with no dependency at all: `crypto.verify('RSA-SHA256', …)` against a public key built from the published JWK.
+
+## Groups, and switching somebody off
+
+Two things a provider does that Canon now depends on, so the stub does them properly:
+
+```sh
+# Group membership is a property of the person, changed while a session is live.
+curl -s :3200/admin/users/dana -X PUT -d '{"groups":["Canon-Compliance-Editors"]}'
+curl -s :3200/admin/users/dana -X PUT -d '{"groups":[]}'          # and taken away again
+
+# The claim name is configuration: Entra says `groups`, plenty of Okta
+# authorization servers say `roles`. Canon's own is CANON_OIDC_GROUPS_CLAIM.
+curl -s :3200/admin/groups-claim -d '{"claim":"roles"}'
+
+# Switched off at the provider. Every refresh is refused from this moment, so
+# Canon ends the person's sessions at their next confirmation — within a minute.
+curl -s :3200/admin/users/dana -X PUT -d '{"disabled":true}'
+```
+
+The claim is **absent** rather than an empty array when somebody is in no group, because both are real provider behaviours and Canon has to read either as "no groups".
 
 ## Quirks: a stub you can push off the happy path
 
@@ -23,7 +44,7 @@ curl -s :3200/admin/quirk -d '{"quirk":"bad_signature"}'   # signed by a key the
 curl -s :3200/admin/quirk -d '{"quirk":"none"}'            # back to honest
 ```
 
-`none` (the default), `wrong_issuer`, `wrong_audience`, `expired`, `bad_signature`, `unknown_kid`, `wrong_nonce`, `no_nonce`, `alg_none`. Nothing but a stub should ever have this, which is one of the reasons this is not deployable.
+`none` (the default), `wrong_issuer`, `wrong_audience`, `expired`, `bad_signature`, `unknown_kid`, `wrong_nonce`, `no_nonce`, `alg_none`, and `no_refresh_token` — a provider that issues none, so Canon's "a session it cannot confirm does not survive its window" path is tested against a provider that really behaves that way. Nothing but a stub should ever have this, which is one of the reasons this is not deployable.
 
 ## Honest liberties of a test double
 
