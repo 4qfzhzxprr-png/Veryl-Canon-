@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { Actor, CanonError } from './model.js';
+import { Actor, CanonError, PageStatus } from './model.js';
 import { STOPWORDS } from './embeddings.js';
-import type { RetrievalService } from './retrieval.js';
+import { ANSWERABLE_STATUSES, type RetrievalService } from './retrieval.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
 // CORE-PLAN.md. Generation happens under the record's rules, and the rules are
@@ -38,6 +38,14 @@ export interface AnswerResponse {
   citations: Citation[];
   refused: boolean;
   reason?: RefusalReason;
+  /**
+   * The cited pages that are past their review date (status Needs Update).
+   * Present only when there is at least one, so an answer drawn entirely from
+   * current pages carries no extra noise — and so the shape every existing
+   * caller reads is unchanged. The answer text says the same thing in words;
+   * this is the machine-readable half, for a UI that wants to flag it.
+   */
+  pastReview?: { pageId: string; title: string }[];
 }
 
 export interface AskRequest {
@@ -62,6 +70,13 @@ export interface AnswerPassage {
   title: string;
   version: number;
   text: string;
+  /**
+   * The standing of the page the passage came from. Optional so a generator can
+   * be exercised without one; when it says `needs_update`, the page is past its
+   * review date and the generator is expected to say so rather than quietly
+   * present it as current.
+   */
+  status?: PageStatus;
 }
 
 export interface GeneratedAnswer {
@@ -95,9 +110,20 @@ export const extractiveGenerator: AnswerGenerator = {
   generate({ passages }) {
     const usable = passages.filter((p) => p.text.trim().length > 0);
     if (usable.length === 0) return null;
-    const lines = usable.map((p) => `“${p.text.trim()}” — ${p.title} (version ${p.version})`);
+    // A passage from a page past its review date is attributed as such, in the
+    // answer itself. The reader is told what the record is and how old the
+    // promise behind it is, in the same sentence — which is the whole point of
+    // citing a Needs Update page rather than hiding it.
+    const lines = usable.map(
+      (p) => `“${p.text.trim()}” — ${p.title} (version ${p.version}${p.status === 'needs_update' ? ', past review' : ''})`,
+    );
+    const stale = usable.filter((p) => p.status === 'needs_update');
+    const notice = stale.length
+      ? `\n\nNote: ${stale.length === 1 ? 'one of these pages is' : `${stale.length} of these pages are`} past ` +
+        'the review date its owner set, and marked Needs Update. It is still the official record; it has not been re-approved recently.'
+      : '';
     return {
-      answer: `The record says:\n\n${lines.join('\n\n')}`,
+      answer: `The record says:\n\n${lines.join('\n\n')}${notice}`,
       citedPageIds: usable.map((p) => p.pageId),
     };
   },
@@ -206,10 +232,41 @@ export class AnswerService {
       collectionIds: request.collectionIds,
     });
 
-    // Belt and braces over the SQL filter: nothing that is not a Canonical,
-    // non-Note page can reach the generator, whatever retrieval returns.
+    // Belt and braces over the SQL filter: nothing outside the answerable
+    // statuses, and nothing that is a Note, can reach the generator, whatever
+    // retrieval returns.
+    //
+    // MAY A GROUNDED ANSWER CITE A NEEDS UPDATE PAGE? Yes, and it must say so.
+    //
+    // The case against is the obvious one: Canonical is the boundary of what the
+    // suite will act on (DATA-BACKBONE.md §4), and a page past its review date
+    // has, by the record's own admission, not been checked lately.
+    //
+    // The case for, which wins:
+    //
+    // 1. Nothing has replaced it. A Needs Update page is a page that WAS
+    //    approved, still has an owner, and is still the only official answer the
+    //    record holds. Dropping it does not give the asker a better answer; it
+    //    gives them "the record is silent" about a policy that plainly exists.
+    //    That is not caution, it is a false statement about the record.
+    // 2. Refusing would make the feature punish honesty. Setting a review date
+    //    is a voluntary promise to re-read a page. If the reward for making that
+    //    promise is that the page vanishes from answers the day it comes due,
+    //    the rational move is never to set a review date — and freshness dies of
+    //    its own incentives. The whole point of FEATURES.md §3 is that stale
+    //    knowledge ANNOUNCES itself; announcing is not the same as disappearing.
+    // 3. The honest thing is available and cheap. The answer can carry the page
+    //    AND its standing: the generator marks the passage "past review", the
+    //    response carries `pastReview`, and the reader decides. CORE-PLAN.md §7
+    //    warns against the confident wrong answer — a cited, dated, flagged
+    //    quotation is the opposite of one.
+    //
+    // Two limits keep this from widening: an archived page is still gone (it
+    // left the record deliberately), and a Draft or a Note still cannot be cited
+    // at all. Needs Update is the only addition, and only because it is the one
+    // status that means "Canonical, and overdue" rather than "not Canonical".
     const eligible = candidates.filter(
-      (c) => c.status === 'canonical' && c.type !== 'note' && c.passage.trim().length > 0,
+      (c) => ANSWERABLE_STATUSES.includes(c.status) && c.type !== 'note' && c.passage.trim().length > 0,
     );
 
     // The topical gate. A directly retrieved candidate must be about the
@@ -221,7 +278,7 @@ export class AnswerService {
       anchors.length === 0 ? [] : eligible.filter((c) => c.via === null ? anchored.has(c.pageId) : anchored.has(c.via.fromPageId))
     )
       .slice(0, MAX_CITED_PASSAGES)
-      .map((c) => ({ pageId: c.pageId, title: c.title, version: c.version, text: c.passage }));
+      .map((c) => ({ pageId: c.pageId, title: c.title, version: c.version, text: c.passage, status: c.status }));
 
     const generated = passages.length > 0 ? this.generator.generate({ question, passages }) : null;
 
@@ -252,7 +309,17 @@ export class AnswerService {
       false,
       citations.map((c) => c.pageId),
     );
-    return { answer: generated.answer, citations, refused: false };
+    // Which of the cited pages are past review, named so a caller does not have
+    // to parse the prose. Omitted entirely when none are.
+    const pastReview = passages
+      .filter((p) => p.status === 'needs_update' && citations.some((c) => c.pageId === p.pageId))
+      .map((p) => ({ pageId: p.pageId, title: p.title }));
+    return {
+      answer: generated.answer,
+      citations,
+      refused: false,
+      ...(pastReview.length ? { pastReview } : {}),
+    };
   }
 
   // Answers are agent-facing as well as person-facing, so every ask is on the

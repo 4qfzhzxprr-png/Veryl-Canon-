@@ -289,7 +289,7 @@ test('proposals: a reviewed type keeps its rules — Canonical only through its 
   const complete = store.createProposal(bot.id, page.id, {
     rationale: 'The retention period in the source system is now 7 years.',
     body: 'Records are kept 7 years.',
-    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-09-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-09-01', reviewDate: '2099-01-01' },
   });
   const decision = store.acceptProposal(marc.id, complete.id, {});
 

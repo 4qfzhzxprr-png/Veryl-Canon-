@@ -44,7 +44,7 @@ function submitForReview(env: ReturnType<typeof setup>, title = 'Access policy')
   const page = env.store.createPage(env.marc.id, { collectionId: env.collection.id, type: 'policy', title });
   env.store.editDraft(env.marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: env.marc.id, approverId: env.iris.id },
+    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2099-01-01' },
   });
   env.store.submitForReview(env.marc.id, page.id);
   return page;

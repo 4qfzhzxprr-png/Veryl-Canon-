@@ -112,7 +112,10 @@ const RULES: Rule[] = [
   { method: 'POST', pattern: /^\/collections$/, action: 'write', scope: () => ({ kind: 'newCollection' }) },
   {
     method: 'GET',
-    pattern: /^\/collections\/([^/]+)(?:\/(?:tree|members))?$/,
+    // `health` joins tree and members here rather than getting a rule of its
+    // own: the record health of a collection is a read of that collection, and
+    // the collection in the path is the thing to check it against.
+    pattern: /^\/collections\/([^/]+)(?:\/(?:tree|members|health))?$/,
     action: 'read',
     scope: (g) => ({ kind: 'collection', id: g[0] ?? '' }),
   },
@@ -195,6 +198,40 @@ const RULES: Rule[] = [
   // collection listings and searches get (REGISTRY-CONTRACT.md §4.2).
   { method: 'GET', pattern: /^\/sources$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'sources' }) },
   { method: 'GET', pattern: /^\/sources\/([^/]+)$/, action: 'read', scope: (g) => ({ kind: 'source', id: g[0] ?? '' }) },
+
+  // Structured queries (FEATURES.md §6) are `read`. Running one spans
+  // collections, so its result is narrowed exactly as a search result is —
+  // `filter: 'search'` is reused deliberately rather than copied: the narrowing
+  // is "keep the rows whose `collectionId` the Registry permits", and a query
+  // result row carries `collectionId` for the same reason a search hit does.
+  // Reusing it means the day that rule changes, it changes once.
+  { method: 'POST', pattern: /^\/queries\/run$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'search' }) },
+  // A saved query is a stored filter belonging to the actor who saved it, not a
+  // piece of the record: it names no collection, holds no page content, and is
+  // only ever readable by its owner. So these are `read` with no collection to
+  // check — the same treatment `GET /notifications` gets, and for the same
+  // reason. Note that `GET /queries/:id` deliberately returns the DEFINITION and
+  // no results: results would span collections inside an object, where the
+  // narrowing above cannot reach them. Results come from POST /queries/run.
+  { method: 'POST', pattern: /^\/queries$/, action: 'read', scope: NONE },
+  { method: 'GET', pattern: /^\/queries$/, action: 'read', scope: NONE },
+  { method: 'GET', pattern: /^\/queries\/([^/]+)$/, action: 'read', scope: NONE },
+  { method: 'DELETE', pattern: /^\/queries\/([^/]+)$/, action: 'read', scope: NONE },
+
+  // The freshness sweep is NOT classified, and that is the decision, not an
+  // omission. An unclassified route is refused to agents (see `classify` and
+  // `enforce` below), so `POST /maintenance/freshness` is closed to every agent
+  // however wide its passport. FEATURES.md §5 draws the line in these words:
+  // agents "help keep the record true … nudging owners when review dates near.
+  // People stay the approvers; agents do the tedious watching." The sweep is not
+  // watching — it changes the status of pages across every collection at once
+  // and mails their owners, which is an operator's act with the blast radius of
+  // one call. The Registry's vocabulary cannot express "may run maintenance"
+  // (REGISTRY-CONTRACT.md §4 has read, comment, write and nothing else), so
+  // granting it would mean stretching `write` to cover something no passport
+  // ever meant to grant. Default no; if a deployment wants an unattended sweep,
+  // it runs the built-in timer under a named maintenance actor (index.ts), which
+  // is attributable and configured once rather than delegated per agent.
 
   // Registering, changing, or removing a source is `write` AND requires `"*"`,
   // exactly as creating a collection does, and for the same reason: a source

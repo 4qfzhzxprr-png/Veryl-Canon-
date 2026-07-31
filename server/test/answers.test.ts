@@ -45,7 +45,7 @@ function publishCanonical(
   parentId?: string,
 ) {
   const page = store.createPage(editorId, { collectionId, type: 'policy', title, ...(parentId ? { parentId } : {}) });
-  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId } });
+  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate: '2099-01-01' } });
   store.submitForReview(editorId, page.id);
   return store.approve(approverId, page.id);
 }
@@ -84,7 +84,7 @@ test('ask: Canonical pages only — never a Draft, never a Note, never archived'
   const drafted = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Pangolin draft' });
   store.editDraft(marc.id, drafted.id, {
     body: 'The pangolin retention period is four years.',
-    fields: { ownerId: marc.id, approverId: iris.id },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
   });
   // A page that reached Canonical and was then archived.
   const retired = publishCanonical(
@@ -117,7 +117,7 @@ test('ask: Canonical pages only — never a Draft, never a Note, never archived'
   // Re-publishing a Canonical page drops the mark, and with it the answer.
   store.editDraft(marc.id, policy.id, {
     body: 'The pangolin retention period is seven years.',
-    fields: { ownerId: marc.id, approverId: iris.id },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
   });
   store.publish(marc.id, policy.id);
   const after = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
@@ -288,7 +288,7 @@ test('API: POST /ask and GET /pages/:id/related over HTTP', async () => {
 
     const publish = async (title: string, body: string, parentId?: string) => {
       const page = (await call('POST', '/pages', dana.id, { collectionId: c.id, type: 'policy', title, parentId })).json;
-      await call('PUT', `/pages/${page.id}/draft`, dana.id, { body, fields: { ownerId: dana.id, approverId: iris.id } });
+      await call('PUT', `/pages/${page.id}/draft`, dana.id, { body, fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' } });
       await call('POST', `/pages/${page.id}/submit`, dana.id);
       return (await call('POST', `/pages/${page.id}/approve`, iris.id)).json;
     };

@@ -168,7 +168,7 @@ test('notifications: submitting a policy notifies its named approver', () => {
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
 
@@ -199,7 +199,7 @@ test('notifications: approval notifies the draft editor and page owner, deduplic
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Retention' });
   store.editDraft(marc.id, page.id, {
     body: 'Keep 7 years.',
-    fields: { ownerId: marc.id, approverId: iris.id },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
   store.approve(iris.id, page.id);
@@ -217,7 +217,7 @@ test('notifications: send-back notifies the editor and owner, carrying the comme
   // Dana owns the page; Marc edits the draft. Both should hear about a send-back.
   store.editDraft(marc.id, page.id, {
     body: 'Vague.',
-    fields: { ownerId: dana.id, approverId: iris.id },
+    fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
   store.sendBack(iris.id, page.id, { comment: 'Name the systems in scope.' });

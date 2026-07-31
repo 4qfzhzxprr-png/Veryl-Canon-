@@ -1,9 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { COMMENTS_SCHEMA } from './comments.js';
 import { EMBEDDINGS_SCHEMA } from './embeddings.js';
+import { ensurePageFreshnessSchema } from './freshness.js';
 import { IMPORTS_SCHEMA } from './import.js';
 import { NOTIFICATIONS_SCHEMA } from './notify.js';
 import { PROPOSALS_SCHEMA } from './proposals.js';
+import { QUERIES_SCHEMA } from './queries.js';
 import { REFERENCES_SCHEMA } from './references.js';
 import { SOURCES_SCHEMA } from './sources.js';
 
@@ -49,10 +51,11 @@ CREATE TABLE IF NOT EXISTS pages (
   type            TEXT NOT NULL CHECK (type IN ('policy', 'spec', 'plan', 'note')),
   title           TEXT NOT NULL,
   status          TEXT NOT NULL DEFAULT 'draft'
-                  CHECK (status IN ('draft', 'in_review', 'canonical', 'archived')),
+                  CHECK (status IN ('draft', 'in_review', 'canonical', 'needs_update', 'archived')),
   owner_id        TEXT REFERENCES actors(id),
   approver_id     TEXT REFERENCES actors(id),
   effective_date  TEXT,
+  review_date     TEXT,
   current_version INTEGER,
   created_by      TEXT NOT NULL REFERENCES actors(id),
   created_at      TEXT NOT NULL
@@ -125,5 +128,10 @@ export function openDb(path: string): DatabaseSync {
   db.exec(SOURCES_SCHEMA); // federated sources (DATA-BACKBONE.md §6); DDL in sources.ts
   db.exec(REFERENCES_SCHEMA); // reference fields and their labelled cache; DDL in references.ts
   db.exec(PROPOSALS_SCHEMA); // agent proposals (FEATURES.md §5, Next tier); DDL in proposals.ts
+  db.exec(QUERIES_SCHEMA); // saved structured queries (Next tier); DDL in queries.ts
+  // Freshness (Next tier) added `review_date` and the `needs_update` status to
+  // pages. A record created by an earlier build is brought up to date here, as
+  // notify.ts does for its delivery columns; a fresh database already matches.
+  ensurePageFreshnessSchema(db);
   return db;
 }

@@ -266,6 +266,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 .badge-draft { color: var(--muted); border: 1px solid var(--border-strong); background: transparent; }
 .badge-in_review { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
 .badge-canonical { color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); }
+/* Needs Update: the Canonical badge's shape, in the caution colour. A page past
+   its review date is still the official record — it has not been demoted, it
+   has been flagged — so it must not read like a draft. */
+.badge-needs_update { color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber); }
 .badge-archived { color: var(--muted); background: var(--surface-2); border: 1px solid var(--surface-2); }
 /* Federated values: stale is a caution, not an alarm — the same amber the
    record already uses for "waiting on someone". */

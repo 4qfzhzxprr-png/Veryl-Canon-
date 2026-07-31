@@ -1,0 +1,551 @@
+import { randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import { Actor, CanonError, DocType, DOC_TYPES, PageStatus, Role, ROLE_RANK, TYPE_RULES } from './model.js';
+import { isIsoDate, isPastReview, today } from './freshness.js';
+
+// Structured queries (FEATURES.md §6): "Query the record by its fields: 'all
+// Canonical policies owned by Compliance with a review date in the next 60
+// days.' Save queries and pin them to dashboards." And record health
+// (FEATURES.md §8), which is that same query surface pointed at the record
+// itself: pages past review, pages without owners, orphaned pages, stale drafts.
+//
+// THE ONE DESIGN DECISION THIS FILE MAKES
+//
+// A structured filter, not a query language. Jira has JQL and JQL has a parser,
+// and a parser is where "structure over prose" (DATA-BACKBONE.md §2, principle
+// 2) quietly stops being true: the moment a filter is a string, somebody writes
+// one by hand, somebody else builds one by concatenation, and the fields the
+// rules depend on are back inside prose. So `PageQuery` is a typed object whose
+// every field names a real column, validated before it touches SQL, and the
+// SQL is built from a fixed vocabulary with bound parameters only. A UI builds
+// one from dropdowns; an agent builds one from JSON; neither can express
+// anything this file has not already agreed to.
+//
+// PERMISSIONS ARE IN THE SELECT, NEVER AFTER IT
+//
+// Every candidate query joins `collection_members` for the asking actor, the
+// way search and retrieval do. A non-member's query returns nothing because
+// nothing was ever selected — not because a filter ran afterwards and could one
+// day be forgotten. Saved queries add nothing to this: a saved query is a stored
+// filter, run under the permissions of whoever runs it.
+//
+// WHAT IS DELIBERATELY NOT HERE
+//
+// `labels`. FEATURES.md §1 lists labels, but the record has no label field yet —
+// no column, no table, no way to put one on a page. A filter over a field that
+// does not exist would either always match nothing or quietly lie about being
+// applied, and both are worse than its absence. When labels land, they land as a
+// structured field and get a `labels` member here; nothing else changes.
+
+export const QUERIES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS saved_queries (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  filter_json TEXT NOT NULL,
+  created_by  TEXT NOT NULL REFERENCES actors(id),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_queries_creator ON saved_queries(created_by);
+`;
+
+export type QuerySort = 'reviewDate' | 'updatedAt' | 'createdAt' | 'title' | 'status';
+const SORTS: readonly QuerySort[] = ['reviewDate', 'updatedAt', 'createdAt', 'title', 'status'];
+
+export type QueryDirection = 'asc' | 'desc';
+
+const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical', 'needs_update', 'archived'];
+
+/**
+ * The filter. Every member is optional; an empty query means "every page I may
+ * see". Within a member the values are OR-ed (types: ['policy','spec'] is
+ * either); across members they are AND-ed, which is what a person means by
+ * "Canonical policies owned by Compliance".
+ */
+export interface PageQuery {
+  collectionIds?: string[];
+  types?: DocType[];
+  statuses?: PageStatus[];
+  ownerIds?: string[];
+  approverIds?: string[];
+  /** True: only pages with an owner. False: only pages without one (health's question). */
+  hasOwner?: boolean;
+  /** Only pages with a review date at all — the ones freshness can act on. */
+  hasReviewDate?: boolean;
+  reviewDateBefore?: string; // exclusive, ISO date
+  reviewDateAfter?: string; // exclusive, ISO date
+  updatedBefore?: string; // exclusive, ISO date or timestamp
+  updatedAfter?: string; // exclusive
+  createdBefore?: string;
+  createdAfter?: string;
+  sort?: QuerySort;
+  direction?: QueryDirection;
+  limit?: number;
+}
+
+/**
+ * One row. The page's structured fields, flat, plus `updatedAt` — the time the
+ * current published version was written, falling back to the page's creation
+ * when nothing is published yet, because "when did this last change" is a
+ * question about the record, not about whether a draft happens to exist.
+ */
+export interface QueryResultPage {
+  pageId: string;
+  collectionId: string;
+  parentId: string | null;
+  type: DocType;
+  title: string;
+  status: PageStatus;
+  ownerId: string | null;
+  approverId: string | null;
+  effectiveDate: string | null;
+  reviewDate: string | null;
+  currentVersion: number | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Convenience the caller would otherwise recompute: is the review date behind us? */
+  pastReview: boolean;
+}
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  query: PageQuery;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const DEFAULT_QUERY_LIMIT = 50;
+export const MAX_QUERY_LIMIT = 500;
+
+/**
+ * How many pages one health summary reads. A cap rather than an unbounded scan,
+ * for the same reason the audit CSV has one; when it bites, the summary says so
+ * in `truncated` instead of quietly under-counting.
+ */
+export const HEALTH_SCAN_LIMIT = 2000;
+
+/** Drafts older than this many days are stale, unless the caller says otherwise. */
+export const DEFAULT_STALE_DRAFT_DAYS = 30;
+
+/** FEATURES.md §8's list, in its smallest honest form. */
+export interface CollectionHealth {
+  collectionId: string;
+  at: string; // the day the counts were judged against
+  pages: number; // non-archived pages scanned
+  pastReview: number;
+  needsUpdate: number;
+  withoutOwner: number;
+  orphaned: number;
+  staleDrafts: number;
+  staleDraftDays: number;
+  /** The scan hit HEALTH_SCAN_LIMIT: these counts are a floor, not a total. */
+  truncated: boolean;
+}
+
+// The minimal slice of CanonStore this service needs; CanonStore satisfies it.
+export interface QueryHost {
+  getActor(id: string): Actor;
+  roleOf(actorId: string, collectionId: string): Role | null;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+export class QueryService {
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly host: QueryHost,
+  ) {}
+
+  // ---- running a query -------------------------------------------------
+
+  /**
+   * Run a filter for one actor. The permission join is part of the candidate
+   * SELECT, so a page in a collection the actor does not belong to is never
+   * selected, never counted, and never returned.
+   */
+  run(actorId: string, query: PageQuery = {}): QueryResultPage[] {
+    this.host.getActor(actorId);
+    const filter = validateQuery(query);
+
+    const clauses: string[] = [];
+    const params: (string | number)[] = [actorId];
+
+    if (filter.collectionIds?.length) {
+      clauses.push(`p.collection_id IN (${placeholders(filter.collectionIds.length)})`);
+      params.push(...filter.collectionIds);
+    }
+    if (filter.types?.length) {
+      clauses.push(`p.type IN (${placeholders(filter.types.length)})`);
+      params.push(...filter.types);
+    }
+    if (filter.statuses?.length) {
+      clauses.push(`p.status IN (${placeholders(filter.statuses.length)})`);
+      params.push(...filter.statuses);
+    } else {
+      // Archived pages leave search and answers (FEATURES.md §7); a query that
+      // does not ask for them by name does not get them either. Naming
+      // 'archived' in `statuses` is how you ask.
+      clauses.push("p.status != 'archived'");
+    }
+    if (filter.ownerIds?.length) {
+      clauses.push(`p.owner_id IN (${placeholders(filter.ownerIds.length)})`);
+      params.push(...filter.ownerIds);
+    }
+    if (filter.approverIds?.length) {
+      clauses.push(`p.approver_id IN (${placeholders(filter.approverIds.length)})`);
+      params.push(...filter.approverIds);
+    }
+    if (filter.hasOwner === true) clauses.push('p.owner_id IS NOT NULL');
+    if (filter.hasOwner === false) clauses.push('p.owner_id IS NULL');
+    if (filter.hasReviewDate === true) clauses.push('p.review_date IS NOT NULL');
+    if (filter.hasReviewDate === false) clauses.push('p.review_date IS NULL');
+    if (filter.reviewDateBefore) {
+      clauses.push('p.review_date IS NOT NULL AND p.review_date < ?');
+      params.push(filter.reviewDateBefore);
+    }
+    if (filter.reviewDateAfter) {
+      clauses.push('p.review_date IS NOT NULL AND p.review_date > ?');
+      params.push(filter.reviewDateAfter);
+    }
+    if (filter.updatedBefore) {
+      clauses.push('COALESCE(v.created_at, p.created_at) < ?');
+      params.push(filter.updatedBefore);
+    }
+    if (filter.updatedAfter) {
+      clauses.push('COALESCE(v.created_at, p.created_at) > ?');
+      params.push(filter.updatedAfter);
+    }
+    if (filter.createdBefore) {
+      clauses.push('p.created_at < ?');
+      params.push(filter.createdBefore);
+    }
+    if (filter.createdAfter) {
+      clauses.push('p.created_at > ?');
+      params.push(filter.createdAfter);
+    }
+
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(filter.limit ?? DEFAULT_QUERY_LIMIT, 1), MAX_QUERY_LIMIT);
+    const order = orderBy(filter.sort ?? 'updatedAt', filter.direction ?? 'desc');
+
+    const rows = this.db
+      .prepare(
+        `SELECT p.id, p.collection_id, p.parent_id, p.type, p.title, p.status, p.owner_id, p.approver_id,
+                p.effective_date, p.review_date, p.current_version, p.created_at,
+                COALESCE(v.created_at, p.created_at) AS updated_at
+           FROM pages p
+           JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
+           LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+           ${where}
+           ${order}
+           LIMIT ${limit}`,
+      )
+      .all(...params) as Record<string, unknown>[];
+
+    const on = today();
+    return rows.map((r) => ({
+      pageId: r.id as string,
+      collectionId: r.collection_id as string,
+      parentId: (r.parent_id as string) ?? null,
+      type: r.type as DocType,
+      title: r.title as string,
+      status: r.status as PageStatus,
+      ownerId: (r.owner_id as string) ?? null,
+      approverId: (r.approver_id as string) ?? null,
+      effectiveDate: (r.effective_date as string) ?? null,
+      reviewDate: (r.review_date as string) ?? null,
+      currentVersion: (r.current_version as number) ?? null,
+      createdAt: r.created_at as string,
+      updatedAt: r.updated_at as string,
+      pastReview: isPastReview((r.review_date as string) ?? null, on),
+    }));
+  }
+
+  // ---- saved queries ---------------------------------------------------
+
+  /**
+   * Save a filter under a name. Owned by its creator: only they list it, read
+   * it, or delete it. A named collection the creator cannot see is refused here
+   * rather than silently dropped at run time, so a saved query means what its
+   * author thinks it means.
+   */
+  save(actorId: string, input: { name: string; query?: PageQuery }): SavedQuery {
+    const actor = this.host.getActor(actorId);
+    const name = input?.name?.trim();
+    if (!name) throw new CanonError('invalid', 'A saved query requires a name');
+    const query = validateQuery(input.query ?? {});
+    for (const collectionId of query.collectionIds ?? []) this.requireRole(actorId, collectionId, 'view');
+
+    const id = randomUUID();
+    const at = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO saved_queries (id, name, filter_json, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, name, JSON.stringify(query), actorId, at, at);
+    this.audit(actor, 'query.save', { details: { queryId: id, name } });
+    return this.get(actorId, id);
+  }
+
+  list(actorId: string): SavedQuery[] {
+    this.host.getActor(actorId);
+    const rows = this.db
+      .prepare('SELECT * FROM saved_queries WHERE created_by = ? ORDER BY created_at, id')
+      .all(actorId) as Record<string, unknown>[];
+    return rows.map((r) => toSavedQuery(r));
+  }
+
+  get(actorId: string, id: string): SavedQuery {
+    this.host.getActor(actorId);
+    const row = this.db.prepare('SELECT * FROM saved_queries WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) throw new CanonError('not_found', `No such saved query: ${id}`);
+    if ((row.created_by as string) !== actorId) {
+      throw new CanonError('forbidden', 'A saved query belongs to the actor who saved it');
+    }
+    return toSavedQuery(row);
+  }
+
+  remove(actorId: string, id: string): void {
+    const actor = this.host.getActor(actorId);
+    const saved = this.get(actorId, id); // ownership, and not_found, in one place
+    this.db.prepare('DELETE FROM saved_queries WHERE id = ?').run(id);
+    this.audit(actor, 'query.delete', { details: { queryId: id, name: saved.name } });
+  }
+
+  /** Run a stored filter. Ownership is checked exactly as `get` checks it. */
+  runSaved(actorId: string, id: string, overrides: Partial<PageQuery> = {}): QueryResultPage[] {
+    const saved = this.get(actorId, id);
+    return this.run(actorId, { ...saved.query, ...overrides });
+  }
+
+  // ---- record health ---------------------------------------------------
+
+  /**
+   * The health of one collection, measured rather than guessed (FEATURES.md §8),
+   * and built on the query surface above rather than beside it — one scan of the
+   * collection's non-archived pages, with every count derived from it. Reading
+   * health needs `view`: it is a read of the record, so it is classified `read`
+   * for agents too.
+   */
+  health(
+    actorId: string,
+    collectionId: string,
+    options: { staleDraftDays?: number; on?: string } = {},
+  ): CollectionHealth {
+    this.host.getActor(actorId);
+    this.requireRole(actorId, collectionId, 'view');
+    const on = options.on ?? today();
+    if (!isIsoDate(on)) throw new CanonError('invalid', `A health date is an ISO date (YYYY-MM-DD), not '${on}'`);
+    const staleDraftDays = Math.min(Math.max(Math.trunc(options.staleDraftDays ?? DEFAULT_STALE_DRAFT_DAYS), 0), 3650);
+
+    const pages = this.run(actorId, { collectionIds: [collectionId], limit: HEALTH_SCAN_LIMIT, sort: 'createdAt', direction: 'asc' });
+
+    // The collection home. The record has no `homePageId` field yet, so the home
+    // is read off the tree the way a reader would: the first root page created
+    // in the collection. Every OTHER parentless page is the orphan FEATURES.md
+    // §8 means — knowledge sitting outside the tree, reachable only by search.
+    const home = pages.find((p) => p.parentId === null)?.pageId ?? null;
+
+    // Which types owe the record an owner is TYPE_RULES' business, not a list
+    // hard-coded here: an unowned Note is not a health problem, because a Note
+    // was never asked for an owner.
+    const owed = new Set(DOC_TYPES.filter((t) => TYPE_RULES[t].requiresOwner));
+    const staleBefore = new Date(Date.parse(`${on}T00:00:00.000Z`) - staleDraftDays * 86_400_000).toISOString();
+
+    let pastReview = 0;
+    let needsUpdate = 0;
+    let withoutOwner = 0;
+    let orphaned = 0;
+    let staleDrafts = 0;
+    for (const page of pages) {
+      if (isPastReview(page.reviewDate, on)) pastReview += 1;
+      if (page.status === 'needs_update') needsUpdate += 1;
+      if (owed.has(page.type) && !page.ownerId) withoutOwner += 1;
+      if (page.parentId === null && page.pageId !== home) orphaned += 1;
+      if (page.status === 'draft' && page.updatedAt < staleBefore) staleDrafts += 1;
+    }
+
+    return {
+      collectionId,
+      at: on,
+      pages: pages.length,
+      pastReview,
+      needsUpdate,
+      withoutOwner,
+      orphaned,
+      staleDrafts,
+      staleDraftDays,
+      truncated: pages.length >= HEALTH_SCAN_LIMIT,
+    };
+  }
+
+  // ---- internals -------------------------------------------------------
+
+  private requireRole(actorId: string, collectionId: string, needed: Role): void {
+    const role = this.host.roleOf(actorId, collectionId);
+    if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
+      throw new CanonError('forbidden', `Requires ${needed} access to this collection`, {
+        collectionId,
+        needed,
+        held: role,
+      });
+    }
+  }
+
+  private audit(
+    actor: Actor,
+    action: string,
+    ctx: { collectionId?: string; pageId?: string; details?: Record<string, unknown> } = {},
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO audit_events (at, actor_id, actor_kind, action, collection_id, page_id, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        nowIso(),
+        actor.id,
+        actor.kind,
+        action,
+        ctx.collectionId ?? null,
+        ctx.pageId ?? null,
+        JSON.stringify(ctx.details ?? {}),
+      );
+  }
+}
+
+// ---- validation ---------------------------------------------------------
+//
+// Everything a query can say is checked here, before any SQL exists. A member
+// naming an unknown type, status, or sort is an `invalid` refusal rather than a
+// silently empty result: a dashboard showing nothing because of a typo is a
+// worse lie than an error message.
+
+function placeholders(n: number): string {
+  return new Array(n).fill('?').join(', ');
+}
+
+const ORDER_COLUMN: Record<QuerySort, string> = {
+  reviewDate: 'p.review_date',
+  updatedAt: 'updated_at',
+  createdAt: 'p.created_at',
+  title: 'p.title',
+  status: 'p.status',
+};
+
+function orderBy(sort: QuerySort, direction: QueryDirection): string {
+  const column = ORDER_COLUMN[sort];
+  const dir = direction === 'asc' ? 'ASC' : 'DESC';
+  // NULLs last whichever way the sort runs: a page with no review date is not
+  // the most urgent thing in a review-date list, in either direction.
+  return `ORDER BY (${column} IS NULL), ${column} ${dir}, p.id ASC`;
+}
+
+function stringList(value: unknown, field: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const list = Array.isArray(value) ? value : [value];
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string' || !item.trim()) {
+      throw new CanonError('invalid', `${field} takes ids as strings`);
+    }
+    if (!out.includes(item)) out.push(item);
+  }
+  return out.length ? out : undefined;
+}
+
+function dateish(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') throw new CanonError('invalid', `${field} takes an ISO date`);
+  if (isIsoDate(value)) return value;
+  // A full timestamp is accepted for the updated/created windows, where the
+  // record stores instants; anything else is refused rather than guessed at.
+  if (!Number.isNaN(Date.parse(value))) return value;
+  throw new CanonError('invalid', `${field} takes an ISO date (YYYY-MM-DD), not '${value}'`);
+}
+
+function boolish(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'boolean') throw new CanonError('invalid', `${field} takes true or false`);
+  return value;
+}
+
+/** Validate and normalise a filter. Exported so a saved query is stored clean. */
+export function validateQuery(raw: PageQuery): PageQuery {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new CanonError('invalid', 'A query is an object of filters');
+  }
+  const query: PageQuery = {};
+
+  const collectionIds = stringList(raw.collectionIds, 'collectionIds');
+  if (collectionIds) query.collectionIds = collectionIds;
+
+  const types = stringList(raw.types, 'types');
+  if (types) {
+    for (const type of types) {
+      if (!DOC_TYPES.includes(type as DocType)) throw new CanonError('invalid', `Unknown document type: ${type}`);
+    }
+    query.types = types as DocType[];
+  }
+
+  const statuses = stringList(raw.statuses, 'statuses');
+  if (statuses) {
+    for (const status of statuses) {
+      if (!PAGE_STATUSES.includes(status as PageStatus)) {
+        throw new CanonError('invalid', `Unknown page status: ${status}`);
+      }
+    }
+    query.statuses = statuses as PageStatus[];
+  }
+
+  const ownerIds = stringList(raw.ownerIds, 'ownerIds');
+  if (ownerIds) query.ownerIds = ownerIds;
+  const approverIds = stringList(raw.approverIds, 'approverIds');
+  if (approverIds) query.approverIds = approverIds;
+
+  const hasOwner = boolish(raw.hasOwner, 'hasOwner');
+  if (hasOwner !== undefined) query.hasOwner = hasOwner;
+  const hasReviewDate = boolish(raw.hasReviewDate, 'hasReviewDate');
+  if (hasReviewDate !== undefined) query.hasReviewDate = hasReviewDate;
+
+  for (const field of ['reviewDateBefore', 'reviewDateAfter', 'updatedBefore', 'updatedAfter', 'createdBefore', 'createdAfter'] as const) {
+    const value = dateish(raw[field], field);
+    if (value !== undefined) query[field] = value;
+  }
+
+  if (raw.sort !== undefined && raw.sort !== null) {
+    if (!SORTS.includes(raw.sort)) throw new CanonError('invalid', `Unknown sort: ${String(raw.sort)}`);
+    query.sort = raw.sort;
+  }
+  if (raw.direction !== undefined && raw.direction !== null) {
+    if (raw.direction !== 'asc' && raw.direction !== 'desc') {
+      throw new CanonError('invalid', `Unknown sort direction: ${String(raw.direction)}`);
+    }
+    query.direction = raw.direction;
+  }
+  if (raw.limit !== undefined && raw.limit !== null) {
+    const limit = Number(raw.limit);
+    if (!Number.isFinite(limit) || limit < 1) throw new CanonError('invalid', 'limit is a positive number');
+    query.limit = Math.min(Math.trunc(limit), MAX_QUERY_LIMIT);
+  }
+  return query;
+}
+
+function toSavedQuery(row: Record<string, unknown>): SavedQuery {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    query: JSON.parse(row.filter_json as string) as PageQuery,
+    createdBy: row.created_by as string,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}

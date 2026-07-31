@@ -36,9 +36,10 @@ export interface RetrieveRequest {
   // Bounds the directly retrieved candidates. Graph expansion adds its
   // neighbours on top, under its own cap.
   limit?: number;
-  // Answers set this: Canonical pages only, never Drafts, never Notes
+  // Answers set this: the official record only, never Drafts, never Notes
   // (a Note can never carry the Canonical mark, so the status test is the
-  // load-bearing one; the type test says so out loud).
+  // load-bearing one; the type test says so out loud). "Official" means
+  // ANSWERABLE_STATUSES below — Canonical, and Canonical-that-is-past-review.
   canonicalOnly?: boolean;
   // Graph expansion, step 3. On by default; depth is clamped below.
   expand?: boolean;
@@ -85,6 +86,12 @@ export const PASSAGE_LENGTH = 320;
 // the server, and, with a hosted provider, a per-request bill. Refusing is the
 // honest answer: nothing that long is a question the record can answer.
 export const MAX_QUESTION_LENGTH = 4096;
+
+// What a grounded answer is allowed to draw on. Canonical, plus Needs Update —
+// a page the freshness sweep flipped because its review date passed. The
+// argument for including it, since this is the load-bearing line of the whole
+// freshness feature, is set out in full in answers.ts above `eligible`.
+export const ANSWERABLE_STATUSES: readonly PageStatus[] = ['canonical', 'needs_update'];
 
 // The content terms of a question, deduplicated and capped. Stopwords come
 // from embeddings.ts so both channels agree on what a content word is.
@@ -258,7 +265,7 @@ export class RetrievalService {
     if (terms.length === 0) return [];
     const base = {
       collectionId: request.collectionId,
-      status: canonicalOnly ? 'canonical' : undefined,
+      statuses: canonicalOnly ? ANSWERABLE_STATUSES : undefined,
       limit: LEXICAL_POOL,
       // The Knowledge API's narrowing reaches the pool as well as the
       // hydration gate, so a page outside the intersection never occupies a
@@ -323,7 +330,9 @@ export class RetrievalService {
     canonicalOnly: boolean,
     narrowing: Narrowing = {},
   ): HydratedPage | null {
-    const clause = canonicalOnly ? "AND p.status = 'canonical' AND p.type != 'note'" : "AND p.status != 'archived'";
+    const clause = canonicalOnly
+      ? `AND p.status IN (${ANSWERABLE_STATUSES.map((x) => `'${x}'`).join(', ')}) AND p.type != 'note'`
+      : "AND p.status != 'archived'";
     // An empty allow-list is "nowhere", not "no constraint".
     if (narrowing.collectionIds && narrowing.collectionIds.length === 0) return null;
     const scope = narrowing.collectionIds

@@ -230,6 +230,45 @@ const routes: Route[] = [
   // else; what they add on top is the person the app is acting for, and the
   // three-way intersection that follows from naming both.
   ...KNOWLEDGE_ROUTES.map((r) => route(r.method, r.path, r.handler)),
+  // Freshness (FEATURES.md §3). The sweep flips Canonical pages whose review
+  // date has passed to Needs Update and notifies their owners; a deployment
+  // runs it on a timer exactly as it runs the notification flush, and this
+  // route exists so an operator can also run it by hand. Idempotent: the second
+  // run finds nothing, because the first one changed the status it selects on.
+  route('POST', '/maintenance/freshness', ({ store, actorId, body }) =>
+    store.sweepFreshness(actorId, {
+      on: body?.on ?? undefined,
+      limit: body?.limit === undefined ? undefined : Number(body.limit),
+    }),
+  ),
+
+  // Structured queries (FEATURES.md §6). A typed filter object, not a query
+  // language: `{ collectionIds, types, statuses, ownerIds, approverIds,
+  // hasOwner, hasReviewDate, reviewDateBefore/After, updatedBefore/After,
+  // createdBefore/After, sort, direction, limit }`. Naming `savedQueryId` runs
+  // a stored filter instead; anything else in the body still overrides it, so a
+  // dashboard can pin a query and page through it.
+  route('POST', '/queries/run', ({ store, actorId, body }) => {
+    const { savedQueryId, ...query } = body ?? {};
+    return savedQueryId ? store.runSavedQuery(actorId, String(savedQueryId), query) : store.runQuery(actorId, query);
+  }),
+  route('POST', '/queries', ({ store, actorId, body }) =>
+    store.saveQuery(actorId, { name: body?.name, query: body?.query }),
+  ),
+  route('GET', '/queries', ({ store, actorId }) => store.listQueries(actorId)),
+  route('GET', '/queries/:id', ({ store, actorId, params }) => store.getQuery(actorId, params.id!)),
+  route('DELETE', '/queries/:id', ({ store, actorId, params }) => {
+    store.deleteQuery(actorId, params.id!);
+    return { ok: true };
+  }),
+
+  // Record health (FEATURES.md §8), built on the query surface above.
+  route('GET', '/collections/:id/health', ({ store, actorId, params, query }) =>
+    store.collectionHealth(actorId, params.id!, {
+      staleDraftDays: query.get('draftDays') ? Number(query.get('draftDays')) : undefined,
+      on: query.get('on') ?? undefined,
+    }),
+  ),
 ];
 
 // A page body, an imported document, and a question are all bodies a person

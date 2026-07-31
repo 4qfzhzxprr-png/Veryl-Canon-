@@ -59,3 +59,36 @@ if (mail && flushInterval > 0) {
   }, flushInterval);
   timer.unref(); // never hold the process open on the timer alone
 }
+
+// The freshness sweep (FEATURES.md §3), on the same pattern as the flush above:
+// POST /maintenance/freshness does the same thing on demand, and this timer is
+// what makes "stale knowledge announces itself" true without anyone remembering
+// to press it. Hourly by default — review dates are days, so a shorter period
+// buys nothing and a longer one delays an owner's notice.
+//
+// It runs only when CANON_MAINTENANCE_ACTOR_ID names the actor it runs as.
+// Attribution is universal (DATA-BACKBONE.md §2, principle 5): every flip is an
+// audit event, and an audit event with no actor behind it would be the one
+// unattributed write in the record. So the deployment names a maintenance actor
+// — which must hold admin on a collection, like any other operator — rather
+// than Canon inventing a nameless system identity for itself.
+const sweepInterval = Number(process.env.CANON_FRESHNESS_INTERVAL_MS ?? 3_600_000);
+const sweepActorId = process.env.CANON_MAINTENANCE_ACTOR_ID?.trim();
+if (sweepActorId && sweepInterval > 0) {
+  const sweepTimer = setInterval(() => {
+    try {
+      const result = store.sweepFreshness(sweepActorId);
+      if (result.flipped > 0) {
+        console.log(`[freshness] ${result.flipped} page(s) past review → Needs Update, ${result.notified} owner(s) notified`);
+      }
+    } catch (err) {
+      console.error(`[freshness] sweep failed: ${(err as Error).message}`);
+    }
+  }, sweepInterval);
+  sweepTimer.unref();
+} else if (!sweepActorId) {
+  console.log(
+    'No maintenance actor configured (CANON_MAINTENANCE_ACTOR_ID unset): the freshness sweep runs only on ' +
+      'POST /maintenance/freshness',
+  );
+}
