@@ -48,7 +48,9 @@ function setup() {
   const marc = store.createActor({ kind: 'person', name: 'Marc', email: 'marc@example.com' });
   const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
   const collection = store.createCollection(dana.id, { name: 'Compliance' });
-  store.setMember(dana.id, collection.id, marc.id, 'edit');
+  // Running an import takes `admin`, not `edit` (SECURITY.md R6) — Marc is the
+  // importing actor in the provenance tests below, so Marc administers here.
+  store.setMember(dana.id, collection.id, marc.id, 'admin');
   return { store, dana, marc, outsider, collection };
 }
 
