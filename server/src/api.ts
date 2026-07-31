@@ -15,6 +15,11 @@ import { flushNotifications } from './notify.js';
 import { BucketName, RateLimiter } from './ratelimit.js';
 import { CanonStore } from './store.js';
 import { RawResponse } from './csv.js';
+import {
+  attestationHtmlResponse,
+  renderCollectionAttestationHtml,
+  renderPageAttestationHtml,
+} from './attestation.js';
 import type { ProposalStatus } from './proposals.js';
 
 // A deliberately thin HTTP layer over the store. Three doors, never mixed:
@@ -314,6 +319,63 @@ const routes: Route[] = [
   route('GET', '/graph', ({ store, actorId, query }) =>
     store.recordGraph(actorId, { collectionIds: query.getAll('collection') }),
   ),
+
+  // Attestation and export (FEATURES.md §7). Three reads, all derived from
+  // immutable history rather than from anything stored:
+  //
+  //   GET /audit/verify            walk the audit hash chain, name the first
+  //                                break. Operator-only, like the sweep.
+  //   GET /pages/:id/as-of?at=…    what this page said at that instant, what
+  //                                standing it held, and who granted it.
+  //   GET /pages/:id/attestation   the whole bundle an auditor is handed.
+  //   GET /collections/:id/attestation
+  //                                the register of Canonical pages as at a date.
+  //
+  // `?format=html` on either attestation returns the self-contained HTML
+  // rendering as a download — same builder, same permission, same audit event;
+  // only the rendering differs. It is the one other non-JSON response path
+  // besides the audit CSV, and it uses the same RawResponse.
+  //
+  // None of these appear in agentauth.ts's classification table, so an agent
+  // presenting a passport is refused at all four. That is the decision, not an
+  // omission: an attestation is the artefact a person hands a regulator, and
+  // `GET /audit.csv` is closed to agents for exactly the same reason.
+  route('GET', '/audit/verify', ({ store, actorId, query }) =>
+    store.verifyAuditChain(actorId, {
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
+  route('GET', '/pages/:id/as-of', ({ store, actorId, params, query }) =>
+    store.pageAsOf(actorId, params.id!, query.get('at') ?? ''),
+  ),
+  route('GET', '/pages/:id/attestation', ({ store, actorId, params, query }) => {
+    const format = query.get('format') === 'html' ? 'html' : 'json';
+    const bundle = store.pageAttestation(actorId, params.id!, {
+      at: query.get('at') ?? undefined,
+      format,
+    });
+    return format === 'html'
+      ? attestationHtmlResponse(
+          renderPageAttestationHtml(bundle),
+          bundle.page.title,
+          bundle.manifest.generatedAt,
+        )
+      : bundle;
+  }),
+  route('GET', '/collections/:id/attestation', ({ store, actorId, params, query }) => {
+    const format = query.get('format') === 'html' ? 'html' : 'json';
+    const bundle = store.collectionAttestation(actorId, params.id!, {
+      at: query.get('at') ?? undefined,
+      format,
+    });
+    return format === 'html'
+      ? attestationHtmlResponse(
+          renderCollectionAttestationHtml(bundle),
+          bundle.collection.name,
+          bundle.manifest.generatedAt,
+        )
+      : bundle;
+  }),
 
   // Record health (FEATURES.md §8), built on the query surface above.
   route('GET', '/collections/:id/health', ({ store, actorId, params, query }) =>

@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { ensureAuditChain, registerAuditChainFunction } from './auditchain.js';
 import { COMMENTS_SCHEMA } from './comments.js';
 import { EMBEDDINGS_SCHEMA } from './embeddings.js';
 import { ensurePageFreshnessSchema } from './freshness.js';
@@ -120,6 +121,11 @@ BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
 
 export function openDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
+  // Before any schema and long before any write: the audit chain's hash
+  // function is called by a trigger on `audit_events`, so a connection that
+  // could insert an event without it would insert an unchained one. Registering
+  // first means no such connection ever exists. See auditchain.ts.
+  registerAuditChainFunction(db);
   db.exec(SCHEMA);
   db.exec(COMMENTS_SCHEMA); // comments (Epic C, M2); DDL lives with its logic in comments.ts
   db.exec(NOTIFICATIONS_SCHEMA); // notifications outbox (Epic C, M2); DDL in notify.ts
@@ -133,5 +139,11 @@ export function openDb(path: string): DatabaseSync {
   // pages. A record created by an earlier build is brought up to date here, as
   // notify.ts does for its delivery columns; a fresh database already matches.
   ensurePageFreshnessSchema(db);
+  // The audit hash chain (FEATURES.md §7, "tamper-evident"). Creates the link
+  // table and the AFTER INSERT trigger that writes a link per event, and — on a
+  // record that already holds events — records that the chain starts at the
+  // current head rather than pretending to cover what came before. What the
+  // chain does and does not prove is written out at the top of auditchain.ts.
+  ensureAuditChain(db);
   return db;
 }

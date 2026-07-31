@@ -67,6 +67,10 @@ const state = {
     // The knowledge map, and separately the whole-record map: two endpoints,
     // two probes. See detectMap / detectWholeGraph.
     map: null, wholeGraph: null,
+    // Attestation and export (FEATURES.md §7). One probe covers the whole
+    // family — as-of, the page bundle, the collection register — because they
+    // ship together. See detectAttestation.
+    attestation: null,
   },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
@@ -76,10 +80,11 @@ const state = {
 function resetFeatures() {
   state.features = {
     search: null, comments: null, ask: null, related: null, references: null, sources: null,
-    map: null, wholeGraph: null,
+    map: null, wholeGraph: null, attestation: null,
   };
   askProbe = null;
   sourcesProbe = null;
+  attestationProbe = null;
   mapProbe = null;
   wholeGraphProbe = null;
   wholeGraphCache = null;
@@ -941,6 +946,7 @@ async function viewCollection(id) {
             <p class="muted">${esc(collection.description || 'No description.')}</p>
           </div>
           <div class="actions">
+            <span id="attestation-affordance"></span>
             <span id="map-affordance"></span>
             <span id="ask-affordance"></span>
             <button class="btn primary" id="main-new-page">New page</button>
@@ -988,6 +994,11 @@ async function viewCollection(id) {
   app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
   renderMapAffordance('map-affordance', collection.id);
   renderAskAffordance('ask-affordance', collection.id);
+  renderAttestationAffordance('attestation-affordance', {
+    kind: 'collection',
+    id: collection.id,
+    title: collection.name,
+  });
 
   app.querySelector('#add-member-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1041,7 +1052,7 @@ async function viewPage(id) {
         : `This page is being edited by <strong>${esc(actorName(draft.editorId))}</strong>. Canon keeps drafts to one editor at a time.`}
     </div>` : '';
 
-  const actions = ['<span id="ask-affordance"></span>'];
+  const actions = ['<span id="attestation-affordance"></span>', '<span id="ask-affordance"></span>'];
   if (!isArchived && !inReview) actions.push(`<a class="btn" href="#/pages/${esc(id)}/edit">Edit</a>`);
   actions.push(`<a class="btn" href="#/pages/${esc(id)}/history">History</a>`);
   // Needs Update submits like a Draft: the way back to Canonical is the review
@@ -1094,6 +1105,7 @@ async function viewPage(id) {
 
   wireSidebar(collection, tree);
   renderAskAffordance('ask-affordance', page.collectionId);
+  renderAttestationAffordance('attestation-affordance', { kind: 'page', id, title: page.title });
 
   app.querySelector('#act-submit')?.addEventListener('click', async () => {
     try {
@@ -4525,6 +4537,220 @@ function wireMapStage(visible) {
   if (state.map.resize) window.removeEventListener('resize', state.map.resize);
   state.map.resize = () => { if (document.getElementById('map-svg')) fitMap(); };
   window.addEventListener('resize', state.map.resize);
+}
+
+// ---------------------------------------------------------------------------
+// Attestation and export (FEATURES.md §7)
+//
+//   GET /pages/:id/as-of?at=<ISO>                  the point-in-time answer
+//   GET /pages/:id/attestation[?at=][&format=html] the bundle for one page
+//   GET /collections/:id/attestation[?at=][&format=html]   the register
+//   GET /audit/verify                              walk the audit hash chain
+//
+// Feature-detected exactly as search, /ask, references and the map are: one
+// probe, 404/405 means the endpoint is not built yet, and until it answers the
+// affordance simply is not there.
+//
+// The probe is `GET /audit/verify?limit=1` — bounded to a single link, so it
+// costs nothing on a large log; it has no side effect (unlike asking for an
+// attestation, which is deliberately an audited act); and a 403 for somebody
+// who is not an operator still proves the family shipped, which is what is
+// being asked. It needs no page id, so the collection view can ask it too.
+
+let attestationProbe = null;
+
+async function detectAttestation() {
+  if (state.features.attestation === null) {
+    attestationProbe ??= api('GET', '/audit/verify?limit=1')
+      .then(() => true)
+      .catch((err) => (err.status === 404 || err.status === 405 ? false : err.status === 0 ? null : true));
+    const found = await attestationProbe;
+    attestationProbe = null;
+    if (state.features.attestation === null && found !== null) state.features.attestation = found;
+  }
+  return state.features.attestation === true;
+}
+
+// Called by the page and collection views. Subject is { kind, id, title }.
+async function renderAttestationAffordance(hostId, subject) {
+  const host = document.getElementById(hostId);
+  if (!host || !(await detectAttestation())) return;
+  if (!host.isConnected) return; // the view re-rendered while the probe was in flight
+  host.innerHTML = `<button class="btn subtle" id="${esc(hostId)}-btn"
+    title="Prove the state of the record: what this said on a date, who had approved it, and the audit trail behind it"
+    >Attestation</button>`;
+  host.querySelector('button').addEventListener('click', () => openAttestationModal(subject));
+}
+
+// `datetime-local` wants "YYYY-MM-DDTHH:mm" in LOCAL time; the record speaks
+// UTC. Both directions are here so the reader picks a moment in their own
+// clock and the server is asked about the instant they meant.
+function localInputValue(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function instantFromInput(value) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+// A file download that carries the caller's identity. `api()` cannot do this
+// one: the HTML rendering is not JSON, and the response is an attachment whose
+// filename the server chooses. Everything else — the headers, the cookie/dev
+// distinction — is the same rule api() applies.
+async function downloadFromApi(path, fallbackName) {
+  const headers = {};
+  const cookieSession = state.auth?.viaCookie === true;
+  const actorId = cookieSession ? null : state.actor?.id;
+  if (actorId) headers['X-Actor-Id'] = actorId;
+  let res;
+  try {
+    res = await fetch(path, { headers, credentials: 'same-origin' });
+  } catch {
+    throw { status: 0, code: 'network', message: 'Cannot reach the Canon server.', details: {} };
+  }
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON error body */ }
+    throw {
+      status: res.status,
+      code: data?.error ?? 'error',
+      message: data?.message ?? `Request failed (${res.status})`,
+      details: data ?? {},
+    };
+  }
+  const disposition = res.headers.get('content-disposition') ?? '';
+  const named = /filename="([^"]+)"/.exec(disposition);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = named ? named[1] : fallbackName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function attestationPreviewHTML(asOf) {
+  if (!asOf) return '';
+  if (!asOf.existed) {
+    return `<div class="notice"><strong>Nothing to attest to.</strong> ${esc(asOf.answer)}</div>`;
+  }
+  const v = asOf.version;
+  return `
+    <div class="notice">${esc(asOf.answer)}</div>
+    <dl class="field-block">
+      <div><dt>Title then</dt><dd>${esc(asOf.title ?? '—')}</dd></div>
+      <div><dt>Status then</dt><dd>${badge(asOf.status)}</dd></div>
+      <div><dt>Canonical then</dt><dd>${asOf.canonical ? 'Yes' : 'No'}</dd></div>
+      <div><dt>Version then</dt><dd>${v ? `v${esc(v.number)} · ${fmtDateTime(v.createdAt)} · ${esc(actorName(v.authorId))}` : 'None published'}</dd></div>
+      <div><dt>Approved by</dt><dd>${asOf.approval
+        ? `${esc(actorName(asOf.approval.approverId))} · ${fmtDateTime(asOf.approval.at)}`
+        : '<span class="muted">no approval covers the version standing then</span>'}</dd></div>
+      ${asOf.fields?.ownerId ? `<div><dt>Owner then</dt><dd>${actorLabel(asOf.fields.ownerId)}</dd></div>` : ''}
+      ${asOf.fields?.reviewDate ? `<div><dt>Review date then</dt><dd>${fmtDate(asOf.fields.reviewDate)}</dd></div>` : ''}
+    </dl>`;
+}
+
+function registerPreviewHTML(bundle) {
+  const rows = (bundle.register ?? []).slice(0, 12);
+  if (!rows.length) {
+    return '<div class="notice">No page in this collection held the Canonical mark at that moment.</div>';
+  }
+  return `
+    <p class="muted">${esc(bundle.register.length)} Canonical, ${esc((bundle.notCanonical ?? []).length)} not.
+    The full register is in the download.</p>
+    <table class="table">
+      <thead><tr><th>Page</th><th>Owner</th><th>Approver</th><th>Review due</th></tr></thead>
+      <tbody>${rows.map((e) => `<tr>
+        <td><a href="#/pages/${esc(e.pageId)}">${esc(e.title)}</a></td>
+        <td>${esc(e.ownerName ?? '—')}</td>
+        <td>${esc(e.approverName ?? '—')}</td>
+        <td>${e.reviewDate ? fmtDate(e.reviewDate) : '—'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+function openAttestationModal(subject) {
+  const isPage = subject.kind === 'page';
+  const base = isPage
+    ? `/pages/${encodeURIComponent(subject.id)}`
+    : `/collections/${encodeURIComponent(subject.id)}`;
+
+  // The HTML rendering is the modal's own submit action — it is the one an
+  // auditor is actually handed, so it is the primary button and the one the
+  // Enter key reaches. JSON and Preview sit inside the body as secondary acts.
+  const modal = openModal({
+    title: isPage ? `Attestation — ${subject.title}` : `Register — ${subject.title}`,
+    submitLabel: 'Download HTML',
+    cancelLabel: 'Close',
+    body: `
+      <p class="muted">${isPage
+        ? 'A self-contained record of this page: every published version with its author and note, every status change, the approvals, and the audit trail behind them — with the hash chain that makes the log tamper-evident.'
+        : 'The register of pages that held the Canonical mark in this collection on a chosen date, with their owners, approvers and review dates.'}</p>
+      <label>As at
+        <input type="datetime-local" name="at" value="${esc(localInputValue())}">
+      </label>
+      <p class="muted">Your local time. Leave it at now for the current state.</p>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button type="button" class="btn" data-preview>Preview</button>
+        <button type="button" class="btn" data-json>Download JSON</button>
+      </div>
+      <div data-attestation-preview></div>`,
+    onSubmit: async (form) => {
+      const instant = instantFromInput(form.at.value);
+      const query = `?format=html${instant ? `&at=${encodeURIComponent(instant)}` : ''}`;
+      await downloadFromApi(`${base}/attestation${query}`, 'canon-attestation.html');
+      toast('Attestation downloaded. Open it in a browser and print to PDF.', 'ok');
+    },
+  });
+
+  const root = document.getElementById('modal-root');
+  const form = root.querySelector('form');
+  const preview = root.querySelector('[data-attestation-preview]');
+  const at = () => instantFromInput(form.at.value);
+
+  const busy = async (button, work) => {
+    button.disabled = true;
+    try {
+      await work();
+    } catch (err) {
+      // 404 here means the endpoint went away under us (a redeploy); the
+      // affordance disappears rather than leaving a button that cannot work.
+      if (err.status === 404 || err.status === 405) {
+        state.features.attestation = false;
+        modal.close();
+        toast('Attestation is not available on this Canon.', 'info');
+        return;
+      }
+      toastError(err);
+    } finally {
+      button.disabled = false;
+    }
+  };
+
+  root.querySelector('[data-preview]').addEventListener('click', (e) => busy(e.target, async () => {
+    const instant = at();
+    if (!instant) { toast('That is not a date Canon can read.', 'error'); return; }
+    preview.innerHTML = '<div class="loading">Reconstructing…</div>';
+    const query = `?at=${encodeURIComponent(instant)}`;
+    if (isPage) {
+      const asOf = await api('GET', `${base}/as-of${query}`);
+      preview.innerHTML = attestationPreviewHTML(asOf);
+    } else {
+      const bundle = await api('GET', `${base}/attestation${query}`);
+      preview.innerHTML = registerPreviewHTML(bundle);
+    }
+  }));
+
+  root.querySelector('[data-json]').addEventListener('click', (e) => busy(e.target, async () => {
+    const instant = at();
+    const query = instant ? `?at=${encodeURIComponent(instant)}` : '';
+    await downloadFromApi(`${base}/attestation${query}`, 'canon-attestation.json');
+    toast('Attestation downloaded. Generating one is itself on the audit log.', 'ok');
+  }));
 }
 
 // ---------------------------------------------------------------------------
