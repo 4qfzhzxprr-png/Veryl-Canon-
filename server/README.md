@@ -13,6 +13,7 @@ The first running slice of Veryl Canon: the data storage and organization backbo
 - **Grounded answers.** `POST /ask` returns `{ answer, citations, refused, reason? }`. Canonical pages only — never a Draft, never a Note, never an archived page — permission-filtered per asker, every answer carrying at least one citation *by construction* (the answer is composed from cited passages, so an uncited answer cannot exist), and refusing with `no_canonical_match` when the record is silent. The generator is a seam (`AnswerGenerator`) for a real model later; the shipped default is extractive and quotes the record verbatim rather than faking an LLM. Every ask lands in the audit log with the question, the refusal flag, and the cited page ids.
 - **Comments and notifications.** Inline comments anchored to a quoted passage (plus optional context) and page-level comments, resolve and reopen, `@<actorId>` mentions, and an outbox-pattern notifications table with a pluggable transport (the dev transport logs to the console and marks sent). Review requests, approvals, and send-backs notify the people involved; mentions notify the mentioned.
 - **Agents at the door.** Approved agents authenticate with an Agent Passport verified against the Veryl Agent Registry, resolve to their own Canon actor, and act only inside the intersection of the Registry's limits and Canon's collection permissions. See "Two ways in" below.
+- **The Knowledge API.** Veryl Studio's door into the record ([STUDIO-CONTRACT.md](../STUDIO-CONTRACT.md), [`src/knowledge.ts`](src/knowledge.ts)), under `/knowledge/…`. A Studio app *is* an agent — same passport, same Registry limits, no second credential model — and additionally names the person it is acting for in `X-On-Behalf-Of`, on every call. The effective permission is the **intersection of three things**: the app's Registry limits, the app's Canon permissions, and that person's Canon permissions. An app can never lend a person access the person does not have, and a person can never lend the app access the app does not have. Nothing is cached and no grant is minted, so a permission change or a revocation is effective on the very next call; every call is an audit event naming the app, the person, and what was touched. Grounded answers through it are the same `ask` the question box uses — Canonical only, cited, refusing when the record is silent — with the person's permissions and the Registry's collection limit carried into the candidate SQL *before* ranking, never applied to citations afterwards. The worked example is [studio-stub/](../studio-stub/).
 - **Email delivery.** A real SMTP client written on `node:net` and `node:tls` — STARTTLS or direct TLS, `AUTH PLAIN` and `AUTH LOGIN`, dot-stuffed `DATA` — sends the notifications the outbox holds. Messages are RFC 5322 with a plain-text and an HTML part, and each one carries a deep link straight to the page or its review, which is what CORE-PLAN.md section 7 names as the answer to review friction. Delivery is retried with backoff and bounded attempts; a permanently refused message (5xx, no address on record) is marked dead rather than retried forever, with the reason kept on the row. Configured entirely by environment variables (below); with none set, behaviour is exactly as it was — the dev transport logs to the console.
 - **Trust.** Every write attributed to its actor; agents are actors that require a Registry reference (Agent Passport) and carry their kind into history and audit. The append-only audit log records all writes, plus page views on restricted collections, filterable by actor, action, and date, and exportable as RFC 4180 CSV (`GET /audit.csv`, same filters). The export is bounded by construction: at most 1000 records, newest first, with `x-canon-truncated: true` when the cap was reached — narrow with `from`/`to` to walk a longer log.
 - **Import.** Confluence HTML space exports and Google Docs (Takeout) exports, read from an unpacked directory on disk. The Confluence importer recovers the page tree from the export's index and falls back to page breadcrumbs, then to a flat import. Both share a tolerant, dependency-free HTML → structured-text converter (headings, bold, italics, lists, tables, links, code blocks, images as links) that never emits HTML into a page body and never chokes on malformed markup. Everything arrives as a Draft attributed to the importing actor; nothing is ever Canonical on arrival. See [Importing](#importing).
@@ -120,6 +121,26 @@ DELETE /references/:id                      requires edit
 GET    /pages/:id/references                resolve this page's references for the asking actor
                                             -> [{ value, resolvedAt, fromCache, stale, sourceName, error? }]
 ```
+
+The Knowledge API, for Veryl Studio apps. Every call carries **both** `X-Agent-Passport` and
+`X-On-Behalf-Of: <person actorId>`; see [STUDIO-CONTRACT.md](../STUDIO-CONTRACT.md) for the exact shapes.
+
+```
+GET    /knowledge/whoami                    the intersection as it stands: app, person, effective roles
+GET    /knowledge/collections               narrowed by the Registry, the app, and the person
+GET    /knowledge/collections/:id | /:id/tree
+GET    /knowledge/pages/:id                 page + current published version
+GET    /knowledge/pages/:id/versions | /versions/:n
+GET    /knowledge/search?q=&collection=&type=&status=&owner=&limit=
+POST   /knowledge/ask                       { question, collectionId?, limit? } — the §5 answer contract
+POST   /knowledge/pages                     { collectionId, parentId?, type, title }
+PUT    /knowledge/pages/:id/draft           { title?, body?, fields? }
+POST   /knowledge/pages/:id/publish | /submit
+POST   /knowledge/pages/:id/comments        { body, anchor? }
+```
+
+Approval is deliberately absent: an app can carry work to the door of review, and a person grants
+the Canonical mark, in Canon.
 
 ## Importing
 

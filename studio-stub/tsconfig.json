@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    // Rooted a level up so this stub's tests can boot the real Canon and the
+    // real registry-stub in-process, exactly as server's own tests compile
+    // registry-stub and registry-stub compiles Canon's RegistryClient. The
+    // app itself imports nothing from either: it is an outside caller and
+    // must stay one. Output therefore lands in dist/studio-stub/…
+    "rootDir": "..",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "../server/src/**/*.ts", "../registry-stub/src/**/*.ts"]
+}

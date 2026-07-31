@@ -857,4 +857,34 @@ export class CanonStore {
   resolveReferences(actorId: string, pageId: string): Promise<ResolvedReference[]> {
     return this.references.resolveReferences(actorId, pageId);
   }
+
+  // ---- the Knowledge API's two seams (STUDIO-CONTRACT.md) ---------------
+  // Veryl Studio's Knowledge API evaluates a three-way intersection on every
+  // call: the app's Registry limits, the app's Canon permissions, and the
+  // permissions of the person the app acts for. The app's half is the store
+  // call itself, made with the app's actor id, exactly as it always was.
+  // These two thin delegates are what the person's half and the dual-attributed
+  // audit event need, and they exist so neither grows a second copy.
+
+  /**
+   * "May this actor do this here?", asked without doing it. `requireRole` is
+   * the store's single implementation of that question; the Knowledge API
+   * needs it for the person it is acting for, before the app acts.
+   */
+  requireRoleFor(actorId: string, collectionId: string, needed: Role): void {
+    this.requireRole(actorId, collectionId, needed);
+  }
+
+  /**
+   * Append one audit event through the store's own writer, so the Knowledge
+   * API's events — which name the app AND the person — sit in the same
+   * append-only log, in the same shape, as everything else.
+   */
+  recordAudit(
+    actorId: string,
+    action: string,
+    ctx: { collectionId?: string; pageId?: string; details?: Record<string, unknown> } = {},
+  ): void {
+    this.audit(actorId, action, ctx);
+  }
 }

@@ -53,6 +53,8 @@ See [server/](server/) for the code: the running Canon server and its web interf
 
 See [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) for the Agent Passport contract between Canon and Veryl Agent Registry, and [registry-stub/](registry-stub/) for the stub service that implements it, so agent work can be built and demonstrated before the live Registry exists.
 
+See [STUDIO-CONTRACT.md](STUDIO-CONTRACT.md) for the Knowledge API contract between Canon and Veryl Studio — how an app authenticates (it is an agent, so it presents a passport), how it names the person it acts for, and the three-way intersection that decides what the two of them may read and write — and [studio-stub/](studio-stub/) for a working Studio app built on it.
+
 ## Naming
 
 Use the full name, Veryl Canon, on first mention, in headings, and anywhere the product shows up cold. Once the reader is clearly inside the product's context, the short form Canon is fine.
