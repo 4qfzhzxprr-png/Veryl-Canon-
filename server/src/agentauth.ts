@@ -205,6 +205,34 @@ const RULES: Rule[] = [
   { method: 'POST', pattern: /^\/sources$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
   { method: 'PUT', pattern: /^\/sources\/([^/]+)$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
   { method: 'DELETE', pattern: /^\/sources\/([^/]+)$/, action: 'write', scope: () => ({ kind: 'sourceAdmin' }) },
+
+  // Agent proposals (FEATURES.md §5; proposals.ts). Proposing a change is
+  // `write`, scoped to the page's collection, exactly as authoring a reference
+  // on a page is: a proposal belongs to one page, so the collection that
+  // governs the page governs it, and no `"*"` is involved. Reading the open
+  // proposals on a page is `read` on the same collection.
+  //
+  // Note what proposing is NOT: it is not publishing. `write` plus Canon's
+  // `edit` role lets an agent offer a change; nothing about it puts words into
+  // the record. That is what makes it safe to give an agent `write` on
+  // material it may not publish, which is the whole point of the feature.
+  { method: 'GET', pattern: /^\/pages\/([^/]+)\/proposals$/, action: 'read', scope: PAGE },
+  { method: 'POST', pattern: /^\/pages\/([^/]+)\/proposals$/, action: 'write', scope: PAGE },
+
+  // ACCEPTING AND REJECTING ARE DELIBERATELY ABSENT, and this comment is the
+  // rule rather than an omission to be tidied up later. FEATURES.md §5 says
+  // "People stay the approvers; agents do the tedious watching", and Canon
+  // keeps that literally: POST /proposals/:id/accept and .../reject are in no
+  // rule above, so an agent's request for either is refused by `classify`
+  // returning null — 403, `route_not_available_to_agents`, audited as
+  // `agent.denied`. There is no `permittedActions` value that opens them,
+  // because the Registry's vocabulary is about what an agent may do to the
+  // record and this is a question about who takes responsibility for it.
+  // proposals.ts refuses an actor of kind `agent` a second time, which is the
+  // check that also holds in dev mode, where no passport is presented at all.
+  // If a future tier ever wants a certified agent to accept another agent's
+  // proposal, it takes a deliberate change here AND there, plus a paragraph in
+  // FEATURES.md — never a quiet route addition.
 ];
 
 function classify(method: string, pathname: string): { action: AgentAction; scope: Scope } | null {

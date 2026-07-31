@@ -226,6 +226,22 @@ const COPY: Record<NotificationKind, KindCopy> = {
     cta: 'Open the draft',
     why: 'You are receiving this because you wrote or own this page.',
   },
+  proposal_opened: {
+    cta: 'Open the proposal',
+    why: 'You are receiving this because you own this page, or can act on proposals in this collection.',
+  },
+  proposal_accepted: {
+    cta: 'Open the page',
+    why: 'You are receiving this because you proposed this change.',
+  },
+  proposal_rejected: {
+    cta: 'Open the page',
+    why: 'You are receiving this because you proposed this change.',
+  },
+  proposal_superseded: {
+    cta: 'Open the page',
+    why: 'You are receiving this because you proposed this change.',
+  },
 };
 
 // A mention carries the comment itself; a send-back carries the approver's
