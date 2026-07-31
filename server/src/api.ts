@@ -305,6 +305,15 @@ const routes: Route[] = [
   route('GET', '/collections/:id/graph', ({ store, actorId, params }) =>
     store.collectionGraph(actorId, params.id!),
   ),
+  // The same map at the record's altitude. `?collection=<id>`, repeatable,
+  // selects collections; with none named it draws every collection the asker
+  // may view. It is a SPANNING read, so a collection the asker cannot see
+  // contributes nothing rather than refusing the request — the same treatment
+  // search and the query surface give, and the treatment
+  // REGISTRY-CONTRACT.md §4.2 requires for an agent.
+  route('GET', '/graph', ({ store, actorId, query }) =>
+    store.recordGraph(actorId, { collectionIds: query.getAll('collection') }),
+  ),
 
   // Record health (FEATURES.md §8), built on the query surface above.
   route('GET', '/collections/:id/health', ({ store, actorId, params, query }) =>

@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && CANON_DEV_AUTH=true node --test \"dist/server/test/**/*.test.js\"",
-    "start": "npm run build && node dist/server/src/index.js"
+    "start": "npm run build && node dist/server/src/index.js",
+    "seed:demo": "npm run build && node dist/server/scripts/seed-demo.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

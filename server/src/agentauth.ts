@@ -34,6 +34,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { narrowRecordGraph, type RecordGraph } from './graph.js';
 import { CanonError, ErrorCode } from './model.js';
 import { AgentVerification, RegistryClient, VerifyFailureReason } from './registry.js';
 import type { CanonStore } from './store.js';
@@ -91,7 +92,10 @@ type Scope =
   | { kind: 'newCollection' } // creates a collection: only '*' can reach it
   | { kind: 'source'; id: string } // source id in the path
   | { kind: 'sourceAdmin' } // registers or changes a source: only '*' can reach it
-  | { kind: 'filtered'; filter: 'collections' | 'search' | 'audit' | 'sources' }; // spans collections or sources
+  | { kind: 'filtered'; filter: FilteredScope }; // spans collections or sources
+
+/** What a spanning response is narrowed by, and how (see `narrow` below). */
+type FilteredScope = 'collections' | 'search' | 'audit' | 'sources' | 'graph';
 
 interface Rule {
   method: string;
@@ -326,6 +330,16 @@ const RULES: Rule[] = [
     action: 'read',
     scope: (g) => ({ kind: 'collection', id: g[0] ?? '' }),
   },
+
+  // The whole-record map (GET /graph). `read` like the map above, but this one
+  // SPANS collections by design — a page in Compliance linking a page in
+  // Product is the thing it exists to show — so it takes §4.2's rule for a
+  // spanning request: narrowed to the agent's permitted collections, never
+  // refused because the record holds a collection the agent may not see. The
+  // narrowing is a payload of objects rather than a list of rows, so it is
+  // `narrowRecordGraph` in graph.ts that performs it; what belongs here is the
+  // classification, and this is it.
+  { method: 'GET', pattern: /^\/graph$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'graph' }) },
 ];
 
 function classify(method: string, pathname: string): { action: AgentAction; scope: Scope } | null {
@@ -593,11 +607,16 @@ export class AgentAuth {
   // Responses that span collections are narrowed to the permitted ones, so a
   // listing, a search, or the audit log never carries an agent something the
   // Registry does not permit it to see.
-  private narrow(
-    session: AgentSession,
-    filter: 'collections' | 'search' | 'audit' | 'sources',
-    result: unknown,
-  ): unknown {
+  private narrow(session: AgentSession, filter: FilteredScope, result: unknown): unknown {
+    // The one spanning response that is not a list of rows. A graph narrowed
+    // by dropping rows would keep edges pointing at nodes that are no longer
+    // there, so the whole payload is narrowed together, by the module that
+    // knows what one is.
+    if (filter === 'graph') {
+      return result && typeof result === 'object'
+        ? narrowRecordGraph(result as RecordGraph, session.permittedCollections)
+        : result;
+    }
     if (!Array.isArray(result)) return result;
     if (filter === 'collections') {
       return result.filter((c) => permitsCollection(session.permittedCollections, (c as { id: string }).id));
