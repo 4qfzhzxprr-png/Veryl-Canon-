@@ -92,7 +92,9 @@ A registered Source carries a `baseUrl`, and Canon fetches it server-side when a
 | `CANON_SOURCE_ALLOWED_SCHEMES` | Optional; defaults to `https,http`. Set to `https` alone where the record systems support it. No other scheme is ever reachable. |
 | `CANON_SOURCE_ALLOW_PRIVATE` | Optional; `true` permits loopback, link-local and private address ranges, including the cloud metadata address. **Development only** — it is what lets the test suite reach a stub on `127.0.0.1`. |
 | `CANON_SOURCE_SERVICE_IDENTITY` | The identity a `service`-mode source is resolved with. Absent, a service source fails visibly rather than resolving anonymously. |
-| `CANON_SOURCE_TIMEOUT_MS` | Optional; how long to wait for a source. Defaults to 3000. |
+| `CANON_SOURCE_TIMEOUT_MS` | Optional; how long to wait for a source. Defaults to 3000, and it bounds the whole exchange — connect, handshake, headers and body. |
+
+**The connection goes where the check went.** Canon resolves a source's hostname itself, applies the rules above to every address that answer contained, and then connects to an address from *that* answer, supplied to the socket directly (`server/src/pinnedhttp.ts`). No second name resolution happens between the check and the connect, so a name cannot be re-pointed at an internal address in between, and every redirect hop repeats the whole of it. TLS is unaffected: the certificate is still validated against the **hostname**, not against the pinned address, so an allowlisted `https://` source with the wrong certificate is refused exactly as before. What this does not do is make an allowlisted host safe, authenticate the DNS answer it was built from, or protect a plain `http://` source from the network between here and there — see [SECURITY.md](../SECURITY.md) F1 for the full statement.
 
 ### Importing: where an import may read from
 
