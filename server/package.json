@@ -11,7 +11,8 @@
     "start": "npm run build && node dist/server/src/index.js",
     "seed:demo": "npm run build && node dist/server/scripts/seed-demo.js",
     "backup": "npm run build && node dist/server/scripts/backup.js",
-    "restore": "npm run build && node dist/server/scripts/restore.js"
+    "restore": "npm run build && node dist/server/scripts/restore.js",
+    "verify:audit": "npm run build && node dist/server/scripts/verify-audit.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

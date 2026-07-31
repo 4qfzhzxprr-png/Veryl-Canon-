@@ -31,6 +31,13 @@ import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalSta
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
+import { AuditChainVerification, verifyAuditChain } from './auditchain.js';
+import {
+  AttestationService,
+  CollectionAttestation,
+  PageAsOf,
+  PageAttestation,
+} from './attestation.js';
 
 export interface TreeNode extends Page {
   children: TreeNode[];
@@ -1094,5 +1101,55 @@ export class CanonStore {
   /** The same graph at the record's altitude: every collection the asker may view. */
   recordGraph(actorId: string, options: RecordGraphOptions = {}): RecordGraph {
     return new GraphService(this.db, this).recordGraph(actorId, options);
+  }
+
+  // ---- attestation and export (FEATURES.md §7) --------------------------
+  // Thin delegates; the logic lives in attestation.ts and the hash chain in
+  // auditchain.ts. Built per call, like the importer and the graph: an
+  // attestation is one read of immutable history as the asking actor may see
+  // it, and the service holds nothing between requests.
+
+  /**
+   * Walk the audit hash chain and report the first break. Permission is the
+   * operator stand-in Core already uses — admin on at least one collection —
+   * for the same reason the freshness sweep and the outbox flush use it: the
+   * chain spans every collection, so there is no collection to check it
+   * against, and a per-collection answer would be a partial answer to a
+   * question that is only useful whole. See SECURITY.md R5 on that stand-in.
+   */
+  verifyAuditChain(actorId: string, options: { limit?: number } = {}): AuditChainVerification {
+    this.getActor(actorId);
+    const admin = this.db
+      .prepare("SELECT 1 AS ok FROM collection_members WHERE actor_id = ? AND role = 'admin' LIMIT 1")
+      .get(actorId) as { ok: number } | undefined;
+    if (!admin) {
+      throw new CanonError('forbidden', 'Verifying the audit chain requires admin on a collection', {
+        needed: 'admin' satisfies Role,
+      });
+    }
+    return verifyAuditChain(this.db, options);
+  }
+
+  /** What did this page say at that instant, and who had approved it. */
+  pageAsOf(actorId: string, pageId: string, at: string): PageAsOf {
+    return new AttestationService(this.db, this).asOf(actorId, pageId, at);
+  }
+
+  /** The attestation bundle for one page. Generating one is an audited act. */
+  pageAttestation(
+    actorId: string,
+    pageId: string,
+    opts: { at?: string; format?: 'json' | 'html' } = {},
+  ): PageAttestation {
+    return new AttestationService(this.db, this).bundle(actorId, pageId, opts);
+  }
+
+  /** The register of a collection's Canonical pages as at a date. */
+  collectionAttestation(
+    actorId: string,
+    collectionId: string,
+    opts: { at?: string; format?: 'json' | 'html' } = {},
+  ): CollectionAttestation {
+    return new AttestationService(this.db, this).register(actorId, collectionId, opts);
   }
 }
