@@ -640,7 +640,27 @@ export class ImportService {
     if (!input.collectionId) throw new CanonError('invalid', 'An import requires a target collection');
     const type = (input.type ?? 'note') as DocType;
     if (!DOC_TYPES.includes(type)) throw new CanonError('invalid', `Unknown document type: ${String(input.type)}`);
-    this.requireRole(actorId, input.collectionId, 'edit');
+    // ADMIN, NOT EDIT (SECURITY.md R6). An import is not authoring:
+    //
+    //   - it names a SERVER-SIDE PATH and has the process read it. `edit` on
+    //     one collection is a low bar for choosing what the server opens, and
+    //     the containment rules above (realpath, CANON_IMPORT_ROOTS) bound
+    //     which files are read, not who may aim the run;
+    //   - it creates up to MAX_FILES_PER_RUN pages in one call, with titles
+    //     and bodies taken verbatim from files nobody in Canon reviewed;
+    //   - the summary it returns names the server path back to the caller.
+    //
+    // CORE-PLAN.md §2 puts import on the administrator's side of the line —
+    // "Administrator. Sets up collections, permissions, and document types" —
+    // and §4's Epic E files it under "Trust and arrival" with the audit log
+    // rather than under Epic B's daily writing loop. A contributor who needs a
+    // corpus imported asks the person who set the collection up, which is the
+    // same conversation they already have about permissions.
+    //
+    // Reading a run's record stays at `view` (`getRun`, `listRuns`): seeing
+    // what an import did to a collection you are a member of is not
+    // administration, and hiding it would make the record harder to trust.
+    this.requireRole(actorId, input.collectionId, 'admin');
 
     const root = resolve(input.path.trim());
     let stat;
@@ -946,7 +966,23 @@ export class ImportService {
     const row = this.db.prepare('SELECT * FROM import_runs WHERE id = ?').get(runId) as
       | Record<string, unknown>
       | undefined;
-    if (!row) throw new CanonError('not_found', `No such import run: ${runId}`);
+    const notFound = new CanonError('not_found', `No such import run: ${runId}`);
+    if (!row) throw notFound;
+    // Existence before permission is an oracle, and this is the one id space in
+    // Canon where it is worth closing (SECURITY.md R4). Every other identifier
+    // — page, collection, version, comment, source, saved query — is a random
+    // UUID, so a 403 there confirms an id somebody already had. A RUN ID IS
+    // CALLER-SUPPLIED (see `ImportInput.runId`, which exists so an interrupted
+    // migration can be resumed), so it is whatever an operator typed:
+    // `confluence-2026-07`, `migration-1`. That is a guessable namespace, and
+    // a guessable namespace with a distinguishable refusal is enumerable.
+    // A run whose collection the caller holds no role in therefore reads
+    // exactly as a run that does not exist — the same code, the same message —
+    // which is also what `listRuns` already says by omitting it.
+    //
+    // A caller who IS a member and simply lacks `view` cannot happen (`view`
+    // is the lowest role), so nothing legitimate loses its explanatory 403.
+    if (!this.host.roleOf(actorId, row.collection_id as string)) throw notFound;
     this.requireRole(actorId, row.collection_id as string, 'view');
     const items = this.db
       .prepare('SELECT * FROM import_items WHERE run_id = ? ORDER BY at, source_path')

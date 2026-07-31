@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { createServer, IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { AgentAuth, AgentSession, passportAuthUnavailable, runInAgentRequestScope } from './agentauth.js';
-import { KNOWLEDGE_ROUTES } from './knowledge.js';
+import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
+import { BucketName, RateLimiter } from './ratelimit.js';
 import { CanonStore } from './store.js';
 import { RawResponse } from './csv.js';
 import type { ProposalStatus } from './proposals.js';
@@ -271,6 +273,51 @@ const routes: Route[] = [
   ),
 ];
 
+// ---------------------------------------------------------------------------
+// Which routes are rate limited, and which are deliberately not
+//
+// A table of its own rather than a field on every route, for the same reason
+// agentauth.ts keeps its classification separate: a route added above is
+// UNLIMITED by default, and that is the right default here — the opposite of
+// agentauth's, because the failure to avoid there is a route silently opened
+// to agents, and the failure to avoid here is a person unable to read the
+// record. Everything in this table is a route where one cheap request buys a
+// lot of work; see ratelimit.ts for the argument per bucket.
+//
+// Nothing that reads the record is here. `GET /pages/:id`, `GET /search`,
+// `GET /collections`, `GET /audit`, `GET /notifications` and the whole
+// Knowledge read surface are unlimited by design: a limiter that can lock a
+// person out of a policy at the moment they need it has cost more than it saved.
+const RATE_LIMITED: { method: string; pattern: RegExp; bucket: BucketName }[] = [
+  // Retrieval over the visible corpus, then generation. Both doors to it.
+  { method: 'POST', pattern: /^\/ask$/, bucket: 'ask' },
+  { method: 'POST', pattern: new RegExp(`^${KNOWLEDGE_PREFIX}/ask$`), bucket: 'ask' },
+  // Reaches an external system, once per reference on the page. Listing the
+  // reference descriptors (which travels inside GET /pages/:id) is not here:
+  // it makes no outbound call.
+  { method: 'GET', pattern: /^\/pages\/[^/]+\/references$/, bucket: 'references' },
+  // Walks an operator-named directory and writes a page per document.
+  { method: 'POST', pattern: /^\/imports$/, bucket: 'import' },
+];
+
+function bucketFor(method: string, pathname: string): BucketName | null {
+  return RATE_LIMITED.find((r) => r.method === method && r.pattern.test(pathname))?.bucket ?? null;
+}
+
+/**
+ * The key for the authentication bucket. It is the ONE bucket that cannot be
+ * keyed by actor, because the actor is precisely what an unverified passport
+ * is asserting — keying a brute-force limiter by the credential being guessed
+ * would limit nothing. So it keys by the connection's origin, and only a
+ * FAILED authentication spends a token: a busy honest agent never meets it.
+ *
+ * When SSO lands (SECURITY.md R1), its login route belongs in this bucket, on
+ * this key, for exactly the same reason.
+ */
+function authKey(req: IncomingMessage): string {
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
 // A page body, an imported document, and a question are all bodies a person
 // legitimately sends, so the cap is generous — but it is a cap. Without one,
 // a single unauthenticated request can hold the process's memory: the body is
@@ -307,7 +354,14 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
   res.end(body);
 }
 
-export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null): Server {
+export function createApi(
+  store: CanonStore,
+  agentAuth: AgentAuth | null = null,
+  // One limiter per server, built from the deployment's environment
+  // (ratelimit.ts). Passed in rather than reached for so a test can hand in a
+  // tiny one — and so two servers in one process never share a bucket.
+  limiter: RateLimiter = new RateLimiter(),
+): Server {
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://canon');
@@ -324,13 +378,26 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       let session: AgentSession | null = null;
       if (passport) {
         if (!agentAuth) throw passportAuthUnavailable();
-        session = await agentAuth.authenticate(passport, actorId);
+        // Brute force is a sequence of FAILURES, so the bucket is checked
+        // before the attempt and charged only when the attempt fails.
+        limiter.check('auth', authKey(req));
+        try {
+          session = await agentAuth.authenticate(passport, actorId);
+        } catch (err) {
+          limiter.take('auth', authKey(req));
+          throw err;
+        }
         actorId = session.actorId;
       }
       if (!match.open && !actorId) {
         send(res, 401, { error: 'unauthenticated', message: 'X-Actor-Id header required' });
         return;
       }
+      // Rate limiting, once identity is settled so the bucket is per actor
+      // (SECURITY.md R8). Before the body is read and long before any work is
+      // done: refusing after the expensive part would bound nothing.
+      const bucket = bucketFor(req.method ?? '', url.pathname);
+      if (bucket) limiter.take(bucket, actorId);
       const groups = url.pathname.match(match.pattern)!.slice(1);
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
@@ -369,9 +436,31 @@ export function createApi(store: CanonStore, agentAuth: AgentAuth | null = null)
       }
     } catch (err) {
       if (err instanceof CanonError) {
+        // A CanonError's message is WRITTEN FOR THE PERSON READING IT and is
+        // kept exactly as it is. "This page is being edited by Marc", "A policy
+        // requires a named approver before it can publish", "Only the named
+        // approver can grant the Canonical mark" — those sentences are the
+        // product telling somebody what to do next, and blanking them in the
+        // name of security would make Canon unusable to protect nothing: every
+        // one of them is composed here, from the record, for a caller the
+        // store has already decided may know it.
         send(res, err.httpStatus, { error: err.code, message: err.message, ...err.details });
       } else {
-        send(res, 500, { error: 'internal', message: (err as Error).message });
+        // Anything else is a bug, and its message was written for us, not for
+        // the caller (SECURITY.md R7). `(err as Error).message` here used to
+        // hand out SQLite statement text, absolute server filesystem paths and
+        // whatever internals happened to be in the throw. The caller now gets
+        // a correlation id and nothing else; the id, the method, the path and
+        // the whole error — stack included — go to the server's log, where an
+        // operator holding the id from a bug report can find the one line that
+        // explains it. Correlatable, not disclosed.
+        const errorId = randomUUID();
+        console.error(`[error ${errorId}] ${req.method} ${req.url}`, err);
+        send(res, 500, {
+          error: 'internal',
+          message: 'Canon could not complete this request. Quote the error id when reporting it.',
+          errorId,
+        });
       }
     }
   });

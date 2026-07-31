@@ -163,7 +163,12 @@ test('refusals fail closed with the contract’s semantics', async () => {
 
     // A refusal Canon cannot attribute is still audited, against a one-way
     // fingerprint of the presented passport rather than the passport itself.
+    // An audit event naming no collection now reaches the actor it is about
+    // and otherwise only an operator — admin on at least one collection
+    // (SECURITY.md R5) — and an unattributable refusal is about nobody, so
+    // Dana administers a collection in order to read it.
     const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+    await r.call('POST', '/collections', { actor: dana.id }, { name: 'Compliance' });
     const failures = (await r.call('GET', '/audit?action=agent.auth_failed', { actor: dana.id })).json;
     assert.equal(failures.length, 2);
     assert.ok(failures.every((e: any) => e.actorId.startsWith('passport:')));
