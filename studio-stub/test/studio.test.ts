@@ -63,7 +63,7 @@ async function rig(opts: { permittedCollections?: string[]; permittedActions?: s
     return { status: res.status, json: (await res.json()) as any };
   };
 
-  const seed = await seedCanon(canon);
+  const seed = await seedCanon(canon, store);
 
   // The app is registered and certified in the Registry like any agent, and
   // limited there. Canon is told nothing about it beyond what the passport
@@ -117,8 +117,13 @@ async function rig(opts: { permittedCollections?: string[]; permittedActions?: s
   };
 }
 
-async function seedCanon(canon: Rig['canon']) {
+async function seedCanon(canon: Rig['canon'], store: CanonStore) {
   const admin = (await canon('POST', '/actors', undefined, { kind: 'person', name: 'Dana' })).json;
+  // Dana administers this Canon. Two tests below read `knowledge.ask` and
+  // `knowledge.denied` events, which name no collection and therefore reach an
+  // OPERATOR of the Canon rather than the administrator of some collection
+  // (server/src/orgrole.ts, SECURITY.md R5).
+  store.bootstrapAdministrator(admin.id);
   const jo = (await canon('POST', '/actors', undefined, { kind: 'person', name: 'Jo Patel' })).json;
   const approver = (await canon('POST', '/actors', undefined, { kind: 'person', name: 'Iris' })).json;
 

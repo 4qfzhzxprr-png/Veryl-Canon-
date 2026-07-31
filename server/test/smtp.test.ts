@@ -35,6 +35,11 @@ function setup(transport?: NotificationTransport) {
   store.setMember(dana.id, collection.id, marc.id, 'edit');
   store.setMember(dana.id, collection.id, iris.id, 'approve');
   store.setMember(dana.id, collection.id, rosa.id, 'comment');
+  // Flushing the outbox hands every queued notification, from every
+  // collection, to a mail relay: an operator's act, and since orgrole.ts it
+  // asks that question directly rather than through "admin on some
+  // collection". Dana runs this Canon.
+  store.bootstrapAdministrator(dana.id);
   return { store, dana, marc, iris, rosa, collection };
 }
 
@@ -492,7 +497,7 @@ test('outbox: a database written before delivery tracking existed is brought for
   }
 });
 
-test('API: POST /notifications/flush is admin-ish and delivers the outbox', async () => {
+test('API: POST /notifications/flush takes the operator role and delivers the outbox', async () => {
   const fake = await startFakeSmtp();
   const env = setup(transportFor(fake));
   const page = submitForReview(env);
@@ -512,6 +517,10 @@ test('API: POST /notifications/flush is admin-ish and delivers the outbox', asyn
   try {
     assert.equal((await call('POST', '/notifications/flush')).status, 401);
     assert.equal((await call('POST', '/notifications/flush', env.marc.id)).status, 403); // edit is not enough
+    // Nor is administering a collection: that was the stand-in, and it is gone.
+    const lead = env.store.createActor({ kind: 'person', name: 'Team lead' });
+    env.store.createCollection(lead.id, { name: 'Their team' });
+    assert.equal((await call('POST', '/notifications/flush', lead.id)).status, 403);
     assert.equal(fake.messages.length, 0);
 
     const flushed = await call('POST', '/notifications/flush', env.dana.id, { limit: 10 });

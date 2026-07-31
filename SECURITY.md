@@ -4,6 +4,8 @@
 
 It is written the way the rest of this repository is written. Where a control is partial, it says so and says where it stops. A finding nobody can act on because the report overstated the fix is worse than no report.
 
+**Second addendum.** R9 (a person's session outlives revocation at the identity provider) and R10 (no group claims consumed) are now closed too, together with the residual F2, F11 and R5 all named: Canon had no organisation-level role, so five checks asked "does this actor hold `admin` on *any* collection?" instead. It has one now. The three pieces landed as one change because each needs the others — an operator role with no way to grant it is nothing, a revocation guarantee with no way to end a session by hand is half a guarantee, and group mapping without a way to tell mapped access from hand-granted access would have undone F2 and R5 while looking like a feature. See **R9**, **R10**, and the *organisation role* entry under F11. Tests live in [`server/test/orgrole.test.ts`](server/test/orgrole.test.ts), [`server/test/sessionconfirm.test.ts`](server/test/sessionconfirm.test.ts), [`server/test/groupmap.test.ts`](server/test/groupmap.test.ts) and [`idp-stub/test/idp.test.ts`](idp-stub/test/idp.test.ts).
+
 **Addendum.** F10 and F11 below were added after the original review, when the two recommendations the review would not make on its own — R1, no authentication for people; R2, an open directory — were built and landed. Their regression tests live in [`server/test/auth.test.ts`](server/test/auth.test.ts) and [`idp-stub/test/idp.test.ts`](idp-stub/test/idp.test.ts) rather than in `security.test.ts`, because they test a door rather than guard a fix. Section 4's "CSRF is not applicable" paragraph and section 5's first assumption are rewritten accordingly; both predicted this change, and both are kept visible rather than quietly replaced.
 
 ---
@@ -87,7 +89,9 @@ Also added while here, and additive rather than a change of meaning: a source's 
 
 **This is a behaviour change and it is deliberate.** It is recorded here rather than done silently: an administrator's view of the log is now bounded by their collection memberships. That preserves CORE-PLAN's M4 exit ("an administrator can answer *who did what, when* from the audit log alone") for the collections they administer, and it removes the ability of a contributor in one collection to read the operational history of another. If the design partner's compliance lead needs an org-wide view, the right answer is an org-level administrator role — which `sources.ts` and `notify.ts` already work around with "admin on at least one collection" — not an unfiltered query.
 
-Residual at the time, since closed: events that name **no** collection (`agent.session`, `agent.auth_failed`, `source.*`, `answer.ask` with no collection named) stayed visible to every actor. They now reach the actor they are about plus holders of `admin` on some collection — see **R5**, which carries the argument and the cost.
+*That org-level role now exists ([`server/src/orgrole.ts`](server/src/orgrole.ts)), and the paragraph above is still the rule: it grants no collection access, so it does not widen this filter. What it changes is the collection-less half below.*
+
+Residual at the time, since closed: events that name **no** collection (`agent.session`, `agent.auth_failed`, `source.*`, `answer.ask` with no collection named) stayed visible to every actor. They now reach the actor they are about plus **an operator of this Canon** — see **R5**, which carries the argument and the cost, and the organisation role under F11, which replaced R5's "admin on at least one collection" stand-in with the real question.
 
 ### F3 — An import could follow a symlink out of the export directory · **Medium · fixed**
 
@@ -157,7 +161,7 @@ This was recorded as R1 rather than fixed because closing it is a product change
 
 Sign-ins, provisionings, failures and logouts are audit events (`person.session`, `person.provisioned`, `person.auth_failed`, `person.logout`). No ID token, authorization code, client secret or session id ever reaches an error message or the log; there is a test asserting it.
 
-**What this does not do, stated plainly.** Canon does not consume the provider's group or role claims, so collection membership is still granted inside Canon by an administrator; a person who signs in and holds no role sees an empty Canon, which is the correct default but is not the same as provisioning from a directory. There is no single-logout: revoking someone at the identity provider does not reach into Canon's session table, so their session survives until it expires or somebody calls `revokeSessionsFor`. That is a real gap next to the agent door's sixty-second guarantee, and it is a deliberate scope line rather than an oversight — see R9.
+**What this did not do, stated plainly — and both halves are now done.** ~~Canon does not consume the provider's group or role claims, so collection membership is still granted inside Canon by an administrator; a person who signs in and holds no role sees an empty Canon, which is the correct default but is not the same as provisioning from a directory. There is no single-logout: revoking someone at the identity provider does not reach into Canon's session table, so their session survives until it expires or somebody calls `revokeSessionsFor`.~~ Group claims are consumed and mapped (**R10**), and a session is re-confirmed with the provider at least once a minute and can be ended by an operator on the spot (**R9**). The paragraph is struck through rather than deleted, because what a document said while a gap was open is part of the record of how long it was open.
 
 ### F11 — `GET /actors` disclosed the whole directory · **Medium · fixed (behaviour change)** *(was R2)*
 
@@ -166,11 +170,39 @@ Any actor could list every actor with their email address, and the web UI's iden
 **Fixed** in `visibleActors` ([`server/src/auth.ts`](server/src/auth.ts)), with one rule per legitimate need:
 
 - `GET /actors?collection=<id>` — that collection's member list, to anyone who may view it. This is the legitimate case: a member list is who you can name as an owner, an approver, or a mention. A non-member learns nothing, not even the size of the list, because the existing `listMembers` permission check runs first.
-- `GET /actors` from an actor who holds `admin` on at least one collection — the whole directory. An administrator "sets up collections, permissions and document types" (CORE-PLAN.md §2) and cannot grant a role to somebody they cannot find. This is the same "admin on at least one collection" operator stand-in `sources.ts` and `notify.ts` already use.
+- `GET /actors` from an actor who is an **operator of this Canon** — the whole directory. An administrator "sets up collections, permissions and document types" (CORE-PLAN.md §2) and cannot grant a role to somebody they cannot find. *This originally read "an actor who holds `admin` on at least one collection", the same operator stand-in `sources.ts` and `notify.ts` used; see the organisation role below, which replaced it.*
 - `GET /actors` from anyone else — themselves plus the people they actually share a collection with, with **email addresses omitted for everyone but themselves**.
 - The dev identity picker moved to `GET /auth/dev/actors`, which exists only in dev mode. Keeping it off the record's route entirely is what lets `GET /actors` carry one rule for everybody rather than a rule with a hole in it.
 
 **This is a behaviour change and it is deliberate**, in the same spirit as F2: a contributor's view of the organization is now bounded by who they work with. The residual is the operator case — an administrator of one collection still sees every actor and every address. Bounding *that* needs an org-level administrator role, which is the same missing thing F2 named, and inventing a second answer for it here would leave Canon with two.
+
+#### F11 follow-up — the organisation role, and the five stand-ins it replaced · **done**
+
+The residual above is closed, and so is the same residual in four other places. Canon now has an **organisation-level role** on the actor ([`server/src/orgrole.ts`](server/src/orgrole.ts)), stored as data, defaulting to `member`:
+
+| Org role | What it means |
+| --- | --- |
+| `member` | The default, and the **absence** of a grant — no row is written for one. Everything a member can do comes from their collection roles and from nowhere else. |
+| `operator` | Runs this Canon: flush the notification outbox, run the freshness sweep, register a Canon-wide source, read audit events that name no collection, list the actor directory, end a person's sessions. Grants **no** access to any collection's content, and no way to hand any out. |
+| `administrator` | An operator who also administers permissions: sets other people's org roles, and may grant or remove collection membership anywhere. |
+
+**The five checks that changed.** R5 said "when an organisation-level administrator role arrives, those three checks change together — that is the whole list", and listed the audit narrowing, `notify.ts`'s `flushFor` and `sources.ts`'s `requireSourceAdmin`; F11 and F2 added the directory. Grepping for the same shape found a fifth, `freshness.ts`'s `requireOperator`. All five now ask `requireOrgRole(db, actorId, 'operator', …)`:
+
+| Where | What it used to ask | What it asks now |
+| --- | --- | --- |
+| `store.queryAudit` | admin on some collection, for events naming none | operator |
+| `auth.visibleActors` | admin on some collection, for the whole directory | operator |
+| `notify.flushFor` | admin on some collection | operator |
+| `sources.requireSourceAdmin` (unscoped source only) | admin on some collection | operator |
+| `freshness.requireOperator` | admin on some collection | operator |
+
+The stand-in was wrong in **both** directions, which is the whole argument: a team lead who administers one collection was an operator of the entire Canon, and a genuine operator with no collection membership could not flush the outbox, run the sweep, or find anybody in the directory. Both halves are tested, from both sides, in [`server/test/orgrole.test.ts`](server/test/orgrole.test.ts). A source *scoped* to collections is unchanged: that is still admin on every collection in its scope, because it is still a collection-level act.
+
+**`administrator` does not imply collection access, and that is the decision.** An administrator holds no `view` anywhere they were not given one: they cannot read a page, list a tree, search a body, retrieve a passage, or be answered from material they hold no collection role in — there is a test asserting each of those. Running the system is not the same job as being entitled to the corpus, and that separation is exactly what a regulated buyer asks about.
+
+**The residual, stated rather than sold as an impossibility.** An administrator *may grant themselves* a collection role, because administering permissions is what the role is for and a Canon whose last collection admin leaves must not become unadministrable. So the honest claim is not "an administrator cannot read your collection" but "**an administrator cannot read your collection without leaving a `collection.member_set` audit event with their name on it, made before the read**". Accountable access rather than silent access. An `operator` cannot do even that.
+
+**The first administrator** is the one grant nobody can be authorised to make. `CANON_BOOTSTRAP_ADMIN_SUBJECT` names a person at the identity provider and re-asserts the role on every sign-in — the recommended answer, because it grants nothing to whoever arrives first and cannot be locked out. With it unset **and no administrator in the record**, the first person to sign in becomes one, with a loud console line and an `org_role.bootstrap` audit event naming them. That window is exactly one person wide, closes permanently at the first sign-in, and only ever admits somebody the deployment's own identity provider authenticated; the alternative — no bootstrap at all — means `requireOrgRole` refuses everybody forever and the repair is hand-editing the database, which is the one operation an audit log cannot describe. On a dev machine (`CANON_DEV_AUTH=true`, where nobody signs in) `CANON_BOOTSTRAP_ADMIN_ACTOR_ID` names an actor id, and `store.bootstrapAdministrator()` refuses once any administrator exists, so it is not a second way in.
 
 ---
 
@@ -228,6 +260,8 @@ Two things are stated rather than glossed:
 - **This narrows for agents as well as people**, because an agent is an actor and Canon has one actor model. It does not contradict REGISTRY-CONTRACT §4.2 — that rule is about narrowing a cross-collection *response* to `permittedCollections`, and `agentauth`'s `narrow` still applies it on top of whatever survives the store. A limit that runs before another limit cannot widen it. An agent still reads its own `agent.session` events; it reads nobody else's.
 - **"Admin on at least one collection" is a stand-in, and a coarse one.** An administrator of any collection can read every collection-less event, including asks by people in teams they have nothing to do with. It is used here because `notify.ts` (`flushFor`) and `sources.ts` (`requireSourceAdmin`) already define "operator" that way, and a second, different definition of operator would be worse than one coarse one. When an organisation-level administrator role arrives, **those three checks change together** — that is the whole list.
 
+  *It arrived; they changed together, and the list turned out to be five rather than three (the directory, and `freshness.ts`'s sweep). The rule here is now "the actor the event is about, plus an **operator** of this Canon". See the organisation role under F11.*
+
 The cost, named: an ordinary member can no longer see that an agent asked a question. The compliance question CORE-PLAN §6 actually asks — "zero agent actions outside Registry-granted permissions, verified by audit log review" — is an administrator's, and administrators still see all of it.
 
 ### R6 — An import required only `edit` · **fixed (behaviour change)**
@@ -272,15 +306,43 @@ Three decisions inside this one worth naming:
 - **It is in process.** Several Canon processes limit per process. That is proportionate for the alpha and it is written down rather than implied; a distributed limiter needs a shared store Canon does not have, and building one here would have been the wrong-sized change.
 Nothing bounds requests per actor. `POST /ask` is the expensive one, and `GET /auth/login` now joins it as an unauthenticated route that costs the server work (a row, and a discovery fetch on a cold cache). Assumed to be handled by whatever sits in front of Canon; recorded because that assumption is not written down anywhere else.
 
-### R9 — A session outlives a revocation at the identity provider
+### R9 — A session outlives a revocation at the identity provider · **fixed (behaviour change)**
 
-New with F10. The agent door re-asks the Registry at least once a minute, which is what makes "revoking an agent cuts its access within a minute" true. The people door does not: an ID token is verified once, at sign-in, and the session that follows is Canon's own. Disabling someone in Entra ID or Okta therefore does nothing to a session they already hold until it expires — up to `CANON_SESSION_MAX_LIFETIME_MS`, a day by default.
+New with F10. The agent door re-asks the Registry at least once a minute, which is what makes "revoking an agent cuts its access within a minute" true. The people door did not: an ID token was verified once, at sign-in, and the session that followed was Canon's own. Disabling someone in Entra ID or Okta therefore did nothing to a session they already held until it expired — up to `CANON_SESSION_MAX_LIFETIME_MS`, a day by default.
 
-**Recommendation: shorten the absolute lifetime for a partner deployment, and add a periodic re-check** — either the provider's token introspection or a silent re-authorization on a cadence, plus an administrative "sign this person out everywhere". The primitive for the last of these already exists (`PersonAuth.revokeSessionsFor`); what is missing is a route to it and a decision about who may call it. Not done here because "how fast must a person's revocation propagate" is a commitment to make deliberately, the way the sixty-second one was, rather than a number a first implementation picks.
+**Decision: the commitment is made, in the same terms and to the same number as the agent one.** [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) §3 says of agents: "Canon may cache a verified answer … but for no more than sixty seconds. The sixty-second cap is not a tuning knob; it is the guarantee." The people-facing sentence is now:
 
-### R10 — Nothing behind SSO is provisioned from the directory
+> **Canon confirms a person's session with their identity provider at least once every sixty seconds. Disabling somebody at the provider ends their access to Canon within a minute, whatever session they are holding — and an operator can end it immediately.**
 
-Also new with F10. Canon reads `sub`, `name` and `email` from the ID token and no group or role claim. A person who signs in successfully and holds no collection role sees an empty Canon until an administrator grants them one. That is the right default — a claim from a directory is not a Canon permission — but a partner with hundreds of staff will want group-to-collection mapping, and designing it badly (an IdP group silently granting `admin`) would undo F2 and F11 at once. **Recommendation: design it together with the org-level administrator role F2 and F11 both ask for, not before.**
+Built to the shape `agentauth.ts` already proves works ([`server/src/auth.ts`](server/src/auth.ts)):
+
+- **A session carries the time it was last confirmed** (`auth_sessions.confirmed_at`). Past `CANON_SESSION_CONFIRM_MS` the next request re-confirms **before it is served**. The window defaults to 60 000 ms and is **clamped to 60 000 ms** in the constructor, exactly as `RegistryClient` clamps `CANON_REGISTRY_TTL_MS` to `REVOCATION_GUARANTEE_MS`; `0` confirms on every request. A deployment can tighten the guarantee and cannot loosen it.
+- **The confirmation is a live call to the provider's token endpoint** with the session's refresh token. Three outcomes, and none of them is an allowance: the provider refuses (disabled, grant withdrawn) → `401 revoked_at_idp` and **every** session that person holds is deleted, because the provider has said the *person* is gone; the provider cannot be reached or answers unreadably → `503 idp_unreachable`, request refused and **nothing deleted**, so recovery is immediate when it returns (the rule REGISTRY-CONTRACT §5 already keeps by never caching "no answer"); there is nothing to confirm *with* → the session is deleted and the person signs in again.
+- **The refreshed ID token is validated exactly as a fresh one is** — signature, issuer, audience, expiry — minus the nonce, which is the one check that cannot apply: nothing about that token travelled through a browser (OIDC Core 12.2). The subject must still match the session's.
+- **Confirmations are single-flighted per session.** A burst past the window costs one round-trip, not one per request — which also matters because real providers rotate refresh tokens, and eight parallel refreshes would leave seven dead.
+- **Real revocation has a route at last.** `PersonAuth.revokeSessionsFor` existed with no caller; `DELETE /auth/sessions/:actorId` is that caller, open to an **operator** (the org role under F11), audited as `person.sessions_revoked`, and immediate — deletion, not expiry.
+
+**What this cost, stated plainly: Canon now stores one credential.** Confirming a session needs a refresh token, and §5's assumption 7 ("Nothing in Canon ever stores a credential") is amended there rather than quietly broken. It belongs to one session and dies with it; it is sealed at rest with AES-256-GCM under a key derived from `CANON_SESSION_SECRET`, so a stolen `canon.db` is not a set of live credentials without the deployment's environment; it never leaves Canon except to the provider's own token endpoint, and never reaches an audit event, an error, a payload or the console. `CANON_OIDC_SCOPE` now asks for `offline_access` by default, and a provider that will not grant it — or will not return an ID token on refresh — leaves sessions that end at their first window rather than sessions Canon pretends to be confirming.
+
+Tested in [`server/test/sessionconfirm.test.ts`](server/test/sessionconfirm.test.ts) against the real `idp-stub`: served inside the window with no provider round-trip, re-confirmed past it, a person disabled mid-session cut at the window (and their second session with them), an unreachable provider failing closed without deleting anything, a provider that issues no refresh token, single-flight under a burst, the sealed token never appearing in a payload or the log, and revocation by an operator ending both of somebody's sessions on the spot.
+
+### R10 — Nothing behind SSO is provisioned from the directory · **fixed (behaviour change)**
+
+Also new with F10. Canon read `sub`, `name` and `email` from the ID token and no group or role claim. A person who signed in successfully and held no collection role saw an empty Canon until an administrator granted them one. That is the right default — a claim from a directory is not a Canon permission — but a partner with hundreds of staff will want group-to-collection mapping, and designing it badly (an IdP group silently granting `admin`) would undo F2 and F11 at once. The recommendation was to design it together with the org-level administrator role F2 and F11 both ask for, not before.
+
+**Decision: taken as recommended, and landed with that role.** [`server/src/groupmap.ts`](server/src/groupmap.ts):
+
+- **A configurable group claim** (`CANON_OIDC_GROUPS_CLAIM`, default `groups`), read as an array of opaque strings. A single bare string is accepted; anything else — an object, a number, a missing claim — reads as *no groups*, never as everything.
+- **A deployment-configured mapping**, `CANON_GROUP_MAP` (or `CANON_GROUP_MAP_FILE`): one rule per line, `<group> -> collection:<collectionId>:<role>` or `<group> -> org:<operator|administrator>`. Configuration, not a UI: mapping a directory group onto a role in a regulated record is a decision made once and reviewed where the rest of a deployment's configuration is reviewed.
+- **Refused at configuration time.** A rule with bad syntax, an unknown role, an unknown org role, or a collection that does not exist makes the server fail to start, naming the rule. A mapping quietly ignored surfaces weeks later as somebody holding less access than the operator believes they granted.
+- **Applied on every confirmation, not only at first sign-in.** The refresh in R9 returns a current ID token, so a group added at the provider grants its role within the same sixty seconds, and a group removed there removes what it granted within the same sixty seconds.
+- **Mapped access is distinguishable from hand-granted access, which is the part that would otherwise have undone F2 and R5.** `collection_members` stays the **effective** role — the stronger of the two sides — so every membership join in search, retrieval, embeddings, queries, the graph and the audit narrowing is untouched. Underneath it, `collection_hand_grants` holds what an administrator granted and `collection_group_grants` holds one row per group per collection, rewritten wholesale from the claim on each confirmation. So revoking a group removes exactly what that group granted and leaves a hand grant standing; withdrawing a hand grant leaves no phantom mapping; and `DELETE /collections/:id/members/:actorId` answers `{ removed, remaining, groups }`, so an administrator taking their grant back is *told* when a directory group is still holding the person's access up rather than discovering it later. The org role has the same two halves.
+- **It never widens the record's own permission model.** A rule's target is a collection role from Canon's fixed vocabulary or an org role, and there is no third kind: a group cannot make somebody a page's approver, bypass a document type's rules, mint a collection, or reach a collection no rule named. A mapped `edit` is `edit`, through the same table and the same checks a hand grant goes through.
+- **Inspectable, because "why does this person have edit here" is a real question an operator has to answer.** `GET /auth/mapping` returns the rules as configured; `GET /auth/access/:actorId` returns the org role with its hand and mapped halves separately, the groups the person's last confirmed ID token carried, and per collection the hand grant, the group grants and the effective role. Every change is a `person.access_mapped` audit event naming what was granted and what was revoked — and a confirmation that changes nothing writes no event, so the log does not fill with heartbeats.
+
+A group granting `administrator` is legal and is shouted about at start-up, because it is the one rule that hands the identity provider control of who administers Canon.
+
+Tested in [`server/test/groupmap.test.ts`](server/test/groupmap.test.ts) and [`idp-stub/test/idp.test.ts`](idp-stub/test/idp.test.ts): granting on first sign-in and on re-confirmation, a removed group removing exactly the mapped access with a hand grant surviving underneath, a hand grant surviving three confirmations and leaving no phantom, the withdrawal report, a mapped role that cannot approve or administer, both claim names, and a rule naming a collection or a role that does not exist refused when the door is built.
 
 ---
 
@@ -347,7 +409,7 @@ The assumptions the design rests on. If one of these stops being true, re-read t
 
 6. **Permission filtering stays in the SQL.** Retrieval's guarantee is that invisible material never influences ranking, context or the answer. That holds because the membership join is in every candidate query and in `hydrate`. A future optimisation that fetches first and filters afterwards would satisfy every existing test and break the guarantee.
 
-7. **Nothing in Canon ever stores a credential.** No passport, no per-asker source credential, no `credential` column on `sources`. The comment in `sources.ts` naming that as "the change to refuse" is load-bearing. If a future integration needs one, it belongs in the deployment's configuration, read by the connector — not in the record.
+7. **Canon stores exactly one credential, and it is a person's own refresh token.** This used to read "Nothing in Canon ever stores a credential", and R9 changed it: confirming a live session with the identity provider needs a refresh token, so `auth_sessions.refresh_token` holds one. The rest of the assumption stands and is what keeps this one bounded — no Agent Passport, no per-asker source credential, no `credential` column on `sources`, and the comment in `sources.ts` naming that as "the change to refuse" is still load-bearing. What is now assumed about the one exception: it belongs to a single session and is deleted with it (logout, revocation, expiry, a refused confirmation); it is sealed with AES-256-GCM under a key derived from `CANON_SESSION_SECRET`, so **a deployment that leaves that variable unset is also leaving these tokens sealed under a per-process key that dies at restart** — which is survivable, and is one more reason to set it; it is presented only to the provider's own token endpoint; and it reaches no log, error, payload or audit event. If that trade stops being acceptable, the thing to remove is the confirmation, and with it R9's guarantee — not the sealing.
 
 8. **The renderer's contract is "escape everything, then generate our own markup".** `app.js` is safe because `esc()` runs first, unconditionally, on every value. One `innerHTML` that interpolates a record value without it undoes the whole of §4's first paragraph.
 
@@ -418,3 +480,24 @@ Recorded separately from the table above, because they were made after the revie
 | `server/README.md`, `idp-stub/README.md` | The three doors and every new environment variable. |
 
 **Test counts after the authentication work:** `server` 248 (was 212), `idp-stub` 12, `registry-stub` 10, `source-stub` 13, `studio-stub` 8. All pass.
+
+### 6.4 The organisation role, revocation parity, and group mapping (F11 follow-up, R9, R10)
+
+| File | Change |
+| --- | --- |
+| `server/src/orgrole.ts` | **New.** The org role (`member`/`operator`/`administrator`), its storage, `requireOrgRole`, the bootstrap rules, and the separation of hand-granted from group-granted collection access with the effective role derived from both. One `_SCHEMA` const: four tables and the backfill that makes every existing membership row a hand grant. |
+| `server/src/groupmap.ts` | **New.** The group claim, the rule syntax, validation against the record at configuration time, and the applier that rewrites a person's group grants wholesale on every confirmation. |
+| `server/src/db.ts` | One `db.exec(ORG_SCHEMA)` line. |
+| `server/src/store.ts` | `setMember`/`removeMember` write hand grants and recompute the effective role (and `removeMember` reports what a group still holds); `createCollection`'s own admin row is a hand grant; `queryAudit`'s collection-less rule asks the org role; `orgRoleOf`, `isOperator`, `setOrgRole`, `listOrgRoles`, `explainAccess`, `bootstrapAdministrator`. |
+| `server/src/auth.ts` | R9's `confirm`/`confirmNow` (window, single-flight, the three failure modes), the sealed refresh token, `OidcClient.refresh`, nonce-optional validation, `settleAccess` (bootstrap + mapping, at sign-in and at every confirmation), the operator surfaces `GET /auth/mapping`, `GET /auth/org-roles`, `PUT /auth/org-roles/:actorId`, `GET /auth/access/:actorId`, `DELETE /auth/sessions/:actorId`, and `visibleActors` asking the org role. |
+| `server/src/api.ts` | `identify` is awaited: a session past its window is confirmed before the request is served. |
+| `server/src/notify.ts`, `server/src/sources.ts`, `server/src/freshness.ts` | The three remaining "admin on some collection" stand-ins replaced with `requireOrgRole(…, 'operator', …)`. |
+| `server/src/index.ts` | The confirmation window and the group mapping announced at start-up, beside the agent guarantee — loudly when a group grants `administrator`. |
+| `server/scripts/seed-demo.ts` | The demo record names its administrator instead of inferring one. |
+| `idp-stub/` | Groups on a user (issued under a configurable claim name, absent when empty), the refresh grant with rotation, `disabled`, and the `no_refresh_token` quirk. |
+| `server/test/orgrole.test.ts`, `server/test/sessionconfirm.test.ts`, `server/test/groupmap.test.ts`, `server/test/authrig.ts` | **New.** 43 tests over the org role and its five stand-ins, R9's confirmation, and R10's mapping, run against the real `idp-stub` in-process. |
+| `idp-stub/test/idp.test.ts` | Five more: the group claim, the refresh grant, rotation, a disabled person, and a provider that issues no refresh token. |
+| `server/test/{agentauth,answers,federation,freshness,knowledge,proposals,queries,security,smtp,auth,seed-demo}.test.ts`, `studio-stub/test/studio.test.ts` | Updated to the new behaviour: where a test relied on "admin on some collection" meaning operator, it now says which role the actor holds, with the reason in a comment. |
+| `server/README.md`, `idp-stub/README.md` | The org role, the people-facing revocation guarantee beside the agent one, group mapping, and every new environment variable. |
+
+**Test counts after this work:** `server` 357 (was 314), `idp-stub` 17 (was 12), `registry-stub` 10, `source-stub` 13, `studio-stub` 8. All pass.

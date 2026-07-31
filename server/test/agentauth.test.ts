@@ -20,6 +20,7 @@ import {
 } from '../src/agentauth.js';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { RegistryClient } from '../src/registry.js';
 import { CanonStore } from '../src/store.js';
 import { staticConnectorOf } from '../src/connectors.js';
@@ -93,6 +94,11 @@ async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promi
 // A person with a collection, and the agent granted a role in it.
 async function seed(r: Rig, opts: { role?: string } = {}) {
   const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+  // Dana runs this Canon, and now has to say so: administering one collection
+  // is no longer the stand-in for an org-level role (orgrole.ts). It is what
+  // makes `GET /actors` show her the agent actors these tests look for —
+  // SECURITY.md F11's residual, closed.
+  setHandOrgRole(r.db, dana.id, 'administrator', null);
   const collection = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Compliance' })).json;
   const page = (
     await r.call('POST', '/pages', { actor: dana.id }, { collectionId: collection.id, type: 'note', title: 'Handbook' })
@@ -163,11 +169,13 @@ test('refusals fail closed with the contract’s semantics', async () => {
 
     // A refusal Canon cannot attribute is still audited, against a one-way
     // fingerprint of the presented passport rather than the passport itself.
-    // An audit event naming no collection now reaches the actor it is about
-    // and otherwise only an operator — admin on at least one collection
-    // (SECURITY.md R5) — and an unattributable refusal is about nobody, so
-    // Dana administers a collection in order to read it.
+    // An audit event naming no collection reaches the actor it is about and
+    // otherwise only an OPERATOR of this Canon (SECURITY.md R5, and the
+    // org-level role that replaced its "admin on some collection" stand-in).
+    // An unattributable refusal is about nobody, so Dana reads it as an
+    // operator — administering a collection would no longer be enough.
     const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+    setHandOrgRole(r.db, dana.id, 'operator', null);
     await r.call('POST', '/collections', { actor: dana.id }, { name: 'Compliance' });
     const failures = (await r.call('GET', '/audit?action=agent.auth_failed', { actor: dana.id })).json;
     assert.equal(failures.length, 2);
@@ -760,6 +768,10 @@ test('a reference from an unpermitted source is refused visibly, not omitted', a
   const r = await rig();
   try {
     const dana = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+    // The `agent.denied` event this test reads names a source rather than a
+    // collection, and a collection-less event reaches an operator of the Canon
+    // (orgrole.ts) rather than anyone who administers a collection.
+    setHandOrgRole(r.db, dana.id, 'operator', null);
     const collection = (await r.call('POST', '/collections', { actor: dana.id }, { name: 'Benefits' })).json;
     const page = (
       await r.call('POST', '/pages', { actor: dana.id }, { collectionId: collection.id, type: 'note', title: 'Plan summary' })

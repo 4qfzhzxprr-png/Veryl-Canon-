@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
 import { OutboundPolicy, OutboundRefused, assertRegistrableBaseUrl, defaultOutboundPolicy } from './outbound.js';
+import { requireOrgRole } from './orgrole.js';
 
 // Federation, part one: the registered external systems Canon may resolve a
 // value from (DATA-BACKBONE.md §6). A Source is a governed object, registered
@@ -37,11 +38,10 @@ import { OutboundPolicy, OutboundRefused, assertRegistrableBaseUrl, defaultOutbo
 //   - a scoped source requires admin on *every* collection in its scope, both
 //     before and after a change, so nobody can move a source into or out of a
 //     collection they do not administer;
-//   - an unscoped (Canon-wide) source requires admin on *at least one*
-//     collection. Core has no organisation-level administrator role, so this
-//     is the deliberate stand-in for one — the smallest honest rule that keeps
-//     a plain member from registering a system the whole Canon may read.
-//     When a Canon-wide admin role arrives, this is the one check to change.
+//   - an unscoped (Canon-wide) source requires the org-level `operator` role
+//     (orgrole.ts). This used to read "admin on at least one collection" — the
+//     stand-in for an organisation role Canon did not have — and this comment
+//     said it was "the one check to change" when that role arrived. It has.
 
 export const SOURCES_SCHEMA = `
 CREATE TABLE IF NOT EXISTS sources (
@@ -343,20 +343,16 @@ export class SourceService {
     for (const collectionId of collectionIds) insert.run(sourceId, collectionId);
   }
 
-  // Registering or changing a source takes admin; see the header comment for
-  // what an empty scope means and why it is admin-somewhere rather than free.
+  // Registering or changing a source takes admin on its scope; a Canon-wide
+  // source takes the org-level `operator` role (orgrole.ts). That second check
+  // used to read "admin on at least one collection", which was the stand-in
+  // SECURITY.md R5 named and this header called "the one check to change" when
+  // an org-level role arrived. It has arrived, and this is that change: a
+  // source referenceable from every collection in the record is an act at the
+  // altitude of the whole Canon, so it takes a role at that altitude.
   private requireSourceAdmin(actorId: string, collectionIds: string[]): void {
     if (collectionIds.length === 0) {
-      const row = this.db
-        .prepare("SELECT 1 AS hit FROM collection_members WHERE actor_id = ? AND role = 'admin' LIMIT 1")
-        .get(actorId) as { hit: number } | undefined;
-      if (!row) {
-        throw new CanonError(
-          'forbidden',
-          'A Canon-wide source (no collection scope) requires admin on at least one collection',
-          { needed: 'admin' },
-        );
-      }
+      requireOrgRole(this.db, actorId, 'operator', 'Registering a Canon-wide source (one with no collection scope)');
       return;
     }
     for (const collectionId of collectionIds) this.requireRole(actorId, collectionId, 'admin');

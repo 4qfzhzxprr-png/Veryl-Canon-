@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError } from './model.js';
+import { requireOrgRole } from './orgrole.js';
 
 // Notifications (CORE-PLAN.md Epic C, M2) follow an outbox pattern, not live
 // SMTP: every notification is first recorded in the notifications table with
@@ -343,16 +344,15 @@ export class Notifier {
   }
 
   // The permission-checked entry point behind POST /notifications/flush.
-  // Flushing is an operator's job, so it asks for admin on some collection —
-  // Core has no global administrator to ask for instead.
+  // Flushing is an operator's job, and it now asks that question directly
+  // (orgrole.ts) rather than through the "admin on some collection" stand-in
+  // SECURITY.md R5 named. Delivering the outbox is running the system: it hands
+  // every queued notification, from every collection, to a mail relay. A team
+  // lead who administers one collection is not the person who does that, and an
+  // operator who belongs to no collection is.
   async flushFor(actorId: string, limit?: number): Promise<FlushResult> {
     this.directory.getActor(actorId);
-    const admin = this.db
-      .prepare("SELECT 1 AS ok FROM collection_members WHERE actor_id = ? AND role = 'admin' LIMIT 1")
-      .get(actorId) as { ok: number } | undefined;
-    if (!admin) {
-      throw new CanonError('forbidden', 'Flushing the notification outbox requires admin on a collection');
-    }
+    requireOrgRole(this.db, actorId, 'operator', 'Flushing the notification outbox');
     return this.flushPending(limit);
   }
 

@@ -35,6 +35,20 @@ export interface IdpUser {
   name: string;
   email: string | null;
   emailVerified: boolean;
+  /**
+   * The directory groups this person belongs to, as opaque strings. Canon maps
+   * these onto collection and org roles (SECURITY.md R10), so the stub has to
+   * be able to issue them — and, more importantly, to STOP issuing one, which
+   * is what proves a removed group removes the access it granted.
+   */
+  groups: string[];
+  /**
+   * Disabled at the provider. The person keeps existing — an audit trail is not
+   * a thing to delete — but every refresh of an existing session is refused,
+   * which is exactly the event SECURITY.md R9 is about: someone is switched off
+   * at the identity provider while they hold a live session at Canon.
+   */
+  disabled: boolean;
 }
 
 /** A relying party. Canon is one of these. */
@@ -42,6 +56,18 @@ export interface IdpClient {
   clientId: string;
   clientSecret: string;
   redirectUris: string[];
+}
+
+/**
+ * An issued refresh token. A real provider's is opaque and revocable, and so is
+ * this one: it names the person and the client, and it is rotated on use, which
+ * is what a client that stores one has to survive.
+ */
+export interface RefreshToken {
+  token: string;
+  clientId: string;
+  sub: string;
+  scope: string;
 }
 
 /** An issued authorization code, held until it is redeemed exactly once. */
@@ -76,7 +102,14 @@ export type Quirk =
   | 'unknown_kid'
   | 'wrong_nonce'
   | 'no_nonce'
-  | 'alg_none';
+  | 'alg_none'
+  /**
+   * Issue no refresh token. A real provider does this when the client did not
+   * ask for `offline_access`, or when policy forbids it — and a Canon session
+   * that cannot be confirmed is a Canon session that must not be served past
+   * its window, so the refusal needs a provider that really behaves this way.
+   */
+  | 'no_refresh_token';
 
 export const QUIRKS: readonly Quirk[] = [
   'none',
@@ -88,4 +121,5 @@ export const QUIRKS: readonly Quirk[] = [
   'wrong_nonce',
   'no_nonce',
   'alg_none',
+  'no_refresh_token',
 ];

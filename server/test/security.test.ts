@@ -18,6 +18,7 @@ import {
   isBlockedAddress,
   outboundPolicyFromEnv,
 } from '../src/outbound.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { RateLimiter } from '../src/ratelimit.js';
 import { RegistryClient } from '../src/registry.js';
 import { MAX_QUESTION_LENGTH } from '../src/retrieval.js';
@@ -646,22 +647,29 @@ test('oracle: an import run in a collection you hold no role in reads as no such
 // R5 — audit events naming no collection were visible to everyone
 
 test('audit: an event naming no collection reaches its actor and an operator, and nobody else', async () => {
-  const store = new CanonStore(openDb(':memory:'), quiet);
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
   const dana = store.createActor({ kind: 'person', name: 'Dana' });
-  const collection = store.createCollection(dana.id, { name: 'Benefits' }); // dana is admin: the operator
+  const collection = store.createCollection(dana.id, { name: 'Benefits' }); // dana administers it
   const marc = store.createActor({ kind: 'person', name: 'Marc' });
   store.setMember(dana.id, collection.id, marc.id, 'edit'); // a member, not an operator
   const bot = store.createActor({ kind: 'agent', name: 'PolicyBot', registryRef: 'passport:bot-1' });
   store.setMember(dana.id, collection.id, bot.id, 'view');
+  // The operator of this Canon, who is a member of NOTHING. Under the old
+  // stand-in this person could read nothing and Dana could read everything;
+  // both halves of that were wrong (orgrole.ts).
+  const ops = store.createActor({ kind: 'person', name: 'Ops' });
+  setHandOrgRole(db, ops.id, 'operator', null);
 
   // An ask that names no collection: the event carries the question text.
   await store.ask(bot.id, { question: 'What is the parental leave allowance for contractors?' });
   const asks = (actorId: string) => store.queryAudit(actorId, { action: 'answer.ask' });
 
   assert.equal(asks(bot.id).length, 1, 'the actor the event is about reads it');
-  assert.equal(asks(dana.id).length, 1, 'an operator reads it');
-  assert.match(String(asks(dana.id)[0]!.details.question), /parental leave/);
+  assert.equal(asks(ops.id).length, 1, 'an operator reads it, with no collection membership at all');
+  assert.match(String(asks(ops.id)[0]!.details.question), /parental leave/);
   assert.equal(asks(marc.id).length, 0, 'an ordinary member of a collection does not');
+  assert.equal(asks(dana.id).length, 0, 'and neither does the administrator of one collection');
 
   // The F2 narrowing is unchanged: a collection-scoped event still reaches
   // every member of that collection, operator or not.

@@ -7,6 +7,7 @@ import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import { ensurePageFreshnessSchema, isPastReview, today } from '../src/freshness.js';
 import type { Notification, NotificationTransport } from '../src/notify.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { CanonStore } from '../src/store.js';
 
 // Verification and freshness (FEATURES.md §3): a Canonical page carries a
@@ -25,6 +26,10 @@ function setup(transport: NotificationTransport = quiet) {
   const collection = store.createCollection(dana.id, { name: 'Compliance' });
   store.setMember(dana.id, collection.id, marc.id, 'edit');
   store.setMember(dana.id, collection.id, iris.id, 'approve');
+  // The sweep restatuses pages across every collection at once and mails their
+  // owners, so it takes the org-level `operator` role rather than the old
+  // "admin on some collection" stand-in (orgrole.ts). Dana runs this Canon.
+  setHandOrgRole(db, dana.id, 'operator', null);
   return { db, store, dana, marc, iris, collection };
 }
 
@@ -256,7 +261,8 @@ test('needs update: grounded answers may cite it, and say it is past review', as
 });
 
 test('freshness: the sweep over HTTP, and closed to agents by classification', async () => {
-  const store = new CanonStore(openDb(':memory:'), quiet);
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
   const server = createApi(store);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -276,6 +282,7 @@ test('freshness: the sweep over HTTP, and closed to agents by classification', a
     const collection = store.createCollection(dana.id, { name: 'Compliance' });
     store.setMember(dana.id, collection.id, marc.id, 'edit');
     store.setMember(dana.id, collection.id, iris.id, 'approve');
+    setHandOrgRole(db, dana.id, 'operator', null); // as above: the sweep is an operator's act
     const page = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Retention', 'Keep 7 years.', '2026-01-01');
 
     const unauthenticated = await call('POST', '/maintenance/freshness');

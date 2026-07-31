@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, PageStatus, Role } from './model.js';
 import type { Notifier } from './notify.js';
+import { requireOrgRole } from './orgrole.js';
 
 // Verification and freshness (FEATURES.md §3, the Next tier of the cut in
 // "What ships first"; CORE-PLAN.md §4 Epic C names this as where `needs_update`
@@ -270,15 +271,13 @@ export class FreshnessService {
 
   // ---- internals -------------------------------------------------------
 
+  // The fifth of the "admin on at least one collection" operator stand-ins —
+  // the four SECURITY.md R5 listed, plus this one, found by grepping for the
+  // same shape. The sweep restatuses pages across EVERY collection at once and
+  // mails their owners, which is exactly the blast radius that makes it an
+  // operator's act rather than a collection administrator's (orgrole.ts).
   private requireOperator(actorId: string): void {
-    const admin = this.db
-      .prepare("SELECT 1 AS ok FROM collection_members WHERE actor_id = ? AND role = 'admin' LIMIT 1")
-      .get(actorId) as { ok: number } | undefined;
-    if (!admin) {
-      throw new CanonError('forbidden', 'Running the freshness sweep requires admin on a collection', {
-        needed: 'admin' satisfies Role,
-      });
-    }
+    requireOrgRole(this.db, actorId, 'operator', 'Running the freshness sweep');
   }
 
   private audit(

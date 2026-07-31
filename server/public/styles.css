@@ -1553,6 +1553,9 @@ label.check input { width: auto; display: inline; margin: 0; }
 .toast-error { background: var(--danger); color: #fff; }
 .toast-ok { background: var(--accent); color: var(--accent-ink); }
 .toast-info { background: var(--text); color: var(--bg); }
+/* "It worked, and here is what you should know about it" — the withdrawal that
+   leaves a directory group still granting access (SECURITY.md R10). */
+.toast-warn { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber); }
 .toast.leaving { opacity: 0; transition: opacity 0.3s ease; }
 @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 

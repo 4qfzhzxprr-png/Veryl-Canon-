@@ -1002,8 +1002,20 @@ async function viewCollection(id) {
   app.querySelectorAll('[data-remove-member]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       try {
-        await api('DELETE', `/collections/${id}/members/${btn.dataset.removeMember}`);
-        toast('Member removed.', 'ok');
+        // The answer says what is LEFT. A directory group can still be granting
+        // this person a role here (SECURITY.md R10), and "Member removed."
+        // would then be a lie the reader only discovers later.
+        const left = await api('DELETE', `/collections/${id}/members/${btn.dataset.removeMember}`);
+        if (left && left.removed === false && left.remaining) {
+          const groups = (left.groups || []).map((g) => g.group).join(', ');
+          toast(
+            `Your grant is withdrawn, but they still hold ${left.remaining} here` +
+              (groups ? ` through ${groups}` : ' through a directory group'),
+            'warn',
+          );
+        } else {
+          toast('Member removed.', 'ok');
+        }
         route();
       } catch (err) { toastError(err); }
     });

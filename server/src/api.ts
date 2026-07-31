@@ -119,10 +119,13 @@ const routes: Route[] = [
     store.setMember(actorId, params.id!, params.memberId!, body.role);
     return { ok: true };
   }),
-  route('DELETE', '/collections/:id/members/:memberId', ({ store, actorId, params }) => {
-    store.removeMember(actorId, params.id!, params.memberId!);
-    return { ok: true };
-  }),
+  // Withdrawing a membership withdraws the HAND grant. The answer carries what
+  // is left — `{ removed, remaining, groups }` — because a directory group may
+  // still be granting this person a role here (SECURITY.md R10), and an
+  // administrator who was not told would believe they had removed something.
+  route('DELETE', '/collections/:id/members/:memberId', ({ store, actorId, params }) =>
+    store.removeMember(actorId, params.id!, params.memberId!),
+  ),
 
   route('POST', '/pages', ({ store, actorId, body }) => store.createPage(actorId, body)),
   route('GET', '/pages/:id', ({ store, actorId, params }) => {
@@ -439,8 +442,12 @@ export function createApi(
       }
       // Who is asking. A session cookie is a person signed in through SSO;
       // X-Actor-Id is the dev stand-in and is refused when dev mode is off.
+      // Awaited: past its window a session is re-confirmed with the identity
+      // provider before it is served (SECURITY.md R9, auth.ts `confirm`), which
+      // is a live call — the people-facing half of the sixty-second guarantee
+      // the agent door already keeps.
       const identity: PersonIdentity = personAuth
-        ? personAuth.identify(req, res)
+        ? await personAuth.identify(req, res)
         : identifyFromHeader(req, devAuth);
       // An Agent Passport, when presented, wins over the dev header: it is
       // verified with the Registry and resolved to the agent's actor (Epic D).

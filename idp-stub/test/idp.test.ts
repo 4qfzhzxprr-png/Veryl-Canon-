@@ -42,6 +42,11 @@ async function rig(): Promise<Rig> {
   };
 }
 
+/** The challenge for a verifier we already hold, for a second code in one test. */
+function pkceFor(verifier: string): string {
+  return createHash('sha256').update(verifier).digest('base64url');
+}
+
 function pkce(): { verifier: string; challenge: string } {
   const verifier = randomBytes(48).toString('base64url');
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
@@ -398,6 +403,119 @@ test('the token endpoint refuses anything but the authorization_code grant', asy
     const res = await exchange(r, { grant_type: 'password', code: 'x', code_verifier: 'y' });
     assert.equal(res.status, 400);
     assert.equal(res.json.error, 'unsupported');
+  } finally {
+    r.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Group claims and the refresh grant.
+//
+// Both exist for Canon's sake — R10 maps a group onto a role, and R9 confirms a
+// live session with a refresh token — and both are only worth having if the
+// stub behaves the way a real provider does when the answer changes: the group
+// stops being issued, and a disabled person's refresh is refused.
+
+test('groups: the claim is issued only when the person is in one, under a configurable name', async () => {
+  const r = await rig();
+  try {
+    r.store.updateUser('dana', { groups: ['Canon-Compliance-Editors', 'Canon-Board'] });
+    const { verifier, challenge } = pkce();
+    const first = await exchange(r, { code: await getCode(r, challenge), code_verifier: verifier });
+    assert.deepEqual(claimsOf(first.json.id_token).groups, ['Canon-Compliance-Editors', 'Canon-Board']);
+
+    // A deployment's claim name is configuration — Entra says `groups`, plenty
+    // of Okta authorization servers say `roles` — so the stub can say either.
+    r.store.setGroupsClaim('roles');
+    const second = await exchange(r, { code: await getCode(r, pkceFor(verifier)), code_verifier: verifier });
+    const claims = claimsOf(second.json.id_token);
+    assert.deepEqual(claims.roles, ['Canon-Compliance-Editors', 'Canon-Board']);
+    assert.equal(claims.groups, undefined);
+    assert.equal((await (await fetch(`${r.base}/admin/groups-claim`)).json()).claim, 'roles');
+
+    // Nobody's group: the claim is absent rather than an empty array, which is
+    // the other thing real providers do.
+    r.store.setGroupsClaim('groups');
+    r.store.updateUser('dana', { groups: [] });
+    const third = await exchange(r, { code: await getCode(r, pkceFor(verifier)), code_verifier: verifier });
+    assert.equal(claimsOf(third.json.id_token).groups, undefined);
+  } finally {
+    r.close();
+  }
+});
+
+test('refresh: the grant returns a new ID token carrying the person’s CURRENT claims', async () => {
+  const r = await rig();
+  try {
+    r.store.updateUser('dana', { groups: ['Canon-Compliance-Editors'] });
+    const { verifier, challenge } = pkce();
+    const first = await exchange(r, { code: await getCode(r, challenge), code_verifier: verifier });
+    assert.ok(first.json.refresh_token, 'the code exchange issues one');
+
+    // The directory changes while the session is alive.
+    r.store.updateUser('dana', { groups: ['Canon-Board'], name: 'Dana Whitfield-Amos' });
+    const refreshed = await exchange(r, { grant_type: 'refresh_token', refresh_token: first.json.refresh_token });
+    assert.equal(refreshed.status, 200, JSON.stringify(refreshed.json));
+    const claims = claimsOf(refreshed.json.id_token);
+    assert.deepEqual(claims.groups, ['Canon-Board'], 'the token says what is true now');
+    assert.equal(claims.name, 'Dana Whitfield-Amos');
+    assert.equal(claims.sub, 'dana');
+    assert.equal(claims.nonce, undefined, 'a refreshed token carries no nonce: nothing went through a browser');
+  } finally {
+    r.close();
+  }
+});
+
+test('refresh: the token is rotated, so the presented one dies with the exchange', async () => {
+  const r = await rig();
+  try {
+    const { verifier, challenge } = pkce();
+    const first = await exchange(r, { code: await getCode(r, challenge), code_verifier: verifier });
+    const second = await exchange(r, { grant_type: 'refresh_token', refresh_token: first.json.refresh_token });
+    assert.ok(second.json.refresh_token);
+    assert.notEqual(second.json.refresh_token, first.json.refresh_token);
+
+    const replay = await exchange(r, { grant_type: 'refresh_token', refresh_token: first.json.refresh_token });
+    assert.equal(replay.status, 400);
+    assert.equal(replay.json.error, 'invalid_grant');
+
+    const invented = await exchange(r, { grant_type: 'refresh_token', refresh_token: 'rt-nonsense' });
+    assert.equal(invented.status, 400);
+  } finally {
+    r.close();
+  }
+});
+
+test('refresh: a disabled person is refused — the event Canon’s R9 guarantee is about', async () => {
+  const r = await rig();
+  try {
+    const { verifier, challenge } = pkce();
+    const first = await exchange(r, { code: await getCode(r, challenge), code_verifier: verifier });
+
+    r.store.updateUser('dana', { disabled: true });
+    const refused = await exchange(r, { grant_type: 'refresh_token', refresh_token: first.json.refresh_token });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.json.error, 'invalid_grant');
+    assert.match(refused.json.error_description, /disabled/);
+
+    // And they cannot start a new session either.
+    const fresh = await exchange(r, { code: await getCode(r, pkceFor(verifier)), code_verifier: verifier });
+    assert.equal(fresh.status, 400);
+    assert.equal(fresh.json.error, 'invalid_grant');
+  } finally {
+    r.close();
+  }
+});
+
+test('refresh: the no_refresh_token quirk issues none, so a client must cope with a provider that will not', async () => {
+  const r = await rig();
+  try {
+    r.store.setQuirk('no_refresh_token');
+    const { verifier, challenge } = pkce();
+    const issued = await exchange(r, { code: await getCode(r, challenge), code_verifier: verifier });
+    assert.equal(issued.status, 200);
+    assert.ok(issued.json.id_token);
+    assert.equal(issued.json.refresh_token, undefined);
   } finally {
     r.close();
   }

@@ -89,6 +89,11 @@ async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promi
 // only some actors can see, and the people involved.
 async function seed(r: Rig) {
   const admin = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Dana' })).json;
+  // Dana administers this Canon, said outright: several tests below read audit
+  // events that name no collection (`knowledge.ask`, `knowledge.denied`,
+  // `agent.denied`), which reach an operator rather than the administrator of
+  // some collection (orgrole.ts).
+  r.store.bootstrapAdministrator(admin.id);
   const jo = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Jo Patel' })).json;
   const approver = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Iris' })).json;
 

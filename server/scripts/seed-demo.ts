@@ -1153,7 +1153,13 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     actors.set(person.key, actor.id);
   }
   const operator = actors.get('dana')!;
-  say(`  people        ${PEOPLE.length}`);
+  // Somebody has to run this Canon, and since the org-level role arrived
+  // (orgrole.ts) that is a fact stated rather than inferred from administering
+  // a collection. Dana is the demo record's administrator: she runs the
+  // freshness sweep below, and she is the actor these tests read the whole
+  // record's map through.
+  store.bootstrapAdministrator(operator);
+  say(`  people        ${PEOPLE.length} (Dana Whitfield is this Canon's administrator)`);
 
   // ---- collections and membership ---------------------------------------
   const collectionIds = new Map<string, string>();
