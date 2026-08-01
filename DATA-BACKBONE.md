@@ -187,7 +187,62 @@ with the same discipline: a hermetic default so the system runs and tests run wi
 
 If a design partner needs a fact to be *governed* rather than merely read — reviewed, approved, carrying the Canonical mark — then it is not a federated value at all; it is a page, and it belongs in the record with an owner. The test is whether the organization wants to argue about the number. Facts nobody argues about federate; facts that need an approver are documents wearing a number's clothing.
 
-## 7. What Registry and Studio depend on
+## 7. What happens when the record disagrees with itself
+
+Federation brings in facts Canon does not own, and import brings in pages Canon did not write. Both make contradiction possible: two systems can answer the same question differently, a page's prose can contradict the value displayed beside it, and two Canonical pages can state opposite rules. This section fixes what Canon does about that, and the short answer is that **Canon does not decide**.
+
+### The rule
+
+Canon surfaces contradiction. It does not resolve it. There is no averaging, no last-write-wins, no preferring the fresher answer, no confidence score that quietly ranks one system above another.
+
+The reasoning is the same one that rejected an inferred graph in section 5. A reconciliation nobody can audit is indistinguishable from an invention: it produces a single confident number with no way to ask where it came from or who agreed to it. For a record whose entire claim is that you can always ask that question, silent reconciliation is the worst thing the system could do — worse than showing two values and admitting they disagree, and far worse than refusing.
+
+So contradiction is treated exactly as staleness is: made visible, attributed, and routed to the person accountable for the page. *Stale knowledge announces itself* was the freshness promise; contradicted knowledge announces itself too.
+
+### Ownership is the only legitimate precedence
+
+One case is not really a disagreement. If the claims system merely caches a figure the benefits administrator owns, then the benefits administrator is right by definition and the claims system is a copy that drifted. There is no judgement to make — there is an authority and there are copies.
+
+That gives the only form of precedence Canon will encode, and it is a modelling decision rather than a runtime one: **authority belongs to a field, not to a source.** A reference declares which system is authoritative for that fact. Any other source answering the same question is **corroboration**, and its disagreement is a signal about the systems, never a vote about the value.
+
+Where two systems genuinely both own their answer — headcount from the HR system and from payroll, computed to different definitions — there is no authority to name, and Canon must not invent one. That is a definitions problem wearing a data problem's clothes. Both values are shown, both are labelled, and the page's prose is where the difference gets explained by a person.
+
+### The four shapes it takes
+
+- **Two systems, one fact.** Handled by authority and corroboration above. The check is worth running even when an authority is named, because a corroborating source that has drifted is telling the organization something true about its own systems.
+- **A value contradicts the prose beside it.** The most common and the most dangerous, because the sentence was approved and the number was not: a policy reads "the deductible is $1,500" while the reference resolves to $1,200. Canon cannot check this by parsing, and will not try — principle 2 runs the other way, and a system that extracted facts from prose to police prose would be inventing the very structure it claims not to have. The remedy is one discipline and one loop. The discipline is that a page should *display* the reference rather than restate it. The loop is that an agent which notices the contradiction raises a **proposal** carrying its reasoning, and a person settles it — which is exactly what FEATURES.md §5 means by agents flagging pages that contradict each other, and needs no mechanism that does not already exist.
+- **Two pages contradict each other.** Never merged, never auto-resolved. Canon gains an explicit **relation** between pages — *conflicts with*, *superseded by* — asserted by a person or proposed by an agent and accepted by one. Because it is explicit it may be drawn: contradiction becomes something visible on the knowledge map rather than something discovered during an audit.
+- **An imported page contradicts an authored one.** A migration artefact, and section 6 already names the cure: a migrated source is retired. Until it is, the map shows the duplicate pair, which is the point.
+
+### Divergence is a record, not a decision
+
+When a corroborating source disagrees with its authority, Canon writes a **Divergence**: which reference, which sources, what each said, and when it was observed. The authoritative value continues to display — an unexplained disagreement is not a reason to blank a field a system is entitled to answer — and the page shows that a divergence exists. The page's owner is notified through the same outbox that carries review requests, and the whole thing lands in the audit log.
+
+A divergence is closed by a person, with a reason: *the copy was wrong and has been corrected upstream*, *the definitions differ and here is why*, *this source should not have been corroborating this field*. Closing it is a decision the record keeps, not a flag that silently clears when the values happen to agree again.
+
+### Answers must never smooth a contradiction
+
+This is the sharpest rule in the section. Grounded answers compose from several Canonical passages. If two of those passages disagree, an answer that reads them into one fluent sentence has done the thing this entire document exists to prevent, and it has done it invisibly, with citations attached that make it look verified.
+
+So: when the passages an answer draws on conflict, the answer says so, cites both, and does not choose. *The record gives two answers here and they differ* is a correct, useful answer. It is also the product demonstrating its own integrity at the exact moment that matters, which is worth more than a fluent guess.
+
+### The shapes
+
+```
+Reference field   { sourceId, selector, key, role: 'authority' | 'corroborating' }
+Divergence        { id, referenceId, pageId, authoritySourceId, authorityValue,
+                    otherSourceId, otherValue, observedAt, state: 'open' | 'closed',
+                    closedBy?, closedAt?, reason? }
+Page relation     { fromPageId, toPageId, kind: 'conflicts_with' | 'supersedes',
+                    assertedBy, assertedAt, note }
+Answer            …, disagreement?: { pageIds: [...], note }
+```
+
+### What Canon will not build
+
+No automatic merge. No per-source trust score that outranks a named authority. No rule that the fresher value wins — freshness is not authority, and a stale answer from the system that owns a fact still beats a fresh one from a system that does not. No silent closure of a divergence because two systems drifted back into agreement.
+
+## 8. What Registry and Studio depend on
 
 These are the contracts. They name what each product may assume about Canon, and what Canon assumes in return.
 
@@ -207,7 +262,7 @@ These are the contracts. They name what each product may assume about Canon, and
 
 The Knowledge API lands in the Next tier ([FEATURES.md](FEATURES.md), what ships first). The contract is stated now so nothing in Core forecloses it — which is Core's standing rule for all deferred work. It is written out in full in [STUDIO-CONTRACT.md](STUDIO-CONTRACT.md), which is to Studio what [REGISTRY-CONTRACT.md](REGISTRY-CONTRACT.md) is to the Registry, and is built on that contract rather than beside it: a Studio app *is* an agent, and presents an Agent Passport exactly as one.
 
-## 8. What this means for build order
+## 9. What this means for build order
 
 The Core plan already sequences the product correctly for this role; the backbone framing changes emphasis, not order.
 
@@ -215,7 +270,7 @@ The Core plan already sequences the product correctly for this role; the backbon
 - **The Registry contract comes first among integrations.** Core's plan already requires agreeing the Passport and certification-check contract before M1 ends. This document adds the reason: it is the suite's trust boundary, not just a Canon feature.
 - **The Knowledge API is the third product's foundation.** It ships in the Next tier, but its shape — actor on every call, permission per call, Canonical-only grounding — is fixed now. Studio's timeline depends on it, so the Next tier should open with it.
 
-## 9. Open questions
+## 10. Open questions
 
 Beyond the Core plan's open questions, the backbone role raises four of its own:
 
