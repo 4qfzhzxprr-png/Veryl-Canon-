@@ -71,6 +71,14 @@ const state = {
     // family — as-of, the page bundle, the collection register — because they
     // ship together. See detectAttestation.
     attestation: null,
+    // What happens when the record disagrees with itself (DATA-BACKBONE.md §7).
+    // THREE independent probes, because they are three separate pieces of
+    // server: the asserted relation between two pages, the divergence a
+    // corroborating source raised against its authority, and — read straight
+    // off the answer payload rather than probed — a disagreement between two
+    // Canonical passages. A Canon that serves one and not the others shows
+    // exactly the one it serves.
+    relations: null, divergences: null,
   },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
@@ -81,6 +89,7 @@ function resetFeatures() {
   state.features = {
     search: null, comments: null, ask: null, related: null, references: null, sources: null,
     map: null, wholeGraph: null, attestation: null,
+    relations: null, divergences: null,
   };
   askProbe = null;
   sourcesProbe = null;
@@ -1110,6 +1119,8 @@ async function viewPage(id) {
             ${isArchived ? '' : `<p><a class="btn primary" href="#/pages/${esc(id)}/edit">Write the first draft</a></p>`}
           </div>`}
 
+        <div id="divergences-host"></div>
+        <div id="relations-host"></div>
         <div id="related-host"></div>
         <div id="comments-host"></div>
       </section>
@@ -1163,6 +1174,11 @@ async function viewPage(id) {
   }));
 
   renderReferences(id, references);
+  // Where the record disagrees with itself (DATA-BACKBONE.md §7). Two separate
+  // pieces of server, feature-detected separately: neither one's absence hides
+  // the other, and a Canon that serves neither shows a page exactly as before.
+  renderDivergencesPanel(id);
+  renderRelationsPanel(id, page);
   renderRelatedPanel(id);
   renderCommentsPanel(id);
 }
@@ -1204,7 +1220,50 @@ function normalizeReference(r) {
     // does not, it is looked up from the registered source (see resolveAuthMode).
     authMode: r?.authMode ?? null,
     serviceResolved: r?.serviceResolved === true,
+    // DATA-BACKBONE.md §7: a resolved reference MAY carry a divergence marker,
+    // meaning a corroborating source answered the same question differently.
+    // The authoritative value above is untouched by it — "an unexplained
+    // disagreement is not a reason to blank a field a system is entitled to
+    // answer" — and the marker is read here so the field can say so.
+    divergence: normalizeDivergence(r?.divergence, r?.id ?? r?.referenceId ?? null),
   };
+}
+
+// One normaliser for a divergence, whether it arrived inside a resolved
+// reference or from GET /pages/:id/divergences. `true` is accepted as the
+// minimum honest marker a server might send: it says a divergence exists and
+// nothing more, and the UI then says exactly that much.
+function normalizeDivergence(d, referenceId = null) {
+  if (!d) return null;
+  if (d === true) return { id: null, referenceId, state: 'open', bare: true };
+  if (Array.isArray(d)) return normalizeDivergence(d[0], referenceId);
+  if (typeof d !== 'object') return null;
+  const state = d.state === 'closed' || d.closedAt ? 'closed' : 'open';
+  return {
+    id: d.id ?? d.divergenceId ?? null,
+    referenceId: d.referenceId ?? referenceId,
+    pageId: d.pageId ?? null,
+    authoritySourceId: d.authoritySourceId ?? null,
+    authoritySourceName: d.authoritySourceName ?? d.authoritySource?.name ?? null,
+    authorityValue: d.authorityValue === undefined ? null : d.authorityValue,
+    otherSourceId: d.otherSourceId ?? null,
+    otherSourceName: d.otherSourceName ?? d.otherSource?.name ?? null,
+    otherValue: d.otherValue === undefined ? null : d.otherValue,
+    observedAt: d.observedAt ?? d.at ?? null,
+    state,
+    closedBy: d.closedBy ?? null,
+    closedAt: d.closedAt ?? null,
+    reason: d.reason ?? null,
+    label: d.label ?? d.selector ?? null,
+    bare: false,
+  };
+}
+
+// What a source is called, from the divergence itself where it says, and from
+// the registered source register where it does not. Never guessed: an unnamed
+// source reads as "another source", which is true.
+function divergenceSourceName(id, name, sourcesById) {
+  return name || sourcesById?.get(id)?.name || (id ? clip(id, 24) : null);
 }
 
 // Whether this value was resolved with a service identity — from the row if it
@@ -1359,6 +1418,28 @@ function referenceFieldHTML(r, sourcesById) {
     marks.push(serviceMarkHTML());
     prov += ` ${SERVICE_SENTENCE}`;
   }
+
+  // A divergence (DATA-BACKBONE.md §7) changes NOTHING about the value above.
+  // The authoritative source is entitled to answer and its answer keeps
+  // displaying; what is added is the fact that somebody else answered
+  // differently, what they said, and when it was seen. Calm, not alarming: a
+  // disagreement between two systems is a fact about the systems, never a vote
+  // about the value.
+  const divergence = r.divergence;
+  if (divergence && divergence.state === 'open') {
+    cls += ' has-divergence';
+    marks.push(`<span class="badge badge-divergence sm" role="button" tabindex="0"
+      data-divergence-mark="${esc(divergence.id ?? '')}"
+      title="Another source answered this differently. The value shown is still the authoritative one.">another source disagrees</span>`);
+    const other = divergenceSourceName(divergence.otherSourceId, divergence.otherSourceName, sourcesById);
+    const said = referenceValueText(divergence.otherValue);
+    const seen = fmtAgo(divergence.observedAt);
+    prov += divergence.bare || (!other && said === null)
+      ? ' Another source disagrees with this value; the disagreement is open below.'
+      : ` ${esc(other ?? 'Another source')} answered ${said === null ? 'differently' : `“${esc(clip(said, 40))}”`}` +
+        `${seen ? `, seen ${esc(seen)}` : ''}. The value above is still the authoritative one.`;
+  }
+
   return referenceRowHTML({ r, cls, valueHTML, marks, prov, valueTitle: value !== shown ? value : null });
 }
 
@@ -1429,6 +1510,388 @@ async function renderReferences(pageId, declared) {
       slot.outerHTML = referenceUnreachableHTML(ref, { message: 'the resolver returned no answer for this reference' });
     }
   }
+
+  // The divergence mark beside a value takes the reader to the whole record of
+  // it — what each source said and when — rather than trying to fit that into
+  // a badge.
+  const jump = (id) => {
+    const target = id
+      ? document.querySelector(`[data-divergence="${cssEscape(id)}"]`)
+      : document.getElementById('divergences-panel');
+    const fallback = document.getElementById('divergences-panel');
+    const el = target ?? fallback;
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1400);
+  };
+  block.querySelectorAll('[data-divergence-mark]').forEach((mark) => {
+    mark.addEventListener('click', () => jump(mark.dataset.divergenceMark));
+    mark.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(mark.dataset.divergenceMark); }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Divergences — where a corroborating source disagrees with its authority
+// (DATA-BACKBONE.md §7)
+//
+//   GET  /pages/:id/divergences
+//     -> [{ id, referenceId, pageId, authoritySourceId, authorityValue,
+//           otherSourceId, otherValue, observedAt,
+//           state: 'open' | 'closed', closedBy?, closedAt?, reason? }]
+//   POST /divergences/:id/close   { reason }   — the reason is required
+//
+// Feature-detected on its own, exactly as /ask, /sources and the map are: where
+// the endpoint 404s there is no panel, no marker beside a value, and nothing on
+// the page that says a feature is missing.
+//
+// Three things this UI must carry, because they are §7 itself:
+//
+//   * the authoritative value keeps displaying, normally. "An unexplained
+//     disagreement is not a reason to blank a field a system is entitled to
+//     answer." The marker sits beside the value; it never replaces it.
+//   * both answers are shown, attributed and dated, and NEITHER is presented as
+//     the right one. Canon surfaces contradiction and does not resolve it: no
+//     averaging, no fresher-wins, no confidence score.
+//   * closing takes a reason, and closing is a DECISION THE RECORD KEEPS. It is
+//     not a dismissal, and a divergence never clears itself because two systems
+//     drifted back into agreement.
+
+function divergenceValueHTML(value) {
+  const text = referenceValueText(value);
+  if (text === null) return '<span class="dv-value is-empty">no value</span>';
+  return `<span class="dv-value" title="${esc(text)}">${esc(clip(text, 60))}</span>`;
+}
+
+function divergenceEntryHTML(d, sourcesById) {
+  const authority = divergenceSourceName(d.authoritySourceId, d.authoritySourceName, sourcesById) ?? 'The authority';
+  const other = divergenceSourceName(d.otherSourceId, d.otherSourceName, sourcesById) ?? 'Another source';
+  const seen = fmtAgo(d.observedAt);
+  const at = d.observedAt ? fmtDateTime(d.observedAt) : null;
+  const label = d.label ? clip(d.label, 48) : null;
+  const closed = d.state === 'closed';
+  return `
+    <li class="divergence ${closed ? 'is-closed' : 'is-open'}"${d.id ? ` data-divergence="${esc(d.id)}"` : ''}>
+      <div class="dv-head">
+        <span class="badge ${closed ? 'badge-divergence-closed' : 'badge-divergence'} sm">${closed ? 'settled' : 'open'}</span>
+        ${label ? `<span class="dv-label">${esc(label)}</span>` : ''}
+        ${at ? `<span class="muted dv-seen" title="${esc(at)}">seen ${esc(seen ?? at)}</span>` : ''}
+      </div>
+      ${d.bare ? `
+        <p class="dv-bare muted">Another source answered this differently. This Canon did not say which, or what it
+          said — only that the disagreement exists.</p>` : `
+        <div class="dv-pair">
+          <div class="dv-side dv-authority">
+            <span class="dv-role">Authoritative — ${esc(authority)}</span>
+            ${divergenceValueHTML(d.authorityValue)}
+            <span class="dv-note muted">The system this field names as owning the fact. Its value is what the page shows.</span>
+          </div>
+          <div class="dv-side dv-other">
+            <span class="dv-role">Corroborating — ${esc(other)}</span>
+            ${divergenceValueHTML(d.otherValue)}
+            <span class="dv-note muted">A second system answering the same question. Its disagreement is a signal about
+              the systems, never a vote about the value.</span>
+          </div>
+        </div>`}
+      ${closed ? `
+        <p class="dv-settled">Closed by ${actorLabel(d.closedBy)}${d.closedAt ? ` · ${esc(fmtDateTime(d.closedAt))}` : ''}${
+          d.reason ? `<span class="dv-reason">${esc(d.reason)}</span>` : ''
+        }</p>` : `
+        <div class="dv-actions">
+          ${d.id ? `<button class="btn subtle" type="button" data-close-divergence="${esc(d.id)}">Close this divergence…</button>` : ''}
+          <span class="muted dv-hint">Closing records a decision. It does not remove the disagreement from the record.</span>
+        </div>`}
+    </li>`;
+}
+
+async function renderDivergencesPanel(pageId) {
+  const host = document.getElementById('divergences-host');
+  if (!host || state.features.divergences === false) return;
+  let rows;
+  let sourcesById = null;
+  try {
+    const [r, byId] = await Promise.all([
+      api('GET', `/pages/${pageId}/divergences`),
+      loadSourcesById(),
+    ]);
+    state.features.divergences = true;
+    sourcesById = byId;
+    rows = (Array.isArray(r) ? r : (r?.divergences ?? []))
+      .map((d) => normalizeDivergence(d))
+      .filter(Boolean);
+  } catch (err) {
+    // Not built yet: there is no panel, and nothing on the page mentions one.
+    if (err.status === 404 || err.status === 405) { state.features.divergences = false; return; }
+    if (!host.isConnected) return;
+    host.innerHTML = `<section class="panel"><h2 class="h-small">Where a source disagrees</h2>
+      <p class="muted">Canon could not read this page's divergences: ${esc(err.message)}.
+        That is this request failing, not the record saying there are none.</p></section>`;
+    return;
+  }
+  if (!host.isConnected) return;
+  // Nothing to say is said by saying nothing: a page with no divergence carries
+  // no panel about divergences.
+  if (!rows.length) { host.innerHTML = ''; return; }
+
+  const open = rows.filter((d) => d.state === 'open');
+  const closed = rows.filter((d) => d.state === 'closed');
+  host.innerHTML = `
+    <section class="panel divergences ${open.length ? 'has-open' : ''}" id="divergences-panel">
+      <h2 class="h-small">Where a source disagrees</h2>
+      <p class="dv-lede">Two systems answered the same question differently. Canon shows both and decides between them
+        at no point — no averaging, no preferring the fresher answer, no score that quietly ranks one system above
+        another. The value on this page is still the one its authority gave.</p>
+      ${open.length ? `<ul class="dv-list">${open.map((d) => divergenceEntryHTML(d, sourcesById)).join('')}</ul>` : ''}
+      ${closed.length ? `
+        <h3 class="dv-subhead">Settled${open.length ? '' : ' — nothing here is open'}</h3>
+        <p class="muted dv-subnote">A closed divergence stays on the record with the reason it was closed. It is a
+          decision somebody took, not a flag that cleared.</p>
+        <ul class="dv-list">${closed.map((d) => divergenceEntryHTML(d, sourcesById)).join('')}</ul>` : ''}
+    </section>`;
+
+  host.querySelectorAll('[data-close-divergence]').forEach((btn) => {
+    btn.addEventListener('click', () => openModal({
+      title: 'Close this divergence',
+      submitLabel: 'Close it, with this reason',
+      body: `
+        <p class="muted">Closing is a decision the record keeps, not a dismissal. Your reason stays on this page,
+          attributed to you, and the divergence does not reopen or clear itself because the two systems happen to
+          agree again.</p>
+        <label>Why is this settled?
+          <textarea name="reason" rows="3" required
+            placeholder="The copy was wrong and has been corrected upstream · the definitions differ, and here is how · this source should not be corroborating this field"></textarea></label>`,
+      onSubmit: async (form) => {
+        const reason = form.reason.value.trim();
+        if (!reason) throw { message: 'Closing a divergence takes a reason: it is a decision the record keeps.' };
+        try {
+          await api('POST', `/divergences/${btn.dataset.closeDivergence}/close`, { reason });
+        } catch (err) {
+          if (err.status === 404 || err.status === 405) {
+            state.features.divergences = false;
+            host.innerHTML = '';
+            throw { message: 'Closing a divergence is not available on this Canon yet.' };
+          }
+          throw err;
+        }
+        toast('Closed. The reason is on the record.', 'ok');
+        renderDivergencesPanel(pageId);
+      },
+    }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Page relations — conflicts with, supersedes (DATA-BACKBONE.md §7)
+//
+//   GET    /pages/:id/relations
+//     -> [{ id, fromPageId, toPageId, kind, note, assertedBy, assertedAt,
+//           pageId, end, reads, other: { id, title, type, status, collectionId } }]
+//   POST   /pages/:id/relations   { toPageId, kind, note? }
+//   DELETE /relations/:id
+//
+// `reads` is the relation as seen FROM this page, which is the only voice a
+// page view can honestly speak in: the same stored row is "supersedes" at one
+// end and "superseded by" at the other.
+//
+// Nothing here resolves anything. Asserting that two pages conflict changes
+// neither page's status, neither page's text, and neither page's standing —
+// Canon surfaces contradiction and routes it to the person accountable for the
+// page, and that is the whole of it.
+
+const RELATION_READ_LABELS = {
+  conflicts_with: 'Conflicts with',
+  supersedes: 'Supersedes',
+  superseded_by: 'Superseded by',
+};
+const RELATION_READ_HELP = {
+  conflicts_with: 'A person asserted that these two pages contradict each other. Both are still the record; neither has been demoted.',
+  supersedes: 'A person asserted that this page replaces that one. The replaced page keeps its standing and its history.',
+  superseded_by: 'A person asserted that another page replaces this one. This page keeps its standing and its history; saying so archives nothing.',
+};
+
+function normalizeRelation(r) {
+  const kind = r?.kind === 'supersedes' ? 'supersedes' : 'conflicts_with';
+  const other = r?.other ?? {};
+  const reads = RELATION_READ_LABELS[r?.reads] ? r.reads : kind === 'conflicts_with' ? 'conflicts_with' : 'supersedes';
+  return {
+    id: r?.id ?? null,
+    kind,
+    reads,
+    note: r?.note ?? null,
+    assertedBy: r?.assertedBy ?? null,
+    assertedAt: r?.assertedAt ?? null,
+    other: {
+      id: other.id ?? r?.otherPageId ?? null,
+      title: other.title ?? '(untitled page)',
+      status: other.status ?? null,
+      type: other.type ?? null,
+    },
+  };
+}
+
+function relationEntryHTML(rel) {
+  return `
+    <li class="relation rel-${esc(rel.reads)}"${rel.id ? ` data-relation="${esc(rel.id)}"` : ''}>
+      <div class="rel-head">
+        <span class="rel-kind" title="${esc(RELATION_READ_HELP[rel.reads])}">${esc(RELATION_READ_LABELS[rel.reads])}</span>
+        ${rel.other.id
+          ? `<a class="rel-target" href="#/pages/${esc(rel.other.id)}">${esc(rel.other.title)}</a>`
+          : `<span class="rel-target">${esc(rel.other.title)}</span>`}
+        ${rel.other.status ? badge(rel.other.status, 'sm') : ''}
+      </div>
+      ${rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
+        <p class="rel-note muted">No note was recorded with this assertion.</p>`}
+      <p class="rel-meta muted">Asserted by ${actorLabel(rel.assertedBy)}${
+        rel.assertedAt ? ` · ${esc(fmtAgo(rel.assertedAt) ?? '')} (${esc(fmtDateTime(rel.assertedAt))})` : ''
+      }${rel.id ? ` · <button class="btn subtle rel-withdraw" type="button" data-withdraw="${esc(rel.id)}">Withdraw</button>` : ''}</p>
+    </li>`;
+}
+
+async function renderRelationsPanel(pageId, page) {
+  const host = document.getElementById('relations-host');
+  if (!host || state.features.relations === false) return;
+  let rows;
+  try {
+    const r = await api('GET', `/pages/${pageId}/relations`);
+    state.features.relations = true;
+    rows = (Array.isArray(r) ? r : (r?.relations ?? [])).map(normalizeRelation);
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) { state.features.relations = false; return; }
+    return; // a read that failed is not a claim that there are none
+  }
+  if (!host.isConnected) return;
+
+  const archived = page?.status === 'archived';
+  host.innerHTML = `
+    <section class="panel relations ${rows.some((r) => r.reads === 'conflicts_with') ? 'has-conflict' : ''}" id="relations-panel">
+      <div class="rel-panel-head">
+        <h2 class="h-small">Conflicts and supersessions</h2>
+        ${archived ? '' : '<button class="btn subtle" type="button" id="rel-assert">Assert a relation…</button>'}
+      </div>
+      <p class="rel-lede">Explicit relations between pages, written down by a person. Canon draws a contradiction
+        rather than deciding it: nothing here changes what either page says, the standing it holds, or whether it can
+        be cited.</p>
+      ${rows.length
+        ? `<ul class="rel-list">${rows.map(relationEntryHTML).join('')}</ul>`
+        : '<p class="muted rel-empty">The record does not hold a conflict or a supersession for this page.</p>'}
+    </section>`;
+
+  host.querySelector('#rel-assert')?.addEventListener('click', () => openRelationModal(pageId, page));
+  host.querySelectorAll('[data-withdraw]').forEach((btn) => {
+    btn.addEventListener('click', () => openModal({
+      title: 'Withdraw this relation',
+      submitLabel: 'Withdraw',
+      danger: true,
+      body: `<p>The record will no longer hold that these two pages are related, and the map will stop drawing it.
+        Both pages are otherwise untouched. The assertion and this withdrawal both stay in the audit log.</p>`,
+      onSubmit: async () => {
+        await api('DELETE', `/relations/${btn.dataset.withdraw}`);
+        toast('Withdrawn.', 'ok');
+        renderRelationsPanel(pageId, page);
+      },
+    }));
+  });
+}
+
+// Asserting one. The other page is chosen through the search the record
+// already has; where search is not served, its id is typed in, because a
+// relation names a page and a page has an id.
+function openRelationModal(pageId, page) {
+  const searchable = state.features.search === true;
+  openModal({
+    title: 'Assert a relation between two pages',
+    submitLabel: 'Assert it',
+    body: `
+      <p class="muted">Canon records that two pages disagree, or that one replaced the other. It does not resolve
+        either: both pages keep their text and their standing, and settling it stays a person's job.</p>
+      <label>This page&hellip;
+        <select name="reads">
+          <option value="conflicts_with">conflicts with</option>
+          <option value="supersedes">supersedes</option>
+          <option value="superseded_by">is superseded by</option>
+        </select>
+      </label>
+      ${searchable ? `
+        <label>&hellip;this one
+          <input name="q" type="search" autocomplete="off" placeholder="Search the record by title&hellip;">
+        </label>
+        <div class="rel-picks" id="rel-picks" hidden></div>
+        <p class="rel-chosen muted" id="rel-chosen">No page chosen yet.</p>
+        <input type="hidden" name="toPageId">`
+        : `<label>&hellip;this one, by page id
+          <input name="toPageId" required placeholder="the other page's id">
+        </label>`}
+      <label>Note
+        <textarea name="note" rows="3"
+          placeholder="How do they disagree? Which sentence in each, and what does each one say?"></textarea></label>
+      <p class="muted rel-note-hint" id="rel-note-hint">Required for a conflict: an unexplained assertion that two
+        pages contradict each other is not something the next person can settle.</p>`,
+    onSubmit: async (form) => {
+      const reads = form.reads.value;
+      const toPageId = form.toPageId.value.trim();
+      const note = form.note.value.trim();
+      if (!toPageId) throw { message: 'Choose the other page first: a relation names two pages.' };
+      if (toPageId === pageId) throw { message: 'A page cannot conflict with or supersede itself.' };
+      if (reads === 'conflicts_with' && !note) {
+        throw { message: 'A conflict takes a note saying how the two pages disagree.' };
+      }
+      // "Superseded by" is the same stored relation asserted from the other
+      // end, so that is exactly how it is sent: the other page supersedes this
+      // one. Both ends need `edit` either way, which the server enforces.
+      const body = reads === 'superseded_by'
+        ? { path: `/pages/${toPageId}/relations`, payload: { toPageId: pageId, kind: 'supersedes', note: note || null } }
+        : { path: `/pages/${pageId}/relations`, payload: { toPageId, kind: reads, note: note || null } };
+      await api('POST', body.path, body.payload);
+      toast('Asserted. It is on the page and on the map.', 'ok');
+      renderRelationsPanel(pageId, page);
+    },
+  });
+
+  const root = document.getElementById('modal-root');
+  const form = root.querySelector('form');
+  const hint = root.querySelector('#rel-note-hint');
+  const reads = form.querySelector('[name=reads]');
+  reads.addEventListener('change', () => {
+    hint.hidden = reads.value !== 'conflicts_with';
+  });
+  if (!searchable) return;
+
+  const q = form.querySelector('[name=q]');
+  const picks = root.querySelector('#rel-picks');
+  const chosen = root.querySelector('#rel-chosen');
+  const hidden = form.querySelector('[name=toPageId]');
+  let timer = null;
+  q.addEventListener('input', () => {
+    clearTimeout(timer);
+    const term = q.value.trim();
+    if (term.length < 2) { picks.hidden = true; return; }
+    timer = setTimeout(async () => {
+      let items = [];
+      try {
+        const r = await api('GET', `/search?q=${encodeURIComponent(term)}`);
+        items = (Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []))
+          .filter((it) => (it.pageId ?? it.id) !== pageId)
+          .slice(0, 8);
+      } catch { picks.hidden = true; return; }
+      picks.innerHTML = items.length
+        ? items.map((it) => `<button type="button" class="rel-pick" data-id="${esc(it.pageId ?? it.id)}"
+            data-title="${esc(it.title ?? '(untitled)')}">${esc(it.title ?? '(untitled)')}
+            ${it.status ? badge(it.status, 'sm') : ''}</button>`).join('')
+        : '<p class="muted rel-pick-empty">Nothing in the record matches.</p>';
+      picks.hidden = false;
+      picks.querySelectorAll('.rel-pick').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          hidden.value = btn.dataset.id;
+          chosen.textContent = `Chosen: ${btn.dataset.title}`;
+          chosen.classList.add('is-chosen');
+          picks.hidden = true;
+          q.value = btn.dataset.title;
+        });
+      });
+    }, 220);
+  });
 }
 
 function slotKey(ref) {
@@ -2326,11 +2789,16 @@ async function viewSources() {
 // The contract (DATA-BACKBONE.md §5):
 //   POST /ask { question, collectionId?, limit? }
 //     -> { answer: string|null, citations: [{ pageId, title, version, snippet }],
-//          refused: boolean, reason?: "no_canonical_match" }
+//          refused: boolean, reason?: "no_canonical_match",
+//          disagreement?: { pageIds: [...], note } }
 //
-// Two things the UI has to carry, because they are the product's promises:
-// every claim is verifiable by clicking through to the cited page and version,
-// and a refusal is a correct answer about a silent record — never an error.
+// Three things the UI has to carry, because they are the product's promises:
+// every claim is verifiable by clicking through to the cited page and version;
+// a refusal is a correct answer about a silent record — never an error; and
+// where the cited passages disagree, the answer says so, cites both, and does
+// not choose (DATA-BACKBONE.md §7). The last of those is optional in the
+// payload and feature-detected by its absence: a server that never sends it
+// renders exactly the Ask view that was here before.
 
 const ASK_EXAMPLES = [
   'How long do we retain audit logs?',
@@ -2381,7 +2849,76 @@ function askSkeletonHTML() {
     </div>`;
 }
 
-function citationsHTML(citations) {
+// ---------------------------------------------------------------------------
+// When the passages an answer drew on disagree (DATA-BACKBONE.md §7)
+//
+//   AnswerResponse may carry:  disagreement?: { pageIds: [...], note }
+//
+// §7 calls this the sharpest rule in the section: "when the passages an answer
+// draws on conflict, the answer says so, cites both, and does not choose. The
+// record gives two answers here and they differ is a correct, useful answer."
+//
+// So this is drawn as the product demonstrating its own integrity, not as a
+// failure. It is not red, it is not a warning triangle, and it does not
+// apologise: it is the most confident thing on the screen, above the answer,
+// because at this exact moment it is the most valuable thing on the screen. An
+// answer that had smoothed the contradiction into one fluent sentence would
+// look better and be worth far less.
+//
+// Read straight off the answer payload — there is nothing to feature-detect,
+// because a server that never sends the field simply never renders this, and
+// the Ask view is exactly what it was before.
+
+function normalizeDisagreement(d, citations) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const note = String(d.note ?? '').trim();
+  const ids = [...new Set((Array.isArray(d.pageIds) ? d.pageIds : []).map((id) => String(id ?? '')).filter(Boolean))];
+  if (!ids.length && !note) return null;
+  const byId = new Map(citations.map((c) => [c.pageId, c]));
+  return {
+    note,
+    pages: ids.map((id) => ({ id, cite: byId.get(id) ?? null })),
+  };
+}
+
+function disagreementHTML(dg) {
+  const pages = dg.pages.map((p) => {
+    const c = p.cite;
+    const title = c ? c.title : 'A cited page';
+    const meta = c
+      ? `${badge(c.status ?? 'canonical', 'sm')}${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}`
+      : `<span class="muted dg-unknown">page ${esc(clip(p.id, 12))}</span>`;
+    return `
+      <li class="dg-page">
+        <a class="dg-page-link" href="#/pages/${esc(p.id)}">
+          <span class="dg-page-main">
+            <span class="dg-page-title">${esc(title)}</span>
+            ${meta}
+          </span>
+          ${c && c.snippet ? `<span class="dg-page-snippet">${esc(clip(c.snippet, 180))}</span>` : ''}
+          <span class="dg-page-go" aria-hidden="true">→</span>
+        </a>
+      </li>`;
+  }).join('');
+  return `
+    <section class="disagreement" aria-labelledby="dg-title">
+      <div class="dg-head">
+        <span class="dg-mark">Two answers</span>
+        <h2 id="dg-title">The record gives two answers here, and they differ.</h2>
+      </div>
+      ${dg.note ? `<p class="dg-note">${esc(dg.note)}</p>` : ''}
+      ${pages ? `
+        <p class="dg-lede">Both, cited, unchanged — read either one:</p>
+        <ul class="dg-pages">${pages}</ul>` : `
+        <p class="dg-lede">The pages this draws on are cited below; two of them do not agree.</p>`}
+      <p class="dg-foot">Canon has not chosen between them and the answer below does not either. Reading two
+        conflicting passages into one fluent sentence is the one thing a knowledge record must never do — it would
+        look more certain and be worth far less. Both pages are official; which of them is right is a decision for
+        the person who owns them.</p>
+    </section>`;
+}
+
+function citationsHTML(citations, disputed = new Set()) {
   const items = citations.map((c) => {
     const head = `
       <span class="citation-num" aria-hidden="true">${c.n}</span>
@@ -2390,6 +2927,9 @@ function citationsHTML(citations) {
           <span class="citation-title">${esc(c.title)}</span>
           ${badge(c.status ?? 'canonical', 'sm')}
           ${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}
+          ${disputed.has(c.pageId)
+            ? '<span class="citation-disputed" title="This page is one of the two the record answers differently from. Both are cited; neither has been chosen.">in disagreement</span>'
+            : ''}
         </span>
         ${c.snippet ? `<span class="citation-snippet">${esc(c.snippet)}</span>` : ''}
       </span>`;
@@ -2399,7 +2939,7 @@ function citationsHTML(citations) {
     const foot = c.pageId && c.version
       ? `<p class="citation-foot"><a href="#/pages/${esc(c.pageId)}/versions/${esc(c.version)}">Read v${esc(c.version)} exactly as cited</a></p>`
       : '';
-    return `<li class="citation" data-citation="${c.n}">${body}${foot}</li>`;
+    return `<li class="citation ${disputed.has(c.pageId) ? 'is-disputed' : ''}" data-citation="${c.n}">${body}${foot}</li>`;
   }).join('');
   const n = citations.length;
   return `
@@ -2411,17 +2951,21 @@ function citationsHTML(citations) {
     </section>`;
 }
 
-function answerHTML(answer, citations) {
+function answerHTML(answer, citations, disagreement = null) {
   const n = citations.length;
+  const disputed = new Set((disagreement?.pages ?? []).map((p) => p.id));
   return `
-    <article class="answer">
+    ${disagreement ? disagreementHTML(disagreement) : ''}
+    <article class="answer ${disagreement ? 'is-contested' : ''}">
       <div class="answer-head">
         <h2 class="h-small">Answer</h2>
-        <span class="answer-grounding">drawn from ${n} Canonical page${n === 1 ? '' : 's'}</span>
+        <span class="answer-grounding">drawn from ${n} Canonical page${n === 1 ? '' : 's'}${
+          disagreement ? ', which do not agree' : ''
+        }</span>
       </div>
       <div class="answer-body">${linkifyCitationMarkers(renderMarkdown(answer), n)}</div>
     </article>
-    ${citationsHTML(citations)}`;
+    ${citationsHTML(citations, disputed)}`;
 }
 
 function refusalHTML(result, question, collection) {
@@ -2564,7 +3108,9 @@ async function viewAsk(collectionId = null) {
     if (result?.refused || !result?.answer || !citations.length) {
       resultHost.innerHTML = refusalHTML(result ?? {}, question, collection);
     } else {
-      resultHost.innerHTML = answerHTML(result.answer, citations);
+      // §7: the record answering twice, differently, is a correct answer and
+      // is drawn as one. Absent from the payload, absent from the screen.
+      resultHost.innerHTML = answerHTML(result.answer, citations, normalizeDisagreement(result.disagreement, citations));
     }
     wireResult(question);
   };
@@ -2632,7 +3178,9 @@ async function viewAsk(collectionId = null) {
 //                     parentId, external, provenance, origin, references, version }
 //                 | { id, kind: 'source', name, type, status: null, authMode,
 //                     freshnessWindowMs, provenance, references } ],
-//          edges: [ { from, to, kind: 'child' | 'link' | 'reference' } ] }
+//          edges: [ { from, to,
+//                     kind: 'child' | 'link' | 'reference'
+//                         | 'conflicts_with' | 'supersedes' } ] }
 //
 //   GET /graph — the whole record this asker may see. Feature-detected the way
 //     /ask and /sources are: where the server does not serve it, the
@@ -2645,7 +3193,13 @@ async function viewAsk(collectionId = null) {
 //
 // Two questions, one screen. HOW IS THIS KNOWLEDGE RELATED — and the edges are
 // only ever the explicit graph Canon maintains: the tree, the links people
-// wrote in published bodies, and the reference fields pages carry. Nothing here
+// wrote in published bodies, the reference fields pages carry, and the
+// conflicts and supersessions people ASSERTED between pages (DATA-BACKBONE.md
+// §7). That last pair is why contradiction is something you can see on this
+// screen rather than something found during an audit — and it is drawn for
+// exactly the same reason as the other three: a person wrote it down, with a
+// note saying how the two pages disagree. Canon surfaces the contradiction and
+// never resolves it. Nothing here
 // draws a similarity edge, and nothing here infers a cluster from one: the
 // communities the picture shows are the tree roots and collections the record
 // already has, which is why they can be named in a legend rather than
@@ -2707,8 +3261,11 @@ const MAP_FORCE_PAD = 56;
 // A child sits close to its parent; a link across the record is long and weak,
 // because it is a relation between two communities rather than inside one — let
 // it pull hard and every community dissolves into one grey ball.
-const MAP_LINK_GAP = { child: 13, link: 88, reference: 38 };
-const MAP_LINK_STRENGTH = { child: 1, link: 0.2, reference: 0.5 };
+// A relation sits between the two: closer than a link, because two pages that
+// contradict each other are usually about the same thing, and weaker than the
+// tree, because it must never pull a page out of its own branch.
+const MAP_LINK_GAP = { child: 13, link: 88, reference: 38, conflicts_with: 64, supersedes: 54 };
+const MAP_LINK_STRENGTH = { child: 1, link: 0.2, reference: 0.5, conflicts_with: 0.3, supersedes: 0.35 };
 const MAP_CLUSTER_PULL = 0.19;
 const MAP_GRAVITY = 0.012;
 const MAP_VELOCITY_KEEP = 0.62;
@@ -2734,12 +3291,32 @@ const PROVENANCE_HELP = {
   imported: 'Migrated in from another system. Canon is the record now — and the system it came from should have been retired, so this set is worth keeping short.',
   federated: 'Depends on a system that still owns the fact. Canon holds the reference and resolves the value when the page is read; it never copies it.',
 };
-const EDGE_LABELS = { child: 'Tree', link: 'Link', reference: 'Source' };
+const EDGE_LABELS = {
+  child: 'Tree',
+  link: 'Link',
+  reference: 'Source',
+  // DATA-BACKBONE.md §7. Explicit relations between pages, asserted by a
+  // person — which is the only reason they may be drawn.
+  conflicts_with: 'Conflicts with',
+  supersedes: 'Supersedes',
+};
 const EDGE_HELP = {
   child: 'Parent to child: where the page sits in the tree.',
   link: 'A link one published page makes to another. Written by hand, never inferred.',
   reference: 'A reference field on a page, resolving against a registered external source.',
+  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner.',
+  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing.',
 };
+// The order the legend and the edge filters use. The two relations come last
+// because they are the newest thing on the map, not because they matter least.
+const MAP_EDGE_KINDS = ['child', 'link', 'reference', 'conflicts_with', 'supersedes'];
+// Which edges carry an arrowhead. A tree edge does not, because the parent is
+// the node its children hang off; a CONFLICT does not, because it is symmetric
+// — "A conflicts with B" is the same statement as "B conflicts with A", and an
+// arrow would assert a direction the record does not hold. The server stores
+// such a relation once, with its ends in a fixed order, so which way round it
+// arrives is an implementation detail the picture must not repeat.
+const MAP_EDGE_ARROW = { link: true, reference: true, supersedes: true };
 
 // ---- deterministic pseudo-randomness ---------------------------------------
 //
@@ -3574,7 +4151,7 @@ function mapForceEdgePath(a, b, kind, seed) {
   // Parallel edges between the same two clusters would otherwise stack into one
   // stroke; a curve whose side and depth come from the pair's own hash pulls
   // them apart, and does it the same way on every reload.
-  const bend = { child: 0.05, link: 0.13, reference: 0.1 }[kind] ?? 0.08;
+  const bend = { child: 0.05, link: 0.13, reference: 0.1, conflicts_with: 0.16, supersedes: 0.09 }[kind] ?? 0.08;
   const side = seed & 1 ? 1 : -1;
   const amt = len * bend * side * (0.75 + ((seed >>> 8) & 0xff) / 512);
   const mx = (a.x + b.x) / 2 - (dy / len) * amt;
@@ -3618,12 +4195,12 @@ function mapForceSvgHTML(visible, layout, palette) {
       if (!a || !b) return '';
       const seed = mapHash32(`${e.kind}:${e.from}>${e.to}`);
       const hue = palette.swatch.get(e.from)?.hue ?? palette.swatch.get(e.to)?.hue;
-      // Only the reaching edges keep an arrowhead in this layout. The tree's
+      // Only the DIRECTED edges keep an arrowhead in this layout: the tree's
       // direction is carried by the shape itself — a parent is the bigger node
-      // its children hang off — and five hundred arrowheads on child edges is
-      // a texture, not information. Hovering names the relation either way, and
-      // the list states every one of them in words.
-      const head = e.kind === 'child' ? '' : ` marker-end="url(#map-arrow-${esc(e.kind)})"`;
+      // its children hang off — and a conflict has no direction to carry. See
+      // MAP_EDGE_ARROW. Hovering names the relation either way, and the list
+      // states every one of them in words.
+      const head = MAP_EDGE_ARROW[e.kind] ? ` marker-end="url(#map-arrow-${esc(e.kind)})"` : '';
       return `<path class="map-edge map-edge-${esc(e.kind)}"${hue === undefined ? '' : ` style="--h: ${hue}"`}
         d="${mapForceEdgePath(a, b, e.kind, seed)}"${head}
         data-from="${esc(e.from)}" data-to="${esc(e.to)}"></path>`;
@@ -3715,7 +4292,7 @@ function mapForceSvgHTML(visible, layout, palette) {
   return `
     <svg class="map-svg map-svg-force" id="map-svg" tabindex="0" role="application" data-labels="1"
       aria-label="Knowledge map, constellation view. Drag to pan, scroll or use the buttons to zoom, Tab to move between pages.">
-      <defs>${marker('link')}${marker('reference')}${mapGradientDefs(palette)}</defs>
+      <defs>${Object.keys(MAP_EDGE_ARROW).map(marker).join('')}${mapGradientDefs(palette)}</defs>
       <g id="map-canvas">
         <g class="map-edges">${edges}</g>
         <g class="map-nodes" id="map-nodes">${nodes}</g>
@@ -3749,8 +4326,11 @@ function mapTreeSvgHTML(visible, layout) {
       const a = pos.get(e.from);
       const b = pos.get(e.to);
       if (!a || !b) return '';
-      return `<path class="map-edge map-edge-${esc(e.kind)}" d="${mapTreeEdgePath(a, b)}"
-        marker-end="url(#map-arrow-${esc(e.kind)})"
+      // The tree layout keeps the child arrowhead — a column layout states the
+      // parent relation with it — but a conflict still carries none: it has no
+      // direction, here or in the constellation.
+      const head = e.kind === 'conflicts_with' ? '' : ` marker-end="url(#map-arrow-${esc(e.kind)})"`;
+      return `<path class="map-edge map-edge-${esc(e.kind)}" d="${mapTreeEdgePath(a, b)}"${head}
         data-from="${esc(e.from)}" data-to="${esc(e.to)}"></path>`;
     })
     .join('');
@@ -3789,7 +4369,7 @@ function mapTreeSvgHTML(visible, layout) {
   return `
     <svg class="map-svg map-svg-tree" id="map-svg" tabindex="0" role="application"
       aria-label="Knowledge map, tree view. Drag to pan, scroll or use the buttons to zoom, Tab to move between pages.">
-      <defs>${marker('child')}${marker('link')}${marker('reference')}</defs>
+      <defs>${['child', 'link', 'reference', 'supersedes'].map(marker).join('')}</defs>
       <g id="map-canvas">
         <g class="map-edges" transform="translate(${offset} ${offset})">${edges}</g>
         <g class="map-nodes" id="map-nodes" transform="translate(${offset} ${offset})">${nodes}</g>
@@ -3827,16 +4407,36 @@ function mapListHTML(visible, collectionNames, grouped) {
   }
   const linksFrom = new Map();
   const refsFrom = new Map();
+  // §7's relations. A conflict is symmetric, so both ends state it; a
+  // supersession is directed, so each end states its own half of it.
+  const conflictsWith = new Map();
+  const supersedes = new Map();
+  const supersededBy = new Map();
+  const push = (bucket, key, value) => {
+    if (!bucket.has(key)) bucket.set(key, []);
+    bucket.get(key).push(value);
+  };
   for (const e of edges) {
-    const bucket = e.kind === 'link' ? linksFrom : e.kind === 'reference' ? refsFrom : null;
-    if (!bucket) continue;
-    if (!bucket.has(e.from)) bucket.set(e.from, []);
-    bucket.get(e.from).push(e.to);
+    if (e.kind === 'link') push(linksFrom, e.from, e.to);
+    else if (e.kind === 'reference') push(refsFrom, e.from, e.to);
+    else if (e.kind === 'conflicts_with') {
+      push(conflictsWith, e.from, e.to);
+      push(conflictsWith, e.to, e.from);
+    } else if (e.kind === 'supersedes') {
+      push(supersedes, e.from, e.to);
+      push(supersededBy, e.to, e.from);
+    }
   }
+
+  const pagesOf = (bucket, id) => (bucket.get(id) ?? []).map((x) => byId.get(x)).filter(Boolean);
+  const pageLinks = (list) => list.map((t) => `<a href="#/pages/${esc(t.id)}">${esc(t.title)}</a>`).join(', ');
 
   const row = (n) => {
     const links = (linksFrom.get(n.id) ?? []).map((id) => byId.get(id)).filter(Boolean);
     const refs = (refsFrom.get(n.id) ?? []).map((id) => byId.get(id)).filter(Boolean);
+    const conflicts = pagesOf(conflictsWith, n.id);
+    const replaces = pagesOf(supersedes, n.id);
+    const replacedBy = pagesOf(supersededBy, n.id);
     const degree = visible.degree.get(n.id) ?? 0;
     return `
       <div class="map-row">
@@ -3849,6 +4449,9 @@ function mapListHTML(visible, collectionNames, grouped) {
         <span class="muted map-row-degree" title="How many edges on this map touch this page — the same number that sizes its node in the drawing.">${degree} connection${degree === 1 ? '' : 's'}</span>
         ${links.length ? `<span class="map-row-edges">links to ${links.map((t) => `<a href="#/pages/${esc(t.id)}">${esc(t.title)}</a>`).join(', ')}</span>` : ''}
         ${refs.length ? `<span class="map-row-edges">reads from ${refs.map((t) => `<span class="map-source-name">${esc(t.title)}</span>`).join(', ')}</span>` : ''}
+        ${conflicts.length ? `<span class="map-row-edges is-conflict">conflicts with ${pageLinks(conflicts)}</span>` : ''}
+        ${replaces.length ? `<span class="map-row-edges is-supersedes">supersedes ${pageLinks(replaces)}</span>` : ''}
+        ${replacedBy.length ? `<span class="map-row-edges is-supersedes">superseded by ${pageLinks(replacedBy)}</span>` : ''}
       </div>`;
   };
 
@@ -3956,11 +4559,15 @@ function mapLegendHTML(palette, collectionNames, scope) {
         </div>
         <div>
           <h3 class="map-legend-h">Edges — the explicit graph, never an inferred one</h3>
-          ${['child', 'link', 'reference'].map((k) => `
+          ${MAP_EDGE_KINDS.map((k) => `
             <p class="map-legend-item">${swatch(k)} <strong>${esc(EDGE_LABELS[k])}</strong> — ${esc(EDGE_HELP[k])}</p>`).join('')}
+          <p class="map-legend-note muted">Every one of these is a relation somebody wrote down, including the last two:
+            a conflict is asserted by a person, with a note saying how the pages disagree, and Canon draws it rather
+            than deciding it.</p>
           <p class="map-legend-note muted">In the constellation, tree edges carry no arrowhead: the parent is the node
-            its children hang off, and five hundred arrowheads would be a texture rather than information. Hover any
-            node to light its neighbourhood, or read the list, where every relation is written out.</p>
+            its children hang off, and five hundred arrowheads would be a texture rather than information. A conflict
+            carries none in either layout, because it is symmetric and an arrow would state a direction the record does
+            not hold. Hover any node to light its neighbourhood, or read the list, where every relation is written out.</p>
         </div>
         <div>
           <h3 class="map-legend-h">Where the material comes from</h3>
@@ -4036,7 +4643,7 @@ function mapFiltersHTML(graph, filters, collectionNames) {
       </fieldset>
       <fieldset class="map-filter">
         <legend>Edges</legend>
-        ${['child', 'link', 'reference']
+        ${MAP_EDGE_KINDS
           .map((k) => box('edges', k, esc(EDGE_LABELS[k]), graph.edges.filter((e) => e.kind === k).length, EDGE_HELP[k]))
           .join('')}
       </fieldset>
@@ -4173,7 +4780,7 @@ async function viewMap(scopeParam) {
     filters: keep?.filters ?? {
       provenance: new Set(['authored', 'imported', 'federated']),
       status: new Set(['draft', 'in_review', 'canonical', 'needs_update', 'archived']),
-      edges: new Set(['child', 'link', 'reference']),
+      edges: new Set(MAP_EDGE_KINDS),
       collections: scope === 'all' ? new Set(collectionNames.keys()) : null,
     },
     view: keep?.view ?? defaultView,
@@ -4201,9 +4808,9 @@ async function viewMap(scopeParam) {
           <p class="muted map-lede">${whole
             ? `Every collection you can see, at once — <strong>${total} node${total === 1 ? '' : 's'}</strong> of it.`
             : `How <strong>${esc(collection?.name ?? scope)}</strong> hangs together, and where its material comes from.`}
-            Every edge here is one Canon actually holds — the page tree, the links people wrote, and the reference
-            fields pages carry. Nothing is inferred, including the clusters: they are the collections and tree roots
-            the record already has.</p>
+            Every edge here is one Canon actually holds — the page tree, the links people wrote, the reference
+            fields pages carry, and the conflicts and supersessions people asserted. Nothing is inferred, including
+            the clusters: they are the collections and tree roots the record already has.</p>
         </div>
         <div class="actions">
           <div class="map-modes" role="group" aria-label="How to show the map">

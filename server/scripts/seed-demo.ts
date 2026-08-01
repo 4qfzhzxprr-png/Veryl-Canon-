@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 import type { DatabaseSync } from 'node:sqlite';
 import { staticConnectorOf } from '../src/connectors.js';
 import { openDb } from '../src/db.js';
+import { GRAPH_EDGE_KINDS, type GraphEdgeKind } from '../src/graph.js';
 import type { ImportSummary } from '../src/import.js';
 import type { DocType, PageStatus, Role } from '../src/model.js';
 import type { NotificationTransport } from '../src/notify.js';
@@ -940,6 +941,45 @@ const SOURCES: SourceSpec[] = [
 ];
 
 /** Which page title gets which reference. Matched exactly, so a rename shows up. */
+/**
+ * Where the record disagrees with itself (DATA-BACKBONE.md §7). Written by
+ * hand, like the cross-collection links and for the same reason: a
+ * contradiction is a claim about two specific pages, and a generator picking
+ * pairs would produce a map full of assertions nobody made. Every note here is
+ * the sentence a person would actually write, because the note is what the
+ * next person has to settle the thing from.
+ *
+ * All three are asserted by the operator, who administers every collection and
+ * therefore holds `edit` on both ends — which asserting a relation requires.
+ */
+const RELATION_PLAN: {
+  from: [string, string];
+  to: [string, string];
+  kind: 'conflicts_with' | 'supersedes';
+  note?: string;
+}[] = [
+  {
+    // The cross-collection case: the one a single-collection map cannot draw.
+    from: ['compliance', 'Records Retention Schedule'],
+    to: ['engineering', 'Data Retention in the Platform'],
+    kind: 'conflicts_with',
+    note: 'The schedule keeps claims records for seven years; the platform spec describes a deletion job that runs at twenty-four months. One of the two is wrong, and Compliance owns which.',
+  },
+  {
+    // §7's most dangerous shape: a value contradicting the prose beside it.
+    from: ['benefits', 'Standard Plan (PLAN-7)'],
+    to: ['benefits', 'PLAN-7 deductible and out-of-pocket maximum'],
+    kind: 'conflicts_with',
+    note: 'The plan page restates the deductible in prose; the child page resolves it from Benefits Admin. When the source moved, the sentence did not, and the two now read differently.',
+  },
+  {
+    from: ['engineering', 'Incident Management'],
+    to: ['engineering', 'On-call Runbook'],
+    kind: 'supersedes',
+    note: 'Paging and escalation were folded into this spec when it was reviewed. The runbook is kept for its history, not for its instructions.',
+  },
+];
+
 const REFERENCE_PLAN: { collection: string; title: string; source: string; selector: string; key: string }[] = [
   { collection: 'benefits', title: 'PLAN-7 deductible and out-of-pocket maximum', source: 'benefits-admin', selector: 'deductible', key: 'PLAN-7' },
   { collection: 'benefits', title: 'PLAN-7 deductible and out-of-pocket maximum', source: 'benefits-admin', selector: 'outOfPocketMax', key: 'PLAN-7' },
@@ -1098,7 +1138,9 @@ export interface SeedReport {
   byStatus: Record<string, number>;
   byType: Record<string, number>;
   byProvenance: Record<string, number>;
-  edges: { child: number; link: number; reference: number };
+  edges: Record<GraphEdgeKind, number>;
+  /** Asserted page relations: conflicts with, supersedes (DATA-BACKBONE.md §7). */
+  relations: number;
   crossCollectionLinks: number;
   maxDepth: number;
   sources: number;
@@ -1346,6 +1388,24 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     }
   }
 
+  // ---- where the record disagrees with itself (§7) ------------------------
+  // Asserted, never inferred: this is a person writing down that two pages
+  // contradict each other, which is the only reason the map is allowed to draw
+  // it. Nothing here changes either page's status — Canon surfaces
+  // contradiction, it does not resolve it.
+  let relations = 0;
+  for (const plan of RELATION_PLAN) {
+    const from = byTitle.get(key(plan.from[0], plan.from[1]));
+    const to = byTitle.get(key(plan.to[0], plan.to[1]));
+    if (!from || !to || from.id === to.id) continue;
+    store.assertRelation(operator, from.id, {
+      toPageId: to.id,
+      kind: plan.kind,
+      note: plan.note ?? null,
+    });
+    relations += 1;
+  }
+
   // ---- federation: facts other systems own -------------------------------
   const fixtureConnector = staticConnectorOf(store.connectors);
   const sourceIds = new Map<string, string>();
@@ -1406,7 +1466,7 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
   const graph = store.recordGraph(operator);
   const byType: Record<string, number> = {};
   const byProvenance: Record<string, number> = {};
-  const edgeCounts = { child: 0, link: 0, reference: 0 };
+  const edgeCounts = Object.fromEntries(GRAPH_EDGE_KINDS.map((k) => [k, 0])) as Record<GraphEdgeKind, number>;
   for (const node of graph.nodes) {
     if (node.kind !== 'page') continue;
     byType[node.type] = (byType[node.type] ?? 0) + 1;
@@ -1440,6 +1500,7 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     maxDepth: Math.max(...pages.map((p) => p.depth)),
     sources: SOURCES.length,
     references,
+    relations,
     imports,
     archived,
     graph: { collections: graph.collections.length, nodes: graph.nodes.length, edges: graph.edges.length },
@@ -1447,6 +1508,10 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
   };
   say(`  links         ${edgeCounts.link} written, ${crossing} of them crossing a collection`);
   say(`  federated     ${SOURCES.length} sources, ${references} reference fields`);
+  say(
+    `  disagreement  ${relations} asserted relations ` +
+      `(${edgeCounts.conflicts_with} conflicts with, ${edgeCounts.supersedes} supersedes)`,
+  );
   return report;
 }
 
@@ -1620,12 +1685,15 @@ async function main(): Promise<void> {
   console.log(`        status      ${format(report.byStatus)}`);
   console.log(`        type        ${format(report.byType)}`);
   console.log(`        provenance  ${format(report.byProvenance)}`);
+  const edgeTotal = Object.values(report.edges).reduce((a, b) => a + b, 0);
   console.log(
-    `  ${pad(report.edges.child + report.edges.link + report.edges.reference)} edges: ` +
+    `  ${pad(edgeTotal)} edges: ` +
       `${report.edges.child} child, ${report.edges.link} link ` +
-      `(${report.crossCollectionLinks} crossing a collection), ${report.edges.reference} reference`,
+      `(${report.crossCollectionLinks} crossing a collection), ${report.edges.reference} reference, ` +
+      `${report.edges.conflicts_with} conflicts with, ${report.edges.supersedes} supersedes`,
   );
   console.log(`  ${pad(report.sources)} sources, ${report.references} reference fields`);
+  console.log(`  ${pad(report.relations)} pages asserted to conflict with or supersede another`);
   for (const run of report.imports) {
     console.log(`        import      ${run.source} → ${run.collection}: ${run.imported} imported, ${run.failed} failed`);
   }

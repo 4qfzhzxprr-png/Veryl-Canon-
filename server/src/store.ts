@@ -44,6 +44,7 @@ import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
+import { PageRelationView, RelationInput, RelationService } from './relations.js';
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
@@ -89,6 +90,10 @@ export class CanonStore {
   // proposal is held apart from the draft on purpose, so it never takes the
   // page lock; see the model note at the top of that file.
   private readonly proposals: ProposalService;
+  // Page relations (DATA-BACKBONE.md §7) live in relations.ts: the explicit
+  // "conflicts with" / "supersedes" edge between two pages, asserted by a
+  // person, that makes contradiction something the map can draw.
+  private readonly relations: RelationService;
   // Freshness and structured queries (Next tier) live in freshness.ts and
   // queries.ts; delegates at the end of this class, same as everything above.
   private readonly freshness: FreshnessService;
@@ -110,6 +115,7 @@ export class CanonStore {
     this.sources = new SourceService(db, this);
     this.references = new ReferenceService(db, this, this.sources, this.connectors);
     this.proposals = new ProposalService(db, this, this.notifier);
+    this.relations = new RelationService(db, this);
     this.freshness = new FreshnessService(db, this, this.notifier);
     this.queries = new QueryService(db, this);
   }
@@ -1172,6 +1178,23 @@ export class CanonStore {
 
   rejectProposal(actorId: string, proposalId: string, input: { comment: string }): Proposal {
     return this.proposals.reject(actorId, proposalId, input);
+  }
+
+  // ---- page relations (DATA-BACKBONE.md §7) -----------------------------
+  // Thin delegates; the logic and the model note live in relations.ts. A
+  // relation is asserted by a person, requires `edit` on BOTH pages'
+  // collections, and is drawn on the knowledge map because it is explicit.
+
+  assertRelation(actorId: string, fromPageId: string, input: RelationInput): PageRelationView {
+    return this.relations.assert(actorId, fromPageId, input);
+  }
+
+  listRelations(actorId: string, pageId: string): PageRelationView[] {
+    return this.relations.list(actorId, pageId);
+  }
+
+  removeRelation(actorId: string, relationId: string): void {
+    this.relations.remove(actorId, relationId);
   }
 
   /**

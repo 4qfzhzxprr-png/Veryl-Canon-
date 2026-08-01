@@ -42,7 +42,17 @@ function signature(store: CanonStore, report: SeedReport): string[] {
       titles.get(n.rootId) ?? '-',
     ].join('|'),
   );
-  const edges = graph.edges.map((e) => `${e.kind}|${titles.get(e.from)}|${titles.get(e.to)}`);
+  // A `conflicts_with` relation is SYMMETRIC, and relations.ts stores it once
+  // with its pair ordered by page id — which is a UUID, so which end is which
+  // is not stable across two runs even though the relation is. It is drawn
+  // without an arrowhead for exactly that reason, so the picture is identical
+  // either way; the signature says so by sorting the ends of a symmetric edge
+  // and comparing a directed edge exactly as it is.
+  const edges = graph.edges.map((e) => {
+    const ends = [titles.get(e.from), titles.get(e.to)];
+    if (e.kind === 'conflicts_with') ends.sort();
+    return `${e.kind}|${ends.join('|')}`;
+  });
   return [...nodes.sort(), ...edges.sort()];
 }
 

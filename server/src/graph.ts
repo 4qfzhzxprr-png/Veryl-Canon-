@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, DocType, PageStatus, Role, ROLE_RANK } from './model.js';
 import { parsePageLinks } from './retrieval.js';
 import type { ImportSource } from './import.js';
+import { RELATION_KINDS, type RelationKind } from './relations.js';
 import type { SourceAuthMode } from './sources.js';
 
 // The knowledge map: one collection's record drawn as nodes and edges, so the
@@ -16,12 +17,22 @@ import type { SourceAuthMode } from './sources.js';
 // DATA-BACKBONE.md §5 is emphatic: "Canon does not need an inferred graph,
 // because it already has an explicit one. Trees, page links, owners, types,
 // labels, and status are structured data that people maintain deliberately."
-// So this file draws exactly three kinds of edge, every one of them something a
+// So this file draws exactly five kinds of edge, every one of them something a
 // person or an agent wrote down:
 //
-//   child      parent → child, the page tree of §4
-//   link       page → page, a link written in a PUBLISHED body
-//   reference  page → source, a reference field of §6
+//   child          parent → child, the page tree of §4
+//   link           page → page, a link written in a PUBLISHED body
+//   reference      page → source, a reference field of §6
+//   conflicts_with page ↔ page, a contradiction a person asserted (§7)
+//   supersedes     page → page, a replacement a person asserted (§7)
+//
+// The last two are why §7 says contradiction "becomes something visible on the
+// knowledge map rather than something discovered during an audit": they may be
+// drawn for exactly the reason the first three may — a person wrote them down.
+// Canon draws no relation it worked out for itself, here or anywhere.
+// `conflicts_with` is symmetric and stored once, with its pair canonically
+// ordered (relations.ts), so it is drawn once; `supersedes` is directed and is
+// drawn in the direction it was asserted.
 //
 // There is deliberately no similarity edge, no co-occurrence edge, and no
 // clustering. A map that invented edges would be exactly the model-written
@@ -97,9 +108,9 @@ export type GraphNodeKind = 'page' | 'source';
 export type Provenance = 'authored' | 'imported' | 'federated';
 export const PROVENANCES: readonly Provenance[] = ['authored', 'imported', 'federated'];
 
-/** The explicit graph's three edges. Nothing else is ever emitted. */
-export type GraphEdgeKind = 'child' | 'link' | 'reference';
-export const GRAPH_EDGE_KINDS: readonly GraphEdgeKind[] = ['child', 'link', 'reference'];
+/** The explicit graph's five edges. Nothing else is ever emitted. */
+export type GraphEdgeKind = 'child' | 'link' | 'reference' | RelationKind;
+export const GRAPH_EDGE_KINDS: readonly GraphEdgeKind[] = ['child', 'link', 'reference', ...RELATION_KINDS];
 
 /** Where an imported page came from: the run, the system, and the file. */
 export interface ImportOrigin {
@@ -420,6 +431,19 @@ export class GraphService {
       }
     }
 
+    // ---- asserted relations (DATA-BACKBONE.md §7) ------------------------
+    // Read here, alongside the links, and for the same reason: a page this
+    // collection conflicts with may live in another collection, and a
+    // contradiction that crosses a boundary is precisely the one worth
+    // drawing. So the far end joins `wanted` exactly as a link target does and
+    // meets exactly the same permission filter below.
+    const relations = this.relations(order);
+    for (const relation of relations) {
+      for (const end of [relation.fromPageId, relation.toPageId]) {
+        if (!nodes.has(end)) wanted.add(end);
+      }
+    }
+
     // ---- linked pages in other collections ------------------------------
     // The permission filter's real work. An id that names no page, an archived
     // page, or a page in a collection this actor is not a member of resolves to
@@ -512,6 +536,16 @@ export class GraphService {
       for (const target of links.get(id) ?? []) {
         if (nodes.has(target)) edge(id, target, 'link');
       }
+    }
+
+    // A relation is drawn only when BOTH of its ends are on the map. An
+    // assertion reaching a page this viewer may not see is dropped whole,
+    // never drawn to a placeholder: "this page contradicts something over
+    // there you may not read" is a disclosure about a restricted collection,
+    // and on a map of one it is the disclosure that matters.
+    for (const relation of relations) {
+      if (!nodes.has(relation.fromPageId) || !nodes.has(relation.toPageId)) continue;
+      edge(relation.fromPageId, relation.toPageId, relation.kind);
     }
 
     const ordered: GraphNode[] = [
@@ -651,6 +685,14 @@ export class GraphService {
       sources.set(reference.sourceId, { name: reference.sourceName, type: reference.sourceType });
       fieldCounts.set(reference.pageId, (fieldCounts.get(reference.pageId) ?? 0) + 1);
       edge(reference.pageId, reference.sourceId, 'reference');
+    }
+    // Asserted relations (§7), on the record view's own terms: both ends must
+    // already be nodes here. The record view never expands to reach something
+    // it is not drawing — a relation to a page past the cap, in a collection
+    // this asker cannot see, or archived, produces no edge at all.
+    for (const relation of this.relations(order)) {
+      if (!rows.has(relation.fromPageId) || !rows.has(relation.toPageId)) continue;
+      edge(relation.fromPageId, relation.toPageId, relation.kind);
     }
 
     const degrees = degreesOf(edges);
@@ -824,6 +866,46 @@ export class GraphService {
           at: row.at,
         });
         if (row.outcome === 'imported') created.add(row.page_id);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The relations asserted on those pages (DATA-BACKBONE.md §7), from either
+   * end. No permission filter here and none needed: the caller only ever draws
+   * an edge between two nodes it has already selected, and every node was
+   * selected through the asker's own membership join. A relation whose far end
+   * did not survive that join therefore cannot become an edge — which is the
+   * same rule links live under, applied in the same place.
+   *
+   * `conflicts_with` is stored once with its pair canonically ordered, so a
+   * symmetric relation comes back once however it is reached; the DISTINCT
+   * guards only against a pair where both ends are in the same chunk.
+   */
+  private relations(pageIds: string[]): { fromPageId: string; toPageId: string; kind: RelationKind }[] {
+    const out: { fromPageId: string; toPageId: string; kind: RelationKind }[] = [];
+    const seen = new Set<string>();
+    for (const group of chunk(pageIds, ID_CHUNK)) {
+      if (!group.length) continue;
+      const marks = placeholders(group.length);
+      const rows = this.db
+        .prepare(
+          `SELECT id, from_page_id, to_page_id, kind
+             FROM page_relations
+            WHERE from_page_id IN (${marks}) OR to_page_id IN (${marks})
+            ORDER BY asserted_at, rowid`,
+        )
+        .all(...group, ...group) as unknown as {
+        id: string;
+        from_page_id: string;
+        to_page_id: string;
+        kind: RelationKind;
+      }[];
+      for (const row of rows) {
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        out.push({ fromPageId: row.from_page_id, toPageId: row.to_page_id, kind: row.kind });
       }
     }
     return out;
