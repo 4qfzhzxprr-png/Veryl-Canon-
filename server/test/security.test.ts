@@ -11,6 +11,7 @@ import { csvField } from '../src/csv.js';
 import { openDb } from '../src/db.js';
 import { assertHeaderSafe, composeMessage, formatAddress } from '../src/email.js';
 import { ConnectorError, HttpConnector } from '../src/httpconnector.js';
+import { Logger } from '../src/log.js';
 import { CanonError } from '../src/model.js';
 import {
   assertOutboundAllowed,
@@ -723,10 +724,10 @@ test('errors: an unexpected failure returns a correlation id, never the internal
     throw new Error(internal);
   };
 
+  // The detail goes to the process logger (log.ts), which scrubs on the way
+  // out, rather than to a bare console.error that printed `req.url` whole.
   const logged: string[] = [];
-  const realError = console.error;
-  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(' '));
-  const server = createApi(store);
+  const server = createApi(store, null, undefined, null, new Logger({ sink: (line) => void logged.push(line) }));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
@@ -748,7 +749,6 @@ test('errors: an unexpected failure returns a correlation id, never the internal
     assert.equal(missing.status, 404);
     assert.equal(((await missing.json()) as { message: string }).message, 'No such collection: nope');
   } finally {
-    console.error = realError;
     server.close();
   }
 });

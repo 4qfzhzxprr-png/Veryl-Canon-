@@ -1,19 +1,27 @@
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { createApi } from '../src/api.js';
 import { ConfigError, assertConfigValid, validateConfig } from '../src/config.js';
 import { MIGRATIONS, openDb } from '../src/db.js';
-import { Logger, redact, redactUrl } from '../src/log.js';
+import { Logger, attachRequestLog, redact, redactUrl, requestPath } from '../src/log.js';
 import { latestVersion, type Migration } from '../src/migrate.js';
 import {
   attachReadiness,
+  auditChainCheck,
   databaseCheck,
   doorCheck,
+  recordChecks,
+  recordFileCheck,
   runReadiness,
   schemaCheck,
+  startRecordWatch,
   type ReadinessCheck,
 } from '../src/ready.js';
 import { installGracefulShutdown } from '../src/shutdown.js';
@@ -137,6 +145,290 @@ test('readiness: the answer is cached, so a probe every second is not a request 
     server.close();
     db.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Readiness that means something (USER-TESTING.md T3.3)
+// ---------------------------------------------------------------------------
+
+function scratch() {
+  const dir = mkdtempSync(join(tmpdir(), 'canon-ready-'));
+  return { path: (name: string) => join(dir, name), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/**
+ * The repository root, found rather than counted: the compiled test's depth
+ * below it depends on tsconfig's rootDir, and `dist/` holds a directory called
+ * `server/src` too, so the marker has to be something only the source tree has.
+ */
+function repoRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let up = 0; up < 8; up += 1) {
+    if (existsSync(join(dir, 'CONFIGURATION.md')) && existsSync(join(dir, 'server', 'src', 'ready.ts'))) return dir;
+    dir = dirname(dir);
+  }
+  throw new Error('the repository root was not found above the compiled test file');
+}
+
+test('readiness: a Canon whose record cannot be read does not report ready', async () => {
+  const dir = scratch();
+  const path = dir.path('canon.db');
+  const db = openDb(path);
+  const store = new CanonStore(db, { deliver() {} });
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  store.createCollection(dana.id, { name: 'Compliance' });
+  // Everything into the file itself, so what is corrupted below is the record
+  // and not an empty page one with the record still sitting in the WAL.
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+
+  try {
+    const checks = recordChecks(db, { path });
+    const before = await runReadiness(checks);
+    assert.equal(before.ready, true, JSON.stringify(before.checks));
+
+    // What "I corrupted the database" means to the person who did it: the file
+    // is overwritten underneath the process serving from it. Page one is left
+    // alone so SQLite still opens the file — which is exactly the shape that
+    // made this invisible, because the open connection goes on answering out of
+    // its own page cache and every count it is asked for is still right.
+    const bytes = readFileSync(path);
+    assert.ok(bytes.byteLength > 8192, 'the fixture record is too small to corrupt meaningfully');
+    bytes.fill(0xa5, 4096);
+    writeFileSync(path, bytes);
+    rmSync(path + '-wal', { force: true });
+    rmSync(path + '-shm', { force: true });
+
+    const after = await runReadiness(checks);
+    assert.equal(after.ready, false, 'a Canon that cannot read its own record reported itself ready');
+    const file = after.checks.find((c) => c.name === 'record_file')!;
+    assert.equal(file.ok, false);
+    assert.match(file.detail, /unreadable/);
+    // …and the answer a load balancer gets still names no path on this server.
+    assert.equal(
+      after.checks.some((c) => c.detail.includes(path)),
+      false,
+      'an unauthenticated probe was handed the record’s path on disk',
+    );
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // A connection onto a destroyed file may refuse to close. Not the point.
+    }
+    dir.cleanup();
+  }
+});
+
+test('readiness: a record file that is not there at all is not ready', async () => {
+  const dir = scratch();
+  try {
+    const report = await runReadiness([recordFileCheck(dir.path('nothing.db'))]);
+    assert.equal(report.ready, false);
+    assert.match(report.checks[0]!.detail, /unreadable/);
+  } finally {
+    dir.cleanup();
+  }
+});
+
+test('readiness: the database check reads the record’s own rows, not a count of them', async () => {
+  const db = openDb(':memory:');
+  const check = databaseCheck(db);
+  assert.equal((await runReadiness([check])).ready, true);
+
+  // The one row every open creates (system.ts). Its absence is unambiguously a
+  // fault rather than an empty Canon — and a `count(*)` over an empty table
+  // would have reported the same cheerful zero either way.
+  db.exec(`DELETE FROM actors WHERE id = 'system:canon'`);
+  const gone = await runReadiness([check]);
+  assert.equal(gone.ready, false);
+  assert.match(gone.checks[0]!.detail, /system:canon/);
+  db.close();
+});
+
+test('readiness: a Canon that would append unchained audit events is not ready', async () => {
+  const db = openDb(':memory:');
+  const check = auditChainCheck(db);
+  const intact = await runReadiness([check]);
+  assert.equal(intact.ready, true, JSON.stringify(intact.checks));
+
+  // The trigger is what makes the log tamper-evident, and a gap in a chain
+  // cannot be filled in afterwards. A process without it is up and must not
+  // be in a pool.
+  db.exec('DROP TRIGGER audit_chain_link');
+  const unchained = await runReadiness([check]);
+  assert.equal(unchained.ready, false);
+  assert.match(unchained.checks[0]!.detail, /unchained/);
+  db.close();
+});
+
+test('readiness: the record watch says an unreadable record out loud, once a window, and says when it returns', async () => {
+  const lines: string[] = [];
+  const log = new Logger({ sink: (line) => void lines.push(line), level: 'debug' });
+  let readable = false;
+  let clock = 0;
+  const check: ReadinessCheck = {
+    name: 'record_file',
+    run: () => ({
+      name: 'record_file',
+      ok: readable,
+      detail: readable ? 'the record file opens and answers' : 'the record file is unreadable: malformed',
+    }),
+  };
+
+  // No timer: the pass is driven by hand so the window is exact.
+  const watch = startRecordWatch([check], { log, intervalMs: 0, repeatAfterMs: 60_000, now: () => clock });
+  await delay(0); // the pass startRecordWatch runs immediately
+  const events = () => lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  assert.equal(events().length, 1, 'the first failure was not logged immediately');
+  assert.equal(events()[0]!.level, 'error');
+  assert.equal(events()[0]!.msg, 'the record cannot be read');
+  assert.equal(events()[0]!.check, 'record_file');
+  assert.match(String(events()[0]!.detail), /unreadable/);
+
+  // Inside the window it is counted, not repeated: a fault that recurs every
+  // few seconds must not be able to fill the disk of the one machine whose
+  // database is already broken.
+  await watch.pass();
+  await watch.pass();
+  await watch.pass();
+  assert.equal(events().length, 1, 'a repeating failure repeated itself in the log');
+
+  clock += 61_000;
+  await watch.pass();
+  assert.equal(events().length, 2);
+  assert.equal(events()[1]!.suppressed, 3, 'the held-back failures were not counted');
+  assert.equal(events()[1]!.consecutive, 5);
+
+  // And the other half of the story, which an operator reading only errors
+  // would otherwise never get.
+  readable = true;
+  await watch.pass();
+  assert.equal(events().length, 3);
+  assert.equal(events()[2]!.level, 'info');
+  assert.equal(events()[2]!.msg, 'the record reads again');
+  assert.equal(events()[2]!.afterFailures, 5);
+
+  watch.stop();
+});
+
+// ---------------------------------------------------------------------------
+// One line per request (USER-TESTING.md T3.4)
+// ---------------------------------------------------------------------------
+
+test('logging: one line per request — method, path, status, duration and the actor', async () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, { deliver() {} });
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const lines: string[] = [];
+  const log = new Logger({ sink: (line) => void lines.push(line), level: 'debug' });
+  const server = attachRequestLog(
+    attachReadiness(createApi(store, null, undefined, null, log), [databaseCheck(db)], { cacheMs: 0 }),
+    log,
+  );
+  const base = await listening(server);
+  try {
+    const question = 'when is the appeals deadline for a denied claim';
+    await fetch(`${base}/search?q=${encodeURIComponent(question)}`, {
+      headers: {
+        'x-actor-id': dana.id,
+        cookie: 'canon_session=sess-1234.d1ffe1e5',
+      },
+    });
+    await fetch(`${base}/ready`);
+
+    const events = lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((e) => e.msg === 'request');
+    assert.equal(events.length, 2, JSON.stringify(events));
+
+    const search = events[0]!;
+    assert.equal(search.method, 'GET');
+    assert.equal(search.path, '/search');
+    assert.equal(typeof search.status, 'number');
+    assert.equal(typeof search.ms, 'number');
+    assert.equal(search.actor, dana.id, 'the resolved actor is what joins this line to the audit log');
+    assert.equal(search.level, 'info');
+
+    // The probe is a probe, whatever it answers: a load balancer asks every
+    // second and an operator turned this on to see people, not health checks.
+    assert.equal(events[1]!.path, '/ready');
+    assert.equal(events[1]!.level, 'debug');
+
+    // The whole of the privacy decision, asserted rather than described.
+    const everything = lines.join('\n');
+    for (const forbidden of [question, 'appeals', 'q=', 'canon_session', 'd1ffe1e5']) {
+      assert.equal(everything.includes(forbidden), false, `${forbidden} appeared in the request log:\n${everything}`);
+    }
+  } finally {
+    server.close();
+    db.close();
+  }
+});
+
+test('logging: the request line and the error line carry the id the caller was given', async () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, { deliver() {} });
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  (store as unknown as { listCollections: () => never }).listCollections = () => {
+    throw new Error('SQLITE_ERROR: no such column: secret');
+  };
+  const lines: string[] = [];
+  const log = new Logger({ sink: (line) => void lines.push(line), level: 'debug' });
+  const server = attachRequestLog(createApi(store, null, undefined, null, log), log);
+  const base = await listening(server);
+  try {
+    const res = await fetch(`${base}/collections`, { headers: { 'x-actor-id': dana.id } });
+    assert.equal(res.status, 500);
+    const body = (await res.json()) as { errorId: string };
+
+    const events = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const request = events.find((e) => e.msg === 'request')!;
+    assert.equal(request.status, 500);
+    assert.equal(request.level, 'warn', 'a 5xx belongs above the noise floor');
+    assert.equal(request.errorId, body.errorId, 'a bug report quoting the id does not join to its request');
+
+    const failure = events.find((e) => e.msg === 'unhandled request error')!;
+    assert.equal(failure.level, 'error');
+    assert.equal(failure.errorId, body.errorId);
+    assert.match(String(failure.error), /SQLITE_ERROR/, 'the detail is on the server, where it belongs');
+  } finally {
+    server.close();
+    db.close();
+  }
+});
+
+test('logging: requestPath keeps the path and loses the query string', () => {
+  assert.equal(requestPath('/pages/8f14e45f/versions/3'), '/pages/8f14e45f/versions/3');
+  assert.equal(requestPath('/search?q=what%20is%20our%20notice%20period'), '/search');
+  assert.equal(requestPath('/auth/callback?code=live-authorization-code&state=x'), '/auth/callback');
+  assert.equal(requestPath(undefined), '/');
+  assert.equal(requestPath('/' + 'a'.repeat(400)).length, 257, 'an unbounded path is an unbounded log line');
+});
+
+// ---------------------------------------------------------------------------
+// The configuration reference claims completeness (USER-TESTING.md T3.5)
+// ---------------------------------------------------------------------------
+
+test('configuration: every variable the code reads is named in CONFIGURATION.md', () => {
+  const root = repoRoot();
+  const reference = readFileSync(join(root, 'CONFIGURATION.md'), 'utf8');
+  const roots = [join(root, 'server', 'src'), join(root, 'server', 'scripts')];
+  const found = new Set<string>();
+  for (const root of roots) {
+    for (const name of readdirSync(root)) {
+      if (!name.endsWith('.ts')) continue;
+      for (const match of readFileSync(join(root, name), 'utf8').matchAll(/\bCANON_[A-Z0-9_]+\b/g)) {
+        found.add(match[0]);
+      }
+    }
+  }
+  assert.ok(found.size > 30, 'the scan found almost nothing, so it is not scanning the source');
+  const missing = [...found].filter((name) => !reference.includes(name)).sort();
+  assert.deepEqual(
+    missing,
+    [],
+    `CONFIGURATION.md says it is "every environment variable Canon reads, gathered from the code rather than ` +
+      `from memory". These are read by the code and are not in it: ${missing.join(', ')}`,
+  );
 });
 
 // ---------------------------------------------------------------------------

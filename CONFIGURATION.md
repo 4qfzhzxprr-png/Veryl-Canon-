@@ -5,6 +5,15 @@ rather than from memory. Nothing else configures Canon: there is no
 configuration file, no database-held settings, and no runtime toggles. A
 deployment is its environment, which is what makes it reviewable.
 
+**That claim is now enforced rather than asserted.** A test scans `server/src`
+and `server/scripts` for every `CANON_…` name the code reads and fails if one of
+them is missing from this page (`server/test/operations.test.ts`, "every
+variable the code reads is named in CONFIGURATION.md"). The page had drifted
+before — USER-TESTING.md T3.5 found six variables missing from a document that
+said it was complete, and both testers had *trusted* it, which is what made the
+gap expensive. A promise of completeness is only worth making if something
+breaks when it stops being true.
+
 Read this with [OPERATIONS.md](OPERATIONS.md) (how to run it) and
 [SECURITY.md](SECURITY.md) §5 (the assumptions a deployment must keep true).
 The **Safety** column names the §5 assumption where one applies.
@@ -35,8 +44,10 @@ the variable to change. See "Start-up validation" at the end.
 | `CANON_BASE_URL` | required | `http://localhost:3000` | Where Canon is reachable from a browser. Deep links in notification emails are built from it, and the OIDC redirect URI defaults to `<base>/auth/callback`. Also decides whether the session cookie gets `Secure` (on unless the base URL is plain `http`). | An `http://` base URL with SSO live means session cookies cross the network in clear. |
 | `CANON_PRODUCT_NAME` | optional | `Veryl Canon` | The name in the footer of notification emails. | — |
 | `CANON_SHUTDOWN_TIMEOUT_MS` | optional | `10000` | How long in-flight requests get to finish after SIGTERM before the process stops waiting. Keep it below your orchestrator's kill delay (`docker stop` allows 10s by default; the demo compose file raises the grace period to 20s). | — |
-| `CANON_LOG_LEVEL` | optional | `info` | `debug`, `info`, `warn`, `error`. | — |
+| `CANON_LOG_LEVEL` | optional | `info` | `debug`, `info`, `warn`, `error`. At `info` this includes one line per request; at `warn` only the `5xx` ones survive; at `debug` the readiness and liveness probes join them. | — |
 | `CANON_LOG_FORMAT` | optional | `json` | `json` (one object per line, for a log collector) or `text` (for a person at a terminal). | — |
+| `CANON_REQUEST_LOG` | optional | `on` | `off` drops the per-request line entirely, for a deployment whose reverse proxy already writes one. The level above is the finer dial. | The line carries the method, the **path only**, the status, the duration, the actor id and a `500`'s correlation id. Never the query string, never a header, never a body — OPERATIONS.md, "Read the logs", says why in full. |
+| `CANON_RECORD_WATCH_INTERVAL_MS` | optional | `10000` | How often Canon asks itself whether it can still read its own record, and logs an error if it cannot. `0` turns the watch off and leaves the answer to whoever probes `GET /ready`. | With it off, a record that becomes unreadable is discovered by the next readiness probe and by nothing else. A process with **no** readiness probe pointed at it then fails in silence, which is exactly USER-TESTING.md T3.3. |
 | `CANON_SKIP_DNS_CHECK` | optional | unset | `true` skips the start-up DNS check on `CANON_SOURCE_ALLOWED_HOSTS`. For an air-gapped or split-horizon network where the name genuinely does not resolve from here. | Skipping it means an unreachable source is discovered at read time instead. |
 
 ## Identity: people

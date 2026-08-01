@@ -7,10 +7,10 @@ import { MIGRATIONS, openDb } from './db.js';
 import { DEFAULT_SWEEP_INTERVAL_MS, startFreshnessSweeps } from './freshness.js';
 import { HttpConnector } from './httpconnector.js';
 import { smtpTransportFromEnv } from './email.js';
-import { loggerFromEnv, redactUrl } from './log.js';
+import { attachRequestLog, loggerFromEnv, redactUrl, requestLogEnabled } from './log.js';
 import { currentSchemaVersion, latestVersion } from './migrate.js';
 import { notifierFor } from './notify.js';
-import { attachReadiness, readinessChecksFromEnv } from './ready.js';
+import { attachReadiness, readinessChecksFromEnv, recordChecks, startRecordWatch } from './ready.js';
 import { installGracefulShutdown } from './shutdown.js';
 import { attachStatic } from './static.js';
 import { CanonStore } from './store.js';
@@ -70,12 +70,15 @@ const personAuth = personAuthFromEnv(db, store);
 // and person authentication (auth.ts) landed in the same round, each adding a
 // parameter. Default limiter, explicit personAuth.
 //
-// Three wrappers, outermost first: static files (the web UI), then readiness,
-// then the API. Readiness is deliberately outside api.ts's route table — see
-// ready.ts on why liveness and readiness are different questions.
-const server = attachStatic(
-  attachReadiness(createApi(store, agentAuth, undefined, personAuth), readinessChecksFromEnv(db)),
-); // web UI from server/public
+// Four wrappers, outermost first: the request log, then static files (the web
+// UI), then readiness, then the API. Readiness is deliberately outside api.ts's
+// route table — see ready.ts on why liveness and readiness are different
+// questions — and the request log is outside everything, so a static file and a
+// probe are logged exactly as an API call is. Turned off with
+// CANON_REQUEST_LOG=off, for a deployment whose front door already writes one.
+const api = createApi(store, agentAuth, undefined, personAuth, log);
+const served = attachStatic(attachReadiness(api, readinessChecksFromEnv(db, process.env, { path: dbPath })));
+const server = requestLogEnabled() ? attachRequestLog(served, log) : served;
 
 // The timers, held so shutdown can clear them. Both are created below.
 const timers: NodeJS.Timeout[] = [];
@@ -112,6 +115,21 @@ installGracefulShutdown({
 // people did things they did not do. Both are fixed in freshness.ts, where
 // startFreshnessSweeps argues the whole thing; a deployment that deliberately
 // names a maintenance actor still gets exactly what it asked for.
+// The record watch (ready.ts). A readiness answer is only as loud as somebody
+// asking for it, and in USER-TESTING.md T3.3 nobody was: the orchestrator was
+// pointed at `/health`, so a Canon that could not read its own record kept
+// accepting connections, refused every one of them, and wrote nothing down.
+// This asks the record's own checks every few seconds and logs an error, rate
+// limited, when the answer is no. It does not exit; ready.ts argues why.
+//
+// Before `listen`, so a record that is already unreadable is said out loud
+// rather than announced as a healthy start-up.
+const recordWatch = startRecordWatch(recordChecks(db, { path: dbPath }), {
+  intervalMs: Number(process.env.CANON_RECORD_WATCH_INTERVAL_MS ?? 10_000),
+  log,
+});
+if (recordWatch.timer) timers.push(recordWatch.timer);
+
 const sweeps = startFreshnessSweeps(store, {
   intervalMs: Number(process.env.CANON_FRESHNESS_INTERVAL_MS ?? DEFAULT_SWEEP_INTERVAL_MS),
   actorId: process.env.CANON_MAINTENANCE_ACTOR_ID,
@@ -222,7 +240,12 @@ server.listen(port, () => {
   } else {
     log.warn('freshness sweep NOT running', { detail: sweeps.schedule.reason });
   }
-  log.info('probes', { liveness: 'GET /health', readiness: 'GET /ready' });
+  log.info('probes', {
+    liveness: 'GET /health',
+    readiness: 'GET /ready',
+    recordWatchMs: recordWatch.timer ? Number(process.env.CANON_RECORD_WATCH_INTERVAL_MS ?? 10_000) : 0,
+    requestLog: requestLogEnabled() ? 'one line per request at info; 5xx at warn; probes at debug' : 'off',
+  });
 });
 
 // The outbox delivery pass. POST /notifications/flush does the same thing on

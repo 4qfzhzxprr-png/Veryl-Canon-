@@ -212,11 +212,19 @@ in one table, with which are required and which are development-only.
 `GET /health` is **liveness**: the process is up. It stays 200 while the
 Registry is down, because restarting Canon does not fix somebody else's outage.
 
-`GET /ready` is **readiness**: this process can serve — the record is reachable,
-its schema is the version this binary expects, and every configured door
-(identity provider, Registry) answers. Point a load balancer and a container
-health check at this one. It answers 503 with the failing check named
-([`src/ready.ts`](src/ready.ts)).
+`GET /ready` is **readiness**: this process can serve — the open connection
+reads real rows out of the record, **the record file itself opens read-only and
+answers**, its schema is the version this binary expects, the audit chain is in
+place, and every configured door (identity provider, Registry) answers. Point a
+load balancer and a container health check at this one. It answers 503 with the
+failing check named ([`src/ready.ts`](src/ready.ts)).
+
+The file is checked separately from the connection because SQLite answers a warm
+connection out of its page cache: a query put to it reads this process's memory,
+not the record, so a record that has been destroyed underneath a running Canon
+goes on returning the right answers to a probe (USER-TESTING.md T3.3). Canon also
+asks itself the same questions every ten seconds and logs an error, rate limited,
+when it cannot read its own record.
 
 ### Start-up refuses an incoherent configuration
 

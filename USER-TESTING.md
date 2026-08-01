@@ -227,16 +227,42 @@ already recommend this in the artefact; we should do it.
 **T3.3 · Three green lights on a broken database.** *(Ade B1.)* A corrupted
 database left `/health` 200, `/ready` 200 with `database ok=true`, the log
 silent, and every request 401. Readiness must actually exercise the record.
+**Fixed.** The cause was worth naming: an open SQLite connection answers out of
+its own page cache, so `SELECT count(*) FROM collections` was reading this
+process's memory rather than the record, and the file could be overwritten byte
+for byte without that number changing. Readiness now asks twice — real rows
+through the live connection, and a short-lived read-only connection opened on
+the path itself, which has no cache to be fooled by — and the schema check is
+joined by one on the audit chain, because a Canon that would append unchained
+events must not be in a pool either. Reproduced end to end: `/ready` goes 503
+naming `record_file`, `/health` stays 200 (the process *is* alive, which is all
+liveness ever claimed), and an `error` line lands within seconds.
 
 **T3.4 · No request logging at any level.** *(Ade B2.)* Nothing between "the
 server started" and "an unhandled error occurred". An operator cannot answer
-"is it serving traffic?" from the logs.
+"is it serving traffic?" from the logs. **Fixed.** One JSON line per request —
+method, path, status, duration, the actor if one resolved, and the correlation
+id a `500` handed the caller, so a bug report joins to its request as well as to
+its failure. `info` for traffic, `warn` for `5xx`, `debug` for the probes;
+`CANON_REQUEST_LOG=off` for a deployment whose proxy already writes one. The
+query string is dropped whole and deliberately: `/search?q=…` is a sentence
+somebody typed — SECURITY.md F2's own words — and `/auth/callback?code=…` is a
+live authorization code. No headers, no bodies, no names, no addresses.
+Separately, and because it was the silent half of T3.3, Canon now asks itself
+whether it can read its own record every ten seconds and says so, rate limited,
+when it cannot.
 
 **T3.5 · `CONFIGURATION.md` claims completeness and omits six variables**,
 including `CANON_GROUP_MAP` and `CANON_BOOTSTRAP_ADMIN_SUBJECT`. *(Ade.)* Sam
 adds: the contracts' worked example does not work against the seeded corpus,
 and `disagreement` and `pastReview` are returned but undocumented. These matter
 disproportionately because both of them otherwise *trusted* the docs.
+**The configuration half is closed, and closed in a way that stays closed:**
+every `CANON_…` name is present, and a test scans `server/src` and
+`server/scripts` and fails when one is missing, so the page's claim of
+completeness is now checked rather than remembered. **Still open:** the
+contracts' worked example, and `disagreement` / `pastReview` in
+STUDIO-CONTRACT.md.
 
 **T3.6 · Hand-granting cannot scale under SSO.** *(Ade.)* Actors are
 JIT-provisioned on first sign-in and `POST /actors` is 404 under SSO, so an

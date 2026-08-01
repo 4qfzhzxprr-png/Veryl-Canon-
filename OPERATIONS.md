@@ -93,8 +93,11 @@ that is invisible later.
    authentication **off**, the Registry reachable. If Canon refused to start,
    the message names the variable — see CONFIGURATION.md, "Start-up validation".
 2. **`GET /health` → 200 and `GET /ready` → 200.** Readiness proves the record
-   is reachable, the schema matches the binary, and every configured door
-   answers. Point your load balancer at `/ready`, not `/health`.
+   answers a real read *and* that the file it lives in is still a database, that
+   the schema matches the binary, that the audit chain is in place, and that
+   every configured door answers. Point your load balancer at `/ready`, not
+   `/health`: `/health` says only that the process is alive, and a process can
+   be alive and unable to serve a single request.
 3. **Sign in as yourself through the real provider.** Then check `GET
    /auth/session` shows the actor Canon provisioned from your claims.
 4. **Confirm `CANON_DEV_AUTH` is unset**, from outside: `curl -H 'x-actor-id:
@@ -118,8 +121,10 @@ that is invisible later.
    to federate with, and leave `CANON_SOURCE_ALLOW_PRIVATE` unset. Unset means
    Canon reaches nothing, which is the right default and a surprise the first
    time a source will not resolve.
-10. **Ship the logs somewhere.** They are JSON on stdout. Nothing in them is a
-    secret; see "Read the logs".
+10. **Ship the logs somewhere.** They are JSON on stdout, one line per request
+    plus what Canon says about itself. Nothing in them is a secret, and nothing
+    in them is a query string; see "Read the logs". Alert on
+    `msg: "the record cannot be read"`.
 
 ---
 
@@ -313,6 +318,38 @@ for a terminal, `CANON_LOG_LEVEL` for volume.
 {"at":"2026-07-31T09:00:00.000Z","level":"info","msg":"Veryl Canon listening","port":3000,"db":"/data/canon.db","schemaVersion":1,"schemaExpected":1}
 ```
 
+### One line per request
+
+```json
+{"at":"2026-07-31T09:00:04.118Z","level":"info","msg":"request","method":"GET","path":"/pages/8f14e45f","status":200,"ms":6,"actor":"a310eb8f-3b4b-488e-b8cf-102fae368c0b"}
+{"at":"2026-07-31T09:00:04.362Z","level":"warn","msg":"request","method":"POST","path":"/ask","status":500,"ms":41,"actor":"a310eb8f-…","errorId":"6b1f…"}
+```
+
+`msg: "request"`, once per answered request, and it is how you answer "is this
+thing serving traffic?" without guessing. `method`, `path`, `status`, `ms`, the
+`actor` if the request resolved to one, `agent: true` when it arrived on an
+Agent Passport, and `errorId` when the caller was handed a correlation id — so a
+bug report quoting that id finds the request that produced it as well as the
+failure that explains it. `aborted: true` marks a caller who hung up first.
+
+**Volume.** `info` for ordinary traffic, `warn` for `5xx`, `debug` for
+`GET /health` and `GET /ready` — a load balancer asks every second and you did
+not turn this on to read health checks. So `CANON_LOG_LEVEL=warn` leaves you the
+failures, and `CANON_REQUEST_LOG=off` turns the line off altogether for a
+deployment whose reverse proxy already writes one.
+
+**What is deliberately not in it, and why.** The **query string, all of it,
+always**: `/search?q=…` is a sentence somebody typed, `/audit.csv?…` is a filter
+over the audit log, and `/auth/callback?code=…` is a live authorization code.
+SECURITY.md F2 already names a typed question as often the most sensitive
+sentence anybody puts into Canon, and a rule of "log the query string except
+where it matters" is a rule that the next new parameter gets wrong. The path
+itself stays, because every path parameter in Canon's route table is an opaque
+id or a version number: `/pages/8f14e45f` says which page without disclosing a
+word of it. Also absent: **headers** (no cookie, no passport, no
+`Authorization`), **bodies** in either direction, and **names and email
+addresses** — the actor is its id, which is what the audit log joins on anyway.
+
 **No secrets, and not by convention.** `src/log.ts` strips userinfo out of every
 URL it prints, redacts `Bearer`/`Basic` tokens and anything spelled like a
 secret in a `key=value` pair, and blanks the value of every variable named in
@@ -324,6 +361,8 @@ Lines worth alerting on:
 
 | Line | What it means |
 | --- | --- |
+| `the record cannot be read` at `error` | **The most serious line Canon writes.** Canon asked itself whether it can still read its own record and the answer was no; `GET /ready` is answering 503 and the process is refusing traffic. `check` names which of the record's checks failed and `detail` says what SQLite said. It repeats once a minute at most, with `suppressed` counting what was held back, because a fault that recurs every ten seconds must not fill the disk of the one machine whose database is already broken. **Restarting will not repair a record** — take a copy of the file before doing anything else, then OPERATIONS.md "Restore". |
+| `the record reads again` at `info` | The other half of that story. `afterFailures` says how many passes it was gone for. |
 | `*** CANON_DEV_AUTH=true …` | **The door is open and nothing is verified.** Never in a deployment. |
 | `configuration` at `warn` | A setting that works and is probably not what was wanted. Read the `detail`. |
 | `outbox flush failed` | The relay is refusing or unreachable. Notifications queue and retry; nothing is lost until a message hits five attempts and is marked dead. |
@@ -341,9 +380,10 @@ record, queryable at `GET /audit` and exportable at `GET /audit.csv`.
 
 ## The timers, and what breaks if one stops
 
-Canon has exactly two timers. Both do work that is also reachable over HTTP, so
-either can be driven by your own scheduler instead — and if you turn one off
-without doing that, the feature it serves stops being true. "Quietly" is no
+Canon has exactly three timers. The first two do work that is also reachable
+over HTTP, so either can be driven by your own scheduler instead — and if you
+turn one off without doing that, the feature it serves stops being true. The
+third does no work at all; it only looks. "Quietly" is no
 longer accurate of the freshness one, and deliberately: turning it off is now
 said in the start-up log, on `GET /maintenance/freshness`, and to the author in
 the editor beside the review-date field they are about to fill in.
@@ -352,13 +392,15 @@ the editor beside the review-date field they are about to fill in.
 | --- | --- | --- | --- | --- |
 | **Outbox flush** | `CANON_FLUSH_INTERVAL_MS` | 60s | Takes a bounded batch of queued notifications and hands them to the relay. Retries with backoff (1, 5, 15, 60 minutes) and marks a message dead after five attempts. | **Nothing is delivered.** Review requests, approvals, send-backs and mentions all sit in the outbox. Nothing is lost — the outbox is the record of what is owed — but every review stalls, silently, because the person who was supposed to act was never told. Equivalent: `POST /notifications/flush` from cron, about once a minute. Only runs at all when `CANON_SMTP_URL` is set. |
 | **Freshness sweep** | `CANON_FRESHNESS_INTERVAL_MS` | 1h, **plus one pass at start-up, before the port is bound** | Flips Canonical pages past their review date to **Needs Update**, notifies their owners, writes a `page.needs_update` audit event attributed to `system:canon`. | **Stale knowledge stops announcing itself.** Pages sail past their review dates still wearing the Canonical mark, and `/ask` keeps citing them as current with no "past review" marker, because the marker comes from the status the sweep sets. Nothing is corrupted and the next run catches everything up: the sweep is idempotent by construction, not by bookkeeping — a page it has flipped is no longer Canonical, so it is not seen twice. Equivalent: `POST /maintenance/freshness`. **Runs on every deployment, configured or not**; only `CANON_FRESHNESS_INTERVAL_MS=0` stops it, and when it is stopped the editor stops promising authors a flip. |
+| **Record watch** | `CANON_RECORD_WATCH_INTERVAL_MS` | 10s, **plus one pass at start-up, before the port is bound** | Runs the record's own readiness checks — the open connection reads real rows, the record file opens read-only and answers, the schema matches, the audit chain is in place — and logs `the record cannot be read` at `error` when one of them fails, once a minute at most. Writes nothing and changes nothing. | **A record that stops being readable is discovered by whoever probes `GET /ready`, and by nobody else.** With no readiness probe pointed at Canon, that is nobody: USER-TESTING.md T3.3 is a process that kept accepting connections, refused every one of them, and said nothing for as long as it was left running. Turn it off only where a probe is definitely watching. |
 
-Both are cleared on shutdown before the database closes, so neither can fire
+All three are cleared on shutdown before the database closes, so none can fire
 against a closed record.
 
-Neither timer is a queue and neither is durable across a stopped process — they
-do not need to be. The outbox is a table, and the sweep re-derives its work from
-the record's own state on every run.
+None of them is a queue and none is durable across a stopped process — they do
+not need to be. The outbox is a table, the sweep re-derives its work from the
+record's own state on every run, and the watch holds no state but "was this
+check failing last time".
 
 ---
 
@@ -367,11 +409,20 @@ the record's own state on every run.
 | Probe | Answers | Use it for |
 | --- | --- | --- |
 | `GET /health` | 200 whenever the process is up | **Liveness.** A failure means "restart me". It stays 200 while the Registry is down, because restarting Canon does not fix somebody else's outage. |
-| `GET /ready` | 200 when this process can serve; 503 with the failing check named | **Readiness.** Load-balancer membership, deployment gates, the container `HEALTHCHECK`. Checks: the record is reachable; the schema is the version this binary expects; every configured door (identity provider discovery, Agent Registry) answers. |
+| `GET /ready` | 200 when this process can serve; 503 with the failing check named | **Readiness.** Load-balancer membership, deployment gates, the container `HEALTHCHECK`. Five kinds of check, below. |
 
 Both are unauthenticated, as a probe must be. Readiness discloses booleans,
 schema version numbers, and host names already in your own configuration —
-never a record value, and URLs go through the log redactor first.
+never a record value, never a count of anything, never this server's path to
+the record, and URLs go through the log redactor first.
+
+| Check | What it proves |
+| --- | --- |
+| `database` | The connection Canon serves from reads **rows**: the system actor, a collection, the newest audit event, and a session row where the deployment has sessions. Rows and not a count, because a count can be answered from an index. |
+| `record_file` | The record **on disk** opens read-only and answers. A second, short-lived connection with no page cache of its own — see below for why this is the one that matters. |
+| `schema` | The record's schema version is the one this binary was built for. |
+| `audit_chain` | The chain metadata and the `audit_chain_link` trigger are both there, so an audit event written now would be chained. Not a verification — that is `GET /audit/verify`. |
+| `identity_provider`, `agent_registry` | Each configured door answers. Present only when configured. |
 
 ```sh
 $ curl -s localhost:3000/ready | jq .
@@ -379,15 +430,40 @@ $ curl -s localhost:3000/ready | jq .
   "ready": true,
   "at": "2026-07-31T09:00:00.000Z",
   "checks": [
-    { "name": "database", "ok": true, "detail": "reachable, 5 collection(s)" },
-    { "name": "schema", "ok": true, "detail": "version 1, expected 1: current" },
+    { "name": "database",    "ok": true, "detail": "the open connection reads the record" },
+    { "name": "record_file", "ok": true, "detail": "the record file opens and answers" },
+    { "name": "schema",      "ok": true, "detail": "version 4, expected 4: current" },
+    { "name": "audit_chain", "ok": true, "detail": "canon-audit-chain-v1/sha256, link trigger in place" },
     { "name": "identity_provider", "ok": true, "detail": "https://idp.example.com/… answered 200" }
   ]
 }
 ```
 
+**Why the record is checked twice.** USER-TESTING.md T3.3: an administrator
+corrupted the record underneath a running Canon and got three green lights —
+`/health` 200, `/ready` 200 saying `database ok=true`, a silent log — while
+every request was refused. That was not a slip, it is a property of SQLite. An
+open connection answers out of its own page cache, so a query put to it is a
+read of *this process's memory*, not of the record; the file can be overwritten
+byte for byte and the answers keep coming. `record_file` is the half that cannot
+be fooled, because it opens the path fresh and has nothing cached to answer
+from. It costs one open and two indexed reads per readiness answer, and it is
+also the only thing that tells you whether the file this process would restart
+from — and every backup taken of it — is still a database.
+
 Readiness answers are cached for a few seconds, so a probe every second is not a
 request to your identity provider every second.
+
+**A readiness answer is only as loud as whoever asks for it**, so Canon also
+asks itself, every `CANON_RECORD_WATCH_INTERVAL_MS` (10s), and writes `the
+record cannot be read` at `error` when the answer is no — rate limited to one
+line a minute per failing check. It does **not** exit, and that is a decision:
+restarting does not repair a corrupt file, so exiting buys a crash loop in which
+`/ready` stops being answerable and the log you need scrolls past in a restart
+storm. The process stays up, keeps answering `/health` — it is alive, which is
+all liveness ever claimed — answers `/ready` 503 with the failing check named,
+and repeats the reason until somebody comes. A deployment that would rather the
+process die can act on the 503.
 
 ---
 
@@ -397,7 +473,7 @@ request to your identity provider every second.
 
 1. stop accepting — new requests get `503 shutting_down` with `Connection: close`;
 2. finish what is in flight, up to `CANON_SHUTDOWN_TIMEOUT_MS` (default 10s);
-3. clear both timers;
+3. clear the three timers;
 4. close the database, which checkpoints the WAL.
 
 Exit 0 when everything drained, 1 when the deadline was hit. Keep the timeout

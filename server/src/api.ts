@@ -11,6 +11,7 @@ import {
 } from './auth.js';
 import { freshnessScheduleFor } from './freshness.js';
 import { countParam, idParam, instantParam, objectBody, optionalCount, requiredCount } from './input.js';
+import { loggerFromEnv, noteRequest, requestPath, type Logger } from './log.js';
 import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
@@ -606,6 +607,14 @@ export function createApi(
    * CANON_DEV_AUTH=true.
    */
   personAuth: PersonAuth | null = null,
+  /**
+   * Where a bug goes. The request LINE is written by `attachRequestLog` outside
+   * this server (log.ts); what api.ts owns is the two things only it knows —
+   * who the request resolved to, and the correlation id a `500` handed back —
+   * which it hangs on the response with `noteRequest` for that wrapper to pick
+   * up, plus the error line itself.
+   */
+  log: Logger = loggerFromEnv(),
 ): Server {
   const devAuth = personAuth ? personAuth.devAuth : devAuthEnabled();
   return createServer(async (req, res) => {
@@ -658,11 +667,16 @@ export function createApi(
           throw err;
         }
         actorId = session.actorId;
+        noteRequest(res, { actor: actorId, agent: true });
       } else if (personAuth) {
         // Cookies are ambient credentials, so an unsafe request that rode in
         // on one has to prove it was meant. See assertCsrf in auth.ts.
         personAuth.assertCsrf(req, identity);
       }
+      // Who this request turned out to be, for the request line. The id and
+      // nothing else: a name and an email address are what the directory is
+      // for, and the audit log joins on the id anyway.
+      if (actorId && !session) noteRequest(res, { actor: actorId });
       if (!match.open && !actorId) {
         if (!personAuth && !devAuth) throw devAuthRefused();
         send(res, 401, {
@@ -735,7 +749,20 @@ export function createApi(
         // operator holding the id from a bug report can find the one line that
         // explains it. Correlatable, not disclosed.
         const errorId = randomUUID();
-        console.error(`[error ${errorId}] ${req.method} ${req.url}`, err);
+        noteRequest(res, { errorId });
+        // Through the logger rather than `console.error`, for two reasons. The
+        // structured line is what an operator's collector can find by id, and
+        // everything in it is scrubbed on the way out — where this used to
+        // print `req.url` whole, it now prints the path with the query string
+        // cut off, because `/auth/callback?code=…` is an authorization code and
+        // `/search?q=…` is a sentence somebody typed.
+        log.error('unhandled request error', {
+          errorId,
+          method: req.method ?? '',
+          path: requestPath(req.url),
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        });
         send(res, 500, {
           error: 'internal',
           message: 'Canon could not complete this request. Quote the error id when reporting it.',
