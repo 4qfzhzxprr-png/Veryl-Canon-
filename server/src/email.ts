@@ -259,6 +259,10 @@ const COPY: Record<NotificationKind, KindCopy> = {
     cta: 'Open the draft',
     why: 'You are receiving this because you wrote or own this page.',
   },
+  review_withdrawn: {
+    cta: 'Open the page',
+    why: 'You are receiving this because you were asked to review this page.',
+  },
   proposal_opened: {
     cta: 'Open the proposal',
     why: 'You are receiving this because you own this page, or can act on proposals in this collection.',

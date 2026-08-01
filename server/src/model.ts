@@ -152,6 +152,41 @@ export interface Draft {
   updatedAt: string;
 }
 
+// What is PENDING on a page In Review — the answer for every surface that has
+// to name somebody while the page sits there.
+//
+// A page's owner, approver and dates live in two places, and they are two
+// different facts. The `pages` row carries the PUBLISHED version's fields:
+// history, written by `writeVersion`, and deliberately historical. The draft
+// under review carries what is being PROPOSED. Between a submission that
+// changes the approver and the approval that publishes it, the two name
+// different people and both are true — about different questions.
+//
+// `CanonStore.approve` enforces the draft's, because approval publishes the
+// draft. This projection is therefore what a screen must show while a page is
+// in review; `pages.approver_id` answers "who approved what is published", and
+// showing it as "the approver" mid-review names the wrong person.
+export interface ReviewState {
+  pageId: string;
+  /** The draft's fields: what approval will publish, and what it enforces. */
+  fields: PageFields;
+  /**
+   * The one actor `approve` accepts — or null where the type names no approver
+   * (a Plan), in which case any holder of `approve` on the collection accepts
+   * it. `namesApprover` tells the two apart, so "null" is never read as
+   * "nobody knows".
+   */
+  approverId: string | null;
+  namesApprover: boolean;
+  /** Who holds the page lock on the draft under review. */
+  editorId: string;
+  /** Who submitted it and when, read back from the audit log. */
+  submittedById: string | null;
+  submittedAt: string | null;
+  /** Whether the ASKING actor may withdraw it; see `withdrawFromReview`. */
+  canWithdraw: boolean;
+}
+
 export interface AuditEvent {
   id: number;
   at: string;

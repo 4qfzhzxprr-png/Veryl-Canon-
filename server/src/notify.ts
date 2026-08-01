@@ -66,6 +66,12 @@ export type NotificationKind =
   | 'review_requested'
   | 'draft_approved'
   | 'draft_sent_back'
+  // The author took their own submission back (store.ts withdrawFromReview,
+  // USER-TESTING.md T4.5). It goes to whoever `review_requested` went to, and
+  // for the same reason: somebody was asked to spend their afternoon on this
+  // page, and a request that quietly stops being a request leaves a queue full
+  // of work nobody needs to do.
+  | 'review_withdrawn'
   // Agent proposals (proposals.ts, Next tier). The triggers live there, next
   // to the logic, exactly as the mention trigger lives in comments.ts.
   | 'proposal_opened'
@@ -372,25 +378,47 @@ export class Notifier {
   reviewRequested(byId: string, pageId: string): void {
     const page = this.page(pageId);
     const by = this.directory.getActor(byId);
-    const draft = this.db.prepare('SELECT fields_json FROM drafts WHERE page_id = ?').get(pageId) as
-      | { fields_json: string }
-      | undefined;
-    const fields = draft ? (JSON.parse(draft.fields_json) as { approverId?: string | null }) : {};
-    const recipients = fields.approverId
-      ? [fields.approverId]
-      : (
-          this.db
-            .prepare(
-              "SELECT actor_id FROM collection_members WHERE collection_id = ? AND role IN ('approve', 'admin')",
-            )
-            .all(page.collectionId) as { actor_id: string }[]
-        ).map((r) => r.actor_id);
-    this.fanOut(byId, recipients, {
+    this.fanOut(byId, this.reviewRecipients(pageId, page.collectionId), {
       kind: 'review_requested',
       subject: `Review requested: ${page.title}`,
       body: `${by.name} submitted "${page.title}" for review.`,
       link: `/pages/${pageId}`,
     });
+  }
+
+  // Submission withdrawn by its author: tell whoever the request went to, so
+  // the same inbox that was asked is the one told it is no longer waiting.
+  // Shares `reviewRecipients` with reviewRequested rather than repeating the
+  // rule, because "told to review" and "told never mind" must be the same set.
+  reviewWithdrawn(byId: string, pageId: string, reason: string | null): void {
+    const page = this.page(pageId);
+    const by = this.directory.getActor(byId);
+    this.fanOut(byId, this.reviewRecipients(pageId, page.collectionId), {
+      kind: 'review_withdrawn',
+      subject: `Withdrawn from review: ${page.title}`,
+      body:
+        `${by.name} withdrew "${page.title}" from review; it is a draft again.` +
+        (reason ? ` Reason: ${reason}` : ''),
+      link: `/pages/${pageId}`,
+    });
+  }
+
+  // Who is waiting on this page: the draft's named approver, or, where the
+  // type names none (a Plan), every approve-role member of the collection.
+  // The DRAFT's approver, never the page row's — the page row names whoever
+  // approved the last published version, which mid-review is a different
+  // person (store.ts, "the review workflow" invariant).
+  private reviewRecipients(pageId: string, collectionId: string): string[] {
+    const draft = this.db.prepare('SELECT fields_json FROM drafts WHERE page_id = ?').get(pageId) as
+      | { fields_json: string }
+      | undefined;
+    const fields = draft ? (JSON.parse(draft.fields_json) as { approverId?: string | null }) : {};
+    if (fields.approverId) return [fields.approverId];
+    return (
+      this.db
+        .prepare("SELECT actor_id FROM collection_members WHERE collection_id = ? AND role IN ('approve', 'admin')")
+        .all(collectionId) as { actor_id: string }[]
+    ).map((r) => r.actor_id);
   }
 
   // Draft approved: notify the draft editor and the page owner.

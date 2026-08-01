@@ -69,8 +69,18 @@ source cards.** *(Priya bug A, Marcus task 4; verified in source.)*
 carries no `status` — so it is always undefined and always prints CANONICAL.
 Priya watched a card badge "Records and Retention — CANONICAL" beside an answer
 whose own prose said that page was past review, on a page that is NEEDS UPDATE.
-The most trust-critical surface in the product, wrong by construction. Fix:
-carry `status` on `Citation` and render it.
+The most trust-critical surface in the product, wrong by construction.
+**Fixed.** `Citation` carries `status`, populated from the passage's real page
+status wherever a citation is built, and the client draws no badge it was not
+given — absent means *this response cannot say*, never *canonical*. The same
+guess was found in two more places and closed: a version's badge showed the
+page's status *today*, so v1 of a since-approved page read CANONICAL although
+nobody ever approved that version; a superseded version now reads `superseded`
+and carries no status badge, because status is a column on `pages`, not a field
+on a version, and the standing a superseded version held is a range rather than
+a value — point-in-time is the attestation's question and it answers it
+properly. The regression test lifts the render function out of the shipped
+`app.js` and asserts no `?? 'canonical'` default survives anywhere in the file.
 
 **T1.2 · Ask does not know about conflicts the record has already recorded.**
 *(Marcus task 4, Priya; verified in source.)* `answers.ts` contains no
@@ -78,10 +88,23 @@ reference to `relations` or `divergence`. Contradiction awareness is
 text-inference only, so the two places where a conflict is stored as *data* —
 a person's asserted `conflicts_with` relation and a source divergence — are
 invisible to the answer path. Marcus watched Ask cite both sides of a conflict
-a human had explicitly asserted, in one answer, without mentioning it. Fix:
-`detectDisagreement` consults asserted relations and open divergences over the
-cited pages, in addition to inferring from text. Structure over prose, in the
-one place we are currently doing the opposite.
+a human had explicitly asserted, in one answer, without mentioning it. Structure
+over prose, in the one place we were doing the opposite.
+**Fixed.** `detectDisagreement` now takes the asserted conflicts over the pages
+being cited — still pure, still directly testable, with the record lookup in a
+separate injectable seam — and reports an asserted conflict whether or not the
+text gives the quantity and polarity checks anything to find. The note
+attributes it: who asserted it, when, and their words verbatim.
+`disagreement.asserted` carries the same machine-readably and is *absent* when
+Canon inferred the conflict, because a person's assertion and a lexical match
+are not equivalent evidence. `supersession` and `sourceDisagreement` are
+siblings rather than more `disagreement` — a supersession has already been
+settled by a person, and a source divergence is one page against two external
+systems with no second page to quote. Both ends of a relation must be cited for
+it to be reported: Canon quotes what it warns about, and the alternative leaks
+the existence of pages the asker may not see. The generator seam is unchanged
+where it matters — all three findings go in as advisories and none can come
+back out.
 
 **T1.3 · The approver named on a page in review is the wrong person, or
 nobody.** *(Ruth #14, Priya bug C, Marcus.)* The page header reads the
@@ -91,7 +114,20 @@ approver, Grace Abara" and a green Approve button — Grace got a 403, and Nadia
 Haddad, named nowhere on that screen, approved it. On brand-new pages Priya got
 "Waiting on the named approver, —" with owner, approver and both dates all
 blank. Ruth: an auditor sampling approvals from the page header would record
-the wrong approver.
+the wrong approver. **Fixed.** The server was already right and stayed right:
+`approve` enforces the DRAFT's approver, because approving is what publishes
+that draft, and enforcing the page row would publish a version naming one
+person and approved by another. The defect was in the naming, so there is now
+one answer for every surface to ask — `CanonStore.reviewState`, carried inside
+`GET /pages/:id` as `review` and readable with `view`, so a reader without the
+page lock still sees the right name. The invariant is written above the review
+workflow in `store.ts`: *the approver named on any surface is the approver
+`approve` will accept, and nobody else.* The header keeps showing what the page
+published — history stays historical — with the pending approver named beside
+it rather than in place of it, and Approve is offered only to the person the
+server will accept. A page that has never published has no history to protect,
+so it shows the draft's four fields marked `· proposed` instead of four dashes.
+Verified against a running server.
 
 **T1.4 · "Stale knowledge announces itself" is not true of a default
 deployment.** *(Ruth #13, Marcus task 3.)* The freshness sweep runs only when
@@ -217,7 +253,17 @@ say who can.
 
 **T4.5 · An author cannot retract their own submission.** *(Priya bug D.)*
 Send back is offered and refused, the editor is locked, approve is refused. The
-page is stuck with nobody's name on it.
+page is stuck with nobody's name on it. **Fixed:** `POST /pages/:id/withdraw`,
+offered on the page only where the server will accept it. It loosens neither
+half of separation of duties — the approver still cannot submit their own
+draft, an author still cannot approve their own work — because withdrawal is
+neither of those acts: the page returns to Draft, exactly where a send-back
+leaves it. Only the actor who submitted it may withdraw it (read from the
+`page.submit` event), and only while it is still In Review, which is the same
+sentence as "before anybody has acted on it". An approver who wants a page out
+of review still uses Send back, which costs them a comment to the author. The
+withdrawal is audited as `page.withdraw` and whoever was asked to review is
+told. Verified against a running server.
 
 **T4.6 · Navigation.** *(Priya.)* Clicking a folder shows a staff permissions
 table with Remove buttons, not documents. Tree titles truncate at ~18

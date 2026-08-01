@@ -152,6 +152,163 @@ test('review workflow: the approver can send a draft back with a comment', () =>
   assert.equal(events[0]!.details.comment, 'Too vague; name the milestones.');
 });
 
+// The auditor's sequence from USER-TESTING.md T1.3, as a test. A page carries
+// its approver in two places — the page row (the published version's) and the
+// draft's fields (the one being proposed) — and they differ exactly when the
+// approval is handed to somebody else, which is the case that broke.
+test('review: the approver the record NAMES is the approver the record ACCEPTS', () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const nadia = store.createActor({ kind: 'person', name: 'Nadia' });
+  store.setMember(dana.id, collection.id, nadia.id, 'approve');
+
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
+  store.editDraft(marc.id, page.id, {
+    body: 'All access is logged.',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+  });
+  store.submitForReview(marc.id, page.id);
+  store.approve(iris.id, page.id);
+  assert.equal(store.getPage(marc.id, page.id).approverId, iris.id);
+
+  // An edit drops the Canonical mark on publish (the mark applies to reviewed
+  // content), and the next revision hands the approval to Nadia and goes back
+  // into review.
+  store.editDraft(marc.id, page.id, { body: 'All access is logged and reviewed.' });
+  store.publish(marc.id, page.id);
+  store.editDraft(marc.id, page.id, { fields: { approverId: nadia.id } });
+  store.submitForReview(marc.id, page.id);
+
+  // The page row still says Iris, and truthfully — she approved v1. "Who can
+  // approve THIS" is a different question with a different answer, and that is
+  // the answer every surface that names an approver has to use.
+  assert.equal(store.getPage(marc.id, page.id).approverId, iris.id);
+  const review = store.reviewState(marc.id, page.id)!;
+  assert.equal(review.approverId, nadia.id);
+  assert.equal(review.namesApprover, true);
+  assert.equal(review.submittedById, marc.id);
+  assert.ok(review.submittedAt);
+
+  // The invariant asserted rather than described: the one named is the one
+  // accepted, and nobody else — including the person the page row names.
+  expectCode(() => store.approve(iris.id, page.id), 'forbidden');
+  const canonical = store.approve(review.approverId!, page.id);
+  assert.equal(canonical.status, 'canonical');
+  assert.equal(canonical.approverId, nadia.id);
+  assert.equal(store.reviewState(marc.id, page.id), null); // nothing pending any more
+});
+
+test('review: a brand-new page names its owner, approver and dates the moment it is submitted', () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Expenses' });
+  store.editDraft(marc.id, page.id, {
+    body: 'Receipts within 30 days.',
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-01-01', reviewDate: '2099-01-01' },
+  });
+  store.submitForReview(marc.id, page.id);
+
+  // Nothing has published, so the page row is empty of all four. That is what
+  // rendered "In review. Waiting on the named approver, —" with owner,
+  // approver and both dates blank on every author's first submission.
+  const row = store.getPage(marc.id, page.id);
+  assert.equal(row.currentVersion, null);
+  assert.equal(row.ownerId, null);
+  assert.equal(row.approverId, null);
+  assert.equal(row.effectiveDate, null);
+
+  const review = store.reviewState(marc.id, page.id)!;
+  assert.equal(review.approverId, iris.id);
+  assert.equal(review.fields.ownerId, marc.id);
+  assert.equal(review.fields.effectiveDate, '2026-01-01');
+  assert.equal(review.fields.reviewDate, '2099-01-01');
+
+  // Readable by somebody holding only `view`: who is waiting on a page must
+  // not depend on holding the page lock. The draft's BODY still does.
+  const reader = store.createActor({ kind: 'person', name: 'Reader' });
+  store.setMember(dana.id, collection.id, reader.id, 'view');
+  assert.equal(store.reviewState(reader.id, page.id)!.approverId, iris.id);
+  expectCode(() => store.getDraft(reader.id, page.id), 'forbidden');
+
+  // A Plan names no approver, so the answer is "any approver here" rather than
+  // a name — and `namesApprover` is what says so, so null is never read as
+  // "nobody knows".
+  const plan = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Q4 plan' });
+  store.editDraft(marc.id, plan.id, { body: 'Ship it.', fields: { ownerId: marc.id } });
+  store.submitForReview(marc.id, plan.id);
+  const planReview = store.reviewState(marc.id, plan.id)!;
+  assert.equal(planReview.namesApprover, false);
+  assert.equal(planReview.approverId, null);
+});
+
+// T4.5: the page that was stuck with nobody's name on it.
+test('review: an author withdraws their own submission, and only their own', () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const sam = store.createActor({ kind: 'person', name: 'Sam' });
+  store.setMember(dana.id, collection.id, sam.id, 'edit');
+
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Expenses' });
+  store.editDraft(marc.id, page.id, {
+    body: 'Receipts within 30 d',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+  });
+  store.submitForReview(marc.id, page.id);
+  assert.equal(store.reviewState(marc.id, page.id)!.canWithdraw, true);
+
+  // Not the approver's tool: she has Send back, which costs her a comment to
+  // the author and puts her refusal on the record.
+  expectCode(() => store.withdrawFromReview(iris.id, page.id), 'forbidden');
+  assert.equal(store.reviewState(iris.id, page.id)!.canWithdraw, false);
+  // Nor anybody else's who merely holds `edit` here.
+  expectCode(() => store.withdrawFromReview(sam.id, page.id), 'forbidden');
+
+  const back = store.withdrawFromReview(marc.id, page.id, { reason: 'Submitted a paragraph early' });
+  assert.equal(back.status, 'draft');
+
+  // Unstuck: the editor unlocks and the ordinary road to Canonical is open.
+  store.editDraft(marc.id, page.id, { body: 'Receipts within 30 days, with the missing paragraph.' });
+  store.submitForReview(marc.id, page.id);
+  assert.equal(store.approve(iris.id, page.id).status, 'canonical');
+  expectCode(() => store.withdrawFromReview(marc.id, page.id), 'workflow'); // decided; not undoable here
+
+  const events = store.queryAudit(dana.id, { action: 'page.withdraw' });
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.actorId, marc.id);
+  assert.equal(events[0]!.details.reason, 'Submitted a paragraph early');
+});
+
+test('review: withdrawal loosens neither half of separation of duties', () => {
+  const { store, dana, marc, iris, collection } = setup();
+
+  // The approver still cannot submit their own draft for review. (Iris holds
+  // `approve`, which outranks `edit`, so she can write one.)
+  const hers = store.createPage(iris.id, { collectionId: collection.id, type: 'policy', title: 'Her own policy' });
+  store.editDraft(iris.id, hers.id, {
+    body: 'Mine.',
+    fields: { ownerId: iris.id, approverId: iris.id, reviewDate: '2099-01-01' },
+  });
+  expectCode(() => store.submitForReview(iris.id, hers.id), 'workflow');
+
+  // And an author still cannot approve their own work — before a withdrawal
+  // or after one. Marc holds `edit`, not `approve`, and the named approver is
+  // Iris either way.
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
+  store.editDraft(marc.id, page.id, {
+    body: 'All access is logged.',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+  });
+  store.submitForReview(marc.id, page.id);
+  expectCode(() => store.approve(marc.id, page.id), 'forbidden');
+  store.withdrawFromReview(marc.id, page.id);
+  // Naming himself does not help: submitting a draft he is the approver of is
+  // the refusal above, and it did not move.
+  store.editDraft(marc.id, page.id, { fields: { approverId: marc.id } });
+  expectCode(() => store.submitForReview(marc.id, page.id), 'workflow');
+  store.editDraft(marc.id, page.id, { fields: { approverId: iris.id } });
+  store.submitForReview(marc.id, page.id);
+  expectCode(() => store.approve(marc.id, page.id), 'forbidden');
+  assert.equal(store.approve(iris.id, page.id).status, 'canonical');
+  assert.equal(store.queryAudit(dana.id, { action: 'page.withdraw' }).length, 1);
+});
+
 test('notes publish directly and never carry the Canonical mark', () => {
   const { store, marc, collection } = setup();
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Scratch' });

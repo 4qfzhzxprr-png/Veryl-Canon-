@@ -282,6 +282,11 @@ const STATUS_EVENTS: Record<string, PageStatus | 'from_details'> = {
   'page.submit': 'in_review',
   'page.approve': 'canonical',
   'page.send_back': 'draft',
+  // An author taking their own submission back (store.ts withdrawFromReview).
+  // It lands on the same status a send-back does and is deliberately a
+  // separate action, so an attestation can tell "the approver refused this"
+  // from "the author pulled it back before anybody looked".
+  'page.withdraw': 'draft',
   'page.archive': 'archived',
   'page.needs_update': 'needs_update',
 };

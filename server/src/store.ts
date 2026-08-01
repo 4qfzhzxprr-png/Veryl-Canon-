@@ -12,6 +12,7 @@ import {
   Page,
   PageFields,
   PageVersion,
+  ReviewState,
   Role,
   ROLE_RANK,
   TYPE_RULES,
@@ -853,6 +854,83 @@ export class CanonStore {
   }
 
   // ---- review workflow -------------------------------------------------
+  //
+  // THE INVARIANT THIS SECTION KEEPS: the approver NAMED on any surface is the
+  // approver `approve` will accept, and nobody else.
+  //
+  // It has to be written down because a page's approver lives in two places
+  // and they can legitimately differ. `pages.approver_id` is the approver of
+  // the PUBLISHED version — history, written by `writeVersion`. The draft's
+  // `fields_json` carries the approver being PROPOSED. Submit a draft that
+  // changes the approver and, until it is approved, those are two different
+  // people and both rows are true, about different questions.
+  //
+  // `approve` below enforces the DRAFT's, and must. Approval publishes that
+  // draft, so the approver named in the version it writes is the person who
+  // granted the mark; enforcing the page row instead would publish a version
+  // naming one person, approved by another — precisely the thing an auditor
+  // samples this control to catch. `Notifier.reviewRequested` reads the
+  // draft's too, which is why the right person was always TOLD to review while
+  // the screen named somebody else (USER-TESTING.md T1.3).
+  //
+  // So the defect was never in the enforcement, it was in the naming, and the
+  // remedy is one answer rather than two: `reviewState` is what every surface
+  // asks while a page is in review. A screen that names an approver from
+  // anywhere else is a bug, and a new naming surface that reads
+  // `page.approverId` mid-review is reintroducing this one.
+
+  /**
+   * What is pending on a page In Review: the fields the draft carries, the
+   * approver `approve` will accept, and who submitted it.
+   *
+   * Null for a page that is not in review — nothing is pending, and the page's
+   * own fields are the published truth, which is the answer every other screen
+   * already shows.
+   *
+   * Readable with `view`, not `edit`. These four structured fields say who is
+   * accountable for a page and who is being asked to accept it; anyone who can
+   * read the page will see them the moment it publishes, and withholding them
+   * for the days it sits in review is what produced a banner naming nobody on
+   * a page that had never published (T1.3, second half). The draft's BODY is
+   * unchanged and stays behind `edit`: this returns fields, never prose.
+   */
+  reviewState(actorId: string, pageId: string): ReviewState | null {
+    const row = this.pageRow(pageId);
+    const page = this.toPage(row);
+    this.requireRole(actorId, page.collectionId, 'view');
+    if (page.status !== 'in_review') return null;
+    const draft = this.draftRow(pageId);
+    if (!draft) return null;
+    const fields = JSON.parse(draft.fields_json as string) as PageFields;
+    const namesApprover = TYPE_RULES[page.type].requiresApprover;
+    const submitted = this.lastSubmission(pageId);
+    const role = this.roleOf(actorId, page.collectionId);
+    return {
+      pageId,
+      fields,
+      approverId: namesApprover ? fields.approverId ?? null : null,
+      namesApprover,
+      editorId: draft.editor_id as string,
+      submittedById: submitted?.actorId ?? null,
+      submittedAt: submitted?.at ?? null,
+      canWithdraw:
+        submitted !== null &&
+        submitted.actorId === actorId &&
+        role !== null &&
+        ROLE_RANK[role] >= ROLE_RANK.edit,
+    };
+  }
+
+  // Who submitted this page for review, from the event that recorded it. The
+  // audit log is the record of who did what, so it is also the right place to
+  // ask "whose submission is this?" — storing a second copy of the answer on
+  // `pages` would be a copy that can disagree with the log.
+  private lastSubmission(pageId: string): { actorId: string; at: string } | null {
+    const row = this.db
+      .prepare("SELECT actor_id, at FROM audit_events WHERE page_id = ? AND action = 'page.submit' ORDER BY id DESC LIMIT 1")
+      .get(pageId) as { actor_id: string; at: string } | undefined;
+    return row ? { actorId: row.actor_id, at: row.at } : null;
+  }
 
   submitForReview(actorId: string, pageId: string): Page {
     const row = this.pageRow(pageId);
@@ -893,8 +971,13 @@ export class CanonStore {
     if (!draft) throw new CanonError('workflow', 'The draft under review is missing');
     const fields = JSON.parse(draft.fields_json as string) as PageFields;
     const rules = TYPE_RULES[page.type];
+    // The DRAFT's approver, per the invariant at the top of this section — and
+    // the same one `reviewState` publishes to every screen, so the green
+    // Approve button and this refusal can never disagree about who is meant.
     if (rules.requiresApprover && fields.approverId !== actorId) {
-      throw new CanonError('forbidden', 'Only the named approver can grant the Canonical mark');
+      throw new CanonError('forbidden', 'Only the named approver can grant the Canonical mark', {
+        approverId: fields.approverId ?? null,
+      });
     }
     // A Plan names no approver; any holder of the approve role accepts it.
     const approved = this.writeVersion(
@@ -934,6 +1017,75 @@ export class CanonStore {
       details: { comment: input.comment.trim() },
     });
     this.notifier.draftSentBack(actorId, pageId, input.comment.trim());
+    return this.getPage(actorId, pageId);
+  }
+
+  /**
+   * The author takes their own submission back (USER-TESTING.md T4.5).
+   *
+   * Hitting Submit a paragraph too early is the ordinary mistake, and before
+   * this there was no way out of it: the editor is locked while a page is in
+   * review, publish is refused, approve is refused, and Send back belongs to
+   * the approver. The author's only recourse was to interrupt the person they
+   * had just interrupted and ask to be interrupted back. The page sat In
+   * Review with nobody's name on it in the meantime.
+   *
+   * IT LOOSENS NOTHING. Withdrawal is not approval and not publication: the
+   * page returns to Draft, exactly where a send-back leaves it, and the road
+   * to Canonical is still submit-then-approve with `approve` enforcing the
+   * named approver. Two limits keep it there:
+   *
+   *   * ONLY THE ACTOR WHO SUBMITTED IT may withdraw it — read from the audit
+   *     event that recorded the submission, not from the page lock, because
+   *     the person who submitted is the person whose act is being undone. Not
+   *     the owner, not an approver, not everyone else holding `edit`. An
+   *     approver who wants a page out of review already has Send back, which
+   *     costs them a comment to the author and puts their refusal on the
+   *     record; withdrawal must not become a quiet way around that. Nor does
+   *     it help an approver reach their own draft: submitting one is refused
+   *     upstream in `submitForReview` and nothing here touches that.
+   *   * ONLY WHILE IT IS STILL IN REVIEW, which is the same sentence as
+   *     "before anybody has acted on it": approval and send-back both leave
+   *     the status somewhere other than `in_review`, so a decision that has
+   *     been taken cannot be untaken by this route.
+   *
+   * And it is audited like every other transition — `page.withdraw`, which
+   * attestation.ts's status machine reads — so "who pulled this back, and
+   * when" is answerable from the record rather than inferred from a gap.
+   */
+  withdrawFromReview(actorId: string, pageId: string, input: { reason?: string } = {}): Page {
+    const row = this.pageRow(pageId);
+    const page = this.toPage(row);
+    this.requireRole(actorId, page.collectionId, 'edit');
+    if (page.status !== 'in_review') {
+      throw new CanonError('workflow', `Only a page In Review can be withdrawn (status: ${page.status})`);
+    }
+    const submitted = this.lastSubmission(pageId);
+    if (!submitted) {
+      // No submission on the record to undo. Refusing is the honest answer:
+      // the alternative would be letting anybody with `edit` pull a page out
+      // of review on the strength of a missing event.
+      throw new CanonError('workflow', 'No submission is on the record for this page; an approver sends it back');
+    }
+    if (submitted.actorId !== actorId) {
+      const by = this.getActor(submitted.actorId);
+      throw new CanonError(
+        'forbidden',
+        `Only ${by.name}, who submitted this page for review, can withdraw it; an approver sends it back with a comment`,
+        { submittedById: by.id },
+      );
+    }
+    const reason = input.reason?.trim() || null;
+    this.db.prepare("UPDATE pages SET status = 'draft' WHERE id = ?").run(pageId);
+    this.audit(actorId, 'page.withdraw', {
+      collectionId: page.collectionId,
+      pageId,
+      details: reason ? { reason } : {},
+    });
+    // Whoever was asked to review is told it is no longer waiting on them. A
+    // review request that silently stops being a review request is how a queue
+    // fills with work nobody needs to do.
+    this.notifier.reviewWithdrawn(actorId, pageId, reason);
     return this.getPage(actorId, pageId);
   }
 

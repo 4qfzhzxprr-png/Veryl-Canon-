@@ -141,7 +141,14 @@ const routes: Route[] = [
     // (DATA-BACKBONE.md §6) — unresolved descriptors, so rendering the page
     // costs no external call. Resolution stays on GET /pages/:id/references.
     const references = store.listReferences(actorId, page.id);
-    return { ...page, current, references };
+    // What is pending while the page is In Review — the draft's fields and the
+    // approver `approve` will accept (store.ts, "the review workflow"
+    // invariant). It travels inside the payload the UI already fetches for the
+    // same reason references do: naming the right approver must not depend on
+    // a second request that a reader without `edit` is refused. Null on every
+    // page that is not in review.
+    const review = store.reviewState(actorId, page.id);
+    return { ...page, current, references, review };
   }),
   route('POST', '/pages/:id/move', ({ store, actorId, params, body }) =>
     store.movePage(actorId, params.id!, { parentId: body.parentId ?? null }),
@@ -164,6 +171,13 @@ const routes: Route[] = [
   ),
   route('POST', '/pages/:id/send-back', ({ store, actorId, params, body }) =>
     store.sendBack(actorId, params.id!, body ?? {}),
+  ),
+  // The author's own way out of a submission nobody has acted on yet
+  // (USER-TESTING.md T4.5). Its own route rather than a flag on send-back,
+  // because it is a different act by a different person and the log has to say
+  // so; only the actor who submitted it is accepted.
+  route('POST', '/pages/:id/withdraw', ({ store, actorId, params, body }) =>
+    store.withdrawFromReview(actorId, params.id!, body ?? {}),
   ),
 
   route('GET', '/pages/:id/versions', ({ store, actorId, params }) => store.listVersions(actorId, params.id!)),

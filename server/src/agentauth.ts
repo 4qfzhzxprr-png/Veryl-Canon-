@@ -143,7 +143,11 @@ const RULES: Rule[] = [
   { method: 'POST', pattern: /^\/pages\/([^/]+)\/comments$/, action: 'comment', scope: PAGE },
   {
     method: 'POST',
-    pattern: /^\/pages\/([^/]+)\/(?:move|archive|publish|submit|approve|send-back|restore)$/,
+    // `withdraw` joins `submit` here: it is the same agent undoing its own
+    // submission, bounded in store.ts to the actor who made it, so `write` is
+    // exactly the grant it needs — an agent that could submit could always
+    // take that back by asking a person to send it back.
+    pattern: /^\/pages\/([^/]+)\/(?:move|archive|publish|submit|approve|send-back|withdraw|restore)$/,
     action: 'write',
     scope: PAGE,
   },

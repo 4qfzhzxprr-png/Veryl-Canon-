@@ -45,7 +45,7 @@ const AUDIT_ACTIONS = [
   'collection.create', 'collection.member_set', 'collection.member_removed',
   'page.create', 'page.view', 'page.move', 'page.archive',
   'draft.start', 'draft.discard',
-  'page.publish', 'page.submit', 'page.approve', 'page.send_back', 'page.restore',
+  'page.publish', 'page.submit', 'page.approve', 'page.send_back', 'page.withdraw', 'page.restore',
   'page.needs_update',
 ];
 
@@ -1044,6 +1044,73 @@ async function viewCollection(id) {
 
 // ---------------------------------------------------------------------------
 // Page view
+//
+// WHICH APPROVER THIS SCREEN NAMES, and why it is not obvious.
+//
+// A page carries its owner, approver and dates in two places. The page row
+// carries the PUBLISHED version's — history, and meant to be historical: what
+// this policy said and who was accountable for it on the date somebody is
+// asking about. The draft under review carries what is being PROPOSED. They
+// differ exactly when somebody changes the approver, which is the interesting
+// case and was the broken one: the header read the page row while the Approve
+// button posted to a server that enforces the draft's, so a page could show
+// "APPROVER: Grace Abara" beside a green Approve button that only Nadia Haddad
+// could press (USER-TESTING.md T1.3).
+//
+// The server settles it — `approve` enforces the draft's, because approving is
+// what publishes that draft — and `GET /pages/:id` now carries `review`, the
+// one answer for a page In Review. The rule here follows from that:
+//
+//   THE PERSON NAMED ON SCREEN IS THE PERSON THE SERVER WILL ACCEPT, AND
+//   NOBODY ELSE. Anything that names an approver while a page is in review
+//   reads `page.review.approverId`. `page.approverId` answers a different
+//   question — "who approved what is published" — and is right everywhere
+//   else.
+//
+// The second half is the empty header on a first submission. A page that has
+// never published has nulls in its page row, so owner, approver and both dates
+// rendered "—" while the draft plainly carried all four. It is fixed by
+// showing the pending values only where there is no published version to
+// protect; a published page still shows what it published, with the pending
+// value named beside it rather than in place of it.
+
+// One field's cell. `published` is the page row's value, `pending` the draft's
+// (undefined when nothing is pending), `render` turns either into safe HTML.
+//
+// Two markers rather than one, because they mark different things. "proposed"
+// means there is nothing published to compare against: the value is real, it
+// is the draft's, and it is not yet a fact about the record. "in review: X"
+// means the page has published a value and a different one is pending — both
+// belong on screen, and neither may be shown as the other.
+function pendingFieldCell(published, pending, render, hasPublished) {
+  if (!hasPublished) {
+    const value = pending === undefined ? published : pending;
+    if (value == null) return '—';
+    return `${render(value)} <span class="muted">· proposed</span>`;
+  }
+  if (pending === undefined || (pending ?? null) === (published ?? null)) return render(published);
+  return `${render(published)} <span class="muted">· in review: ${render(pending)}</span>`;
+}
+
+function reviewBannerHTML(review, typeNamesApprover) {
+  // No `review` means a server older than this page, or a draft that has gone
+  // missing under review. Say only what is still true rather than naming
+  // somebody from the page row, which is the mistake this whole section is
+  // about.
+  if (!review) return '<div class="notice">In review.</div>';
+  const namesApprover = review.namesApprover ?? typeNamesApprover;
+  let waiting;
+  if (!namesApprover) waiting = 'Waiting on an approver for this collection.';
+  else if (review.approverId) {
+    waiting = `Waiting on the named approver, <strong>${esc(actorName(review.approverId))}</strong>.`;
+  } else waiting = 'Waiting on an approver: this draft names none.';
+  const submitted = review.submittedById
+    ? ` Submitted by ${esc(actorName(review.submittedById))}${
+        review.submittedAt ? ` on ${fmtDateTime(review.submittedAt)}` : ''
+      }.`
+    : '';
+  return `<div class="notice">In review. ${waiting}${submitted}</div>`;
+}
 
 async function viewPage(id) {
   const page = await api('GET', `/pages/${id}`);
@@ -1064,6 +1131,15 @@ async function viewPage(id) {
   const reviewed = REVIEWED_TYPES.includes(page.type);
   const isArchived = page.status === 'archived';
   const inReview = page.status === 'in_review';
+  // The pending answer (see the note above this function). While a page is in
+  // review it comes from the server, so a reader holding only `view` still
+  // sees the right name; before a first publish, an editor's own draft fills
+  // the header that would otherwise be a row of dashes.
+  const review = page.review ?? null;
+  const pendingFields = review?.fields ?? (!current && draft ? draft.fields : null);
+  const pendingOf = (key) => (pendingFields ? pendingFields[key] ?? null : undefined);
+  const hasPublished = Boolean(current);
+  const isApprover = Boolean(review && review.namesApprover && review.approverId === state.actor.id);
 
   const draftBanner = draft ? `
     <div class="notice ${draft.editorId === state.actor.id ? 'notice-mine' : 'notice-locked'}">
@@ -1082,8 +1158,23 @@ async function viewPage(id) {
     actions.push('<button class="btn primary" id="act-submit">Submit for review</button>');
   }
   if (inReview) {
-    actions.push('<button class="btn primary" id="act-approve">Approve</button>');
+    // Offered to the one person the server will accept, and to nobody else.
+    // Where the type names an approver, a green Approve button in anybody
+    // else's hands is the same wrong claim the header used to make.
+    const canApprove = !review || !review.namesApprover || isApprover;
+    actions.push(
+      canApprove
+        ? '<button class="btn primary" id="act-approve">Approve</button>'
+        : `<button class="btn primary" disabled title="Only ${esc(actorName(review.approverId))}, the named approver, can approve this.">Approve</button>`,
+    );
     actions.push('<button class="btn" id="act-sendback">Send back</button>');
+    // The author's way out of a submission nobody has acted on yet
+    // (USER-TESTING.md T4.5). Offered only where the server will accept it:
+    // `canWithdraw` is the server's own answer, and it means "you submitted
+    // this, and it is still waiting".
+    if (review?.canWithdraw) {
+      actions.push('<button class="btn" id="act-withdraw">Withdraw submission</button>');
+    }
   }
   if (!isArchived) actions.push('<button class="btn subtle" id="act-archive">Archive</button>');
 
@@ -1099,15 +1190,15 @@ async function viewPage(id) {
         ${draftBanner}
         ${isArchived ? '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>' : ''}
         ${page.status === 'needs_update' ? `<div class="notice">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed, so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review date, and submit it for review to return it to Canonical.</div>` : ''}
-        ${inReview ? `<div class="notice">In review. ${rules.approver ? `Waiting on the named approver, <strong>${esc(actorName(page.approverId))}</strong>.` : 'Waiting on an approver for this collection.'}</div>` : ''}
+        ${inReview ? reviewBannerHTML(review, Boolean(rules.approver)) : ''}
 
         <dl class="field-block">
           <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
           <div><dt>Status</dt><dd>${badge(page.status)}</dd></div>
-          ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(page.ownerId)}</dd></div>` : ''}
-          ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(page.approverId)}</dd></div>` : ''}
-          ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(page.effectiveDate)}</dd></div>` : ''}
-          ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${fmtDate(page.reviewDate)}${page.status === 'needs_update' ? ' · <span class="muted">past review</span>' : ''}</dd></div>` : ''}
+          ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${pendingFieldCell(page.ownerId, pendingOf('ownerId'), actorLabel, hasPublished)}</dd></div>` : ''}
+          ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${pendingFieldCell(page.approverId, pendingOf('approverId'), actorLabel, hasPublished)}</dd></div>` : ''}
+          ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${pendingFieldCell(page.effectiveDate, pendingOf('effectiveDate'), fmtDate, hasPublished)}</dd></div>` : ''}
+          ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${pendingFieldCell(page.reviewDate, pendingOf('reviewDate'), fmtDate, hasPublished)}${page.status === 'needs_update' ? ' · <span class="muted">past review</span>' : ''}</dd></div>` : ''}
           <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
@@ -1158,6 +1249,20 @@ async function viewPage(id) {
     onSubmit: async (form) => {
       await api('POST', `/pages/${id}/send-back`, { comment: form.comment.value.trim() });
       toast('Sent back with your comment.', 'ok');
+      route();
+    },
+  }));
+  app.querySelector('#act-withdraw')?.addEventListener('click', () => openModal({
+    title: 'Withdraw this submission',
+    submitLabel: 'Withdraw',
+    body: `
+      <p class="muted">The page returns to Draft and the editor unlocks. Whoever was asked to review it is
+      told it is no longer waiting on them, and the withdrawal is on the audit record.</p>
+      <label>Reason <input name="reason" placeholder="optional, kept on the audit record"></label>`,
+    onSubmit: async (form) => {
+      const reason = form.reason.value.trim();
+      await api('POST', `/pages/${id}/withdraw`, reason ? { reason } : {});
+      toast('Withdrawn from review. It is a draft again.', 'ok');
       route();
     },
   }));

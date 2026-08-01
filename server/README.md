@@ -379,10 +379,14 @@ DELETE /collections/:id/members/:actorId    withdraws the HAND grant only
                                                directory group is still granting, rather than leaving it a surprise
 POST   /pages                               { collectionId, parentId?, type, title }
 GET    /pages/:id                           page + current published version + its reference descriptors
+                                            + `review`: while In Review, the draft's fields and the approver
+                                              `approve` will accept; null otherwise
 PUT    /pages/:id/draft                     { title?, body?, fields? } — acquires the page lock
 DELETE /pages/:id/draft                     discard
 POST   /pages/:id/publish                   { note? }
 POST   /pages/:id/submit | /approve | /send-back
+POST   /pages/:id/withdraw                  { reason? } — the author takes their own submission back, before
+                                            anyone has acted on it; only the actor who submitted it
 POST   /pages/:id/move                      { parentId }
 POST   /pages/:id/archive
 GET    /pages/:id/versions | /versions/:n
