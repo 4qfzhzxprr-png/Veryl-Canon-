@@ -231,11 +231,24 @@ export async function validateConfig(
 
   // --- maintenance -------------------------------------------------------
 
-  if (!trimmed(env, 'CANON_MAINTENANCE_ACTOR_ID')) {
+  // The sweep now runs by default, as Canon's own system actor, so an UNSET
+  // maintenance actor is the recommended arrangement and warns about nothing.
+  // The two things worth saying are the reverse of what this used to say.
+  if (trimmed(env, 'CANON_MAINTENANCE_ACTOR_ID')) {
     warn(
       'CANON_MAINTENANCE_ACTOR_ID',
-      'no maintenance actor: the freshness sweep runs only when something calls POST /maintenance/freshness. ' +
-        'Until one is named, "stale knowledge announces itself" is not true of this deployment.',
+      'a maintenance actor is named, so every freshness flip will be attributed to it rather than to Canon’s ' +
+        'own system actor. If it names a person, the audit log will say that person marked pages past review on ' +
+        'days they did nothing of the kind. Unset it unless you deliberately want a service account’s name on ' +
+        'this work.',
+    );
+  }
+  if (Number(env.CANON_FRESHNESS_INTERVAL_MS ?? '') === 0 && env.CANON_FRESHNESS_INTERVAL_MS) {
+    warn(
+      'CANON_FRESHNESS_INTERVAL_MS',
+      'the freshness timer is off: no review date flips anything until your scheduler calls ' +
+        'POST /maintenance/freshness. That is a supported arrangement, and until that scheduler exists, ' +
+        '"stale knowledge announces itself" is not true of this deployment.',
     );
   }
 

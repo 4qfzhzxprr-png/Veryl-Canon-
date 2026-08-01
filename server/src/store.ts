@@ -51,6 +51,7 @@ import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDat
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
 import { AuditChainVerification, verifyAuditChain } from './auditchain.js';
+import { refuseSystemActor, SYSTEM_ACTOR_ID, SYSTEM_ACTOR_NAME } from './system.js';
 import {
   AttestationService,
   CollectionAttestation,
@@ -133,6 +134,18 @@ export class CanonStore {
     if (input.kind === 'agent' && !input.registryRef) {
       throw new CanonError('invalid', 'An agent actor requires a Registry reference (Agent Passport)');
     }
+    // There is exactly one system actor and openDb writes it (system.ts). A
+    // second one would be a second thing calling itself Canon in the audit log,
+    // which is the confusion the whole design exists to prevent — and this route
+    // is `POST /actors`, which is open to anyone at all under dev auth.
+    if (input.kind === 'system') {
+      throw new CanonError(
+        'invalid',
+        `Actors are people and agents. ${SYSTEM_ACTOR_NAME} (${SYSTEM_ACTOR_ID}) is this Canon itself, it already ` +
+          'exists, and there is never a second one.',
+        { reason: 'system_actor' },
+      );
+    }
     const actor: Actor = {
       id: randomUUID(),
       kind: input.kind,
@@ -160,8 +173,22 @@ export class CanonStore {
     };
   }
 
+  /**
+   * The directory: people and agents. Canon's own actor is deliberately NOT in
+   * it (system.ts). This list answers "who can I name as an owner, an approver,
+   * a mention, a member?", and the answer is never Canon — it owns nothing,
+   * approves nothing, and cannot be signed in as, so putting it here would offer
+   * every one of those pickers a choice that refuses.
+   *
+   * It stays legible in the audit log without being here: its id is the literal
+   * string `system:canon` rather than a UUID, and every event carries
+   * `actorKind: 'system'` beside it. A reader with a CSV export and no directory
+   * can still tell exactly what acted.
+   */
   listActors(): Actor[] {
-    const rows = this.db.prepare('SELECT id FROM actors ORDER BY created_at').all() as { id: string }[];
+    const rows = this.db
+      .prepare("SELECT id FROM actors WHERE kind != 'system' ORDER BY created_at")
+      .all() as { id: string }[];
     return rows.map((r) => this.getActor(r.id));
   }
 
@@ -198,6 +225,10 @@ export class CanonStore {
   setMember(actorId: string, collectionId: string, memberId: string, role: Role): void {
     this.requirePermissionAdmin(actorId, collectionId);
     this.getActor(memberId);
+    // The system actor holds no role anywhere and never will (system.ts). Its
+    // authority to run maintenance is what it is, not something granted, so
+    // there is nothing here for an administrator to widen.
+    refuseSystemActor(memberId, 'Granting a collection role');
     if (!ROLE_RANK[role]) throw new CanonError('invalid', `Unknown collection role: ${role}`);
     const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, role);
     this.audit(actorId, 'collection.member_set', {
@@ -273,6 +304,7 @@ export class CanonStore {
     this.getActor(actorId);
     requireOrgRole(this.db, actorId, 'administrator', 'Setting an organisation role');
     const target = this.getActor(targetId);
+    refuseSystemActor(targetId, 'Granting an organisation role');
     if (!isOrgRole(role)) throw new CanonError('invalid', `Unknown organisation role: ${String(role)}`);
     // An administrator may stand down, but not the last one: a Canon with no
     // administrator can never have another without the bootstrap, and the
@@ -307,6 +339,7 @@ export class CanonStore {
    */
   bootstrapAdministrator(actorId: string): OrgRole {
     const actor = this.getActor(actorId);
+    refuseSystemActor(actorId, 'Bootstrapping the first administrator');
     if (countOrgRole(this.db, 'administrator') > 0) {
       throw new CanonError(
         'forbidden',

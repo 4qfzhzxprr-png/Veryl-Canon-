@@ -25,7 +25,7 @@ Five rules govern how Canon holds data. Everything in the model below follows fr
 2. **Structure over prose.** Whatever a rule, query, or product must depend on is a structured field, not a sentence in a page body. Prose is for people; fields are for the suite.
 3. **History is append-only.** Published versions, status changes, approvals, and audit events are never rewritten. Corrections are new entries, not edits to old ones.
 4. **Permissions are data, evaluated at read time.** Who can see or change what is stored alongside the record and checked on every access, so a permission change or a Registry revocation takes effect immediately, everywhere, including in Studio apps mid-session.
-5. **Attribution is universal.** Every write names its actor — person or agent — and nothing is anonymous. The same record serves collaboration and audit.
+5. **Attribution is universal, and true.** Every write names its actor — a person, an agent, or Canon itself — and nothing is anonymous. Work Canon does on its own clock is attributed to a single named `system` actor that nobody can sign in as, rather than to whichever person a deployment nominated: an unattributed write and a *misattributed* one are both failures of this principle, and the second is worse, because it is a falsehood the record's own history vouches for. The same record serves collaboration and audit.
 
 ## 3. What Canon stores
 

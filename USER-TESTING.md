@@ -136,9 +136,20 @@ Canonical with a review date of 2020-01-01 and it sits at CANONICAL with no
 warning, cited by Ask as current. Marcus found all 19 sweep events in the demo
 corpus share one timestamp — the instant the corpus was built — and are
 attributed to Dana Whitfield, a real person who did not do it. The server warns
-about this at start-up, in a log line the policy author never sees. Fix: ship
-the sweep on a timer by default, attribute it to a system actor rather than a
-person, and stop the editor promising a flip that will not happen.
+about this at start-up, in a log line the policy author never sees.
+**Fixed.** The sweep now runs on every deployment — hourly, plus one pass at
+start-up before the port is bound — as `system:canon`, a third `ActorKind` that
+cannot be signed in as, granted a role, or created a second time (`system.ts`).
+`CANON_MAINTENANCE_ACTOR_ID` still works if a deployment deliberately sets it,
+and now warns that it puts a name on the clock's work. `GET
+/maintenance/freshness` reports what this deployment actually does, and the
+editor says that instead of a general promise; a Canonical page past its review
+date warns on its own face whether or not the sweep has reached it. The demo
+seeder sweeps as Canon and states that its whole history is one build pass.
+Notifications were narrowed rather than made true — see server/README.md.
+Verified against a running server: a Canonical policy dated 2020-01-01, on a
+deployment with only `CANON_DEV_AUTH=true` set, is Needs Update after a restart,
+and its audit event reads `Canon SYSTEM`.
 
 **T1.5 · `effectiveDate` is unvalidated free text.** *(Ruth #2.)* She set a
 canonical clinical policy to take effect seven years before the record existed;

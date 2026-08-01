@@ -250,8 +250,33 @@ test('startup: assertConfigValid throws a ConfigError naming every problem, and 
     },
   );
 
-  const warnings = await assertConfigValid({ CANON_DEV_AUTH: 'true' }, { resolve: resolves });
-  assert.ok(warnings.some((w) => w.variable === 'CANON_MAINTENANCE_ACTOR_ID'));
+  // The freshness sweep runs by default now, as Canon's own system actor
+  // (system.ts), so an UNSET maintenance actor is the recommended arrangement
+  // and warns about nothing. What warns is the reverse of what used to: naming
+  // an actor, which puts somebody's name on work the clock did.
+  const bare = await assertConfigValid({ CANON_DEV_AUTH: 'true' }, { resolve: resolves });
+  assert.equal(
+    bare.some((w) => w.variable === 'CANON_MAINTENANCE_ACTOR_ID'),
+    false,
+    'a deployment that configures nothing has working freshness and needs telling nothing',
+  );
+
+  const named = await assertConfigValid(
+    { CANON_DEV_AUTH: 'true', CANON_MAINTENANCE_ACTOR_ID: 'a-person' },
+    { resolve: resolves },
+  );
+  const attribution = named.find((w) => w.variable === 'CANON_MAINTENANCE_ACTOR_ID');
+  assert.ok(attribution, 'naming a maintenance actor is worth a word about whose name goes in the log');
+  assert.match(attribution!.message, /attributed to it/);
+
+  // And turning the timer off is the arrangement that costs the promise.
+  const off = await assertConfigValid(
+    { CANON_DEV_AUTH: 'true', CANON_FRESHNESS_INTERVAL_MS: '0' },
+    { resolve: resolves },
+  );
+  const stopped = off.find((w) => w.variable === 'CANON_FRESHNESS_INTERVAL_MS');
+  assert.ok(stopped);
+  assert.match(stopped!.message, /stale knowledge announces itself/);
 });
 
 // ---------------------------------------------------------------------------

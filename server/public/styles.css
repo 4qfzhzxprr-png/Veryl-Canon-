@@ -287,6 +287,16 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   vertical-align: middle;
 }
 .kind-tag.agent { color: var(--accent); border-color: var(--accent); }
+/* Canon acting on its own clock (src/system.ts). Deliberately not the person
+   style and deliberately not the agent style: an agent is somebody's agent and
+   this is the machine itself, so it reads as a mechanism rather than a party. */
+.kind-tag.system {
+  color: var(--muted);
+  border-color: var(--border-strong);
+  border-style: dashed;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 
 .restricted-tag {
   font-size: 0.68rem;
@@ -423,6 +433,12 @@ label.check input { width: auto; display: inline; margin: 0; }
 .notice-mine { border-left-color: var(--accent); background: var(--accent-soft); }
 .notice-locked { border-left-color: var(--amber); background: var(--amber-soft); }
 .notice-version { border-left-color: var(--amber); background: var(--amber-soft); }
+/* Past its review date. Amber, like every other "this is waiting on somebody"
+   state in the record: a stale page is not an error, it is an unkept promise. */
+.notice-stale { border-left-color: var(--amber); background: var(--amber-soft); }
+/* "past review" beside the date itself, so the field block carries the fact
+   even when the notice above has been scrolled past. */
+.past-review { color: var(--amber); font-weight: 600; }
 .notice .btn { margin-left: 0.5rem; }
 .notice del { color: var(--del-ink); background: var(--del-bg); text-decoration: line-through; padding: 0 0.2em; border-radius: 3px; }
 .notice ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; padding: 0 0.2em; border-radius: 3px; }

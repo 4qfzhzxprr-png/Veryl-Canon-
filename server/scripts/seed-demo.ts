@@ -42,6 +42,7 @@ import type { ImportSummary } from '../src/import.js';
 import type { DocType, PageStatus, Role } from '../src/model.js';
 import type { NotificationTransport } from '../src/notify.js';
 import { CanonStore } from '../src/store.js';
+import { SYSTEM_ACTOR_ID, SYSTEM_ACTOR_NAME } from '../src/system.js';
 
 // ---------------------------------------------------------------------------
 // The seeded PRNG
@@ -1178,7 +1179,13 @@ function findFixtures(): string | null {
 export function recordHasContent(db: DatabaseSync): { collections: number; pages: number; actors: number } {
   const count = (table: string): number =>
     Number((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number } | undefined)?.n ?? 0);
-  return { collections: count('collections'), pages: count('pages'), actors: count('actors') };
+  // Actors excludes Canon's own (system.ts): openDb writes that row on every
+  // open, so counting it would make an empty record look occupied and this
+  // guard would refuse to seed anything, ever.
+  const actors = Number(
+    (db.prepare("SELECT COUNT(*) AS n FROM actors WHERE kind != 'system'").get() as { n: number } | undefined)?.n ?? 0,
+  );
+  return { collections: count('collections'), pages: count('pages'), actors };
 }
 
 export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Promise<SeedReport> {
@@ -1448,7 +1455,22 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
   // Canonical with a review date in the past, and the ordinary freshness sweep
   // is what moves them, writing the same audit events and owner notices it
   // writes in a deployment.
-  store.sweepFreshness(operator, { limit: 5000 });
+  //
+  // It sweeps as CANON, not as Dana. This used to run as the demo's
+  // administrator, and the corpus therefore claimed nineteen times that a woman
+  // who does not exist had personally marked nineteen pages past review. A
+  // reviewer who checked found exactly that and could not tell it from the
+  // truth. `system:canon` is what actually did it (system.ts), and the demo now
+  // says so — which is also what a deployment's own log will say, because the
+  // timer runs as the same actor.
+  //
+  // ONE sweep, so nineteen events share one timestamp, and that is not a bug to
+  // paper over: this whole corpus is written in a single pass, so every event in
+  // it — every page create, every approval, every flip — carries the instant the
+  // demo was built. Backdating them would be inventing a history, in a record
+  // whose entire argument is that its history is not invented. The seeder says
+  // so out loud below instead.
+  const swept = store.sweepFreshness(SYSTEM_ACTOR_ID, { limit: 5000 });
 
   // ---- archived ----------------------------------------------------------
   // A handful, so the record has material that has left the map without
@@ -1508,6 +1530,17 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
   };
   say(`  links         ${edgeCounts.link} written, ${crossing} of them crossing a collection`);
   say(`  federated     ${SOURCES.length} sources, ${references} reference fields`);
+  say(
+    `  freshness     ${swept.flipped} pages past review flipped to Needs Update by ${SYSTEM_ACTOR_NAME} ` +
+      `(${SYSTEM_ACTOR_ID}), ${swept.notified} owners notified`,
+  );
+  // Said out loud because a reviewer WILL notice it and should hear it from the
+  // tool rather than discover it: every event in this corpus carries the instant
+  // the corpus was written, because that is when every one of them happened.
+  // A demo record's audit log is a real audit log of a fake afternoon; it is not
+  // a fake audit log of a real year, and the difference is the whole product.
+  say('                one sweep, so those flips share one timestamp — as does everything else here:');
+  say('                this corpus is written in a single pass and its history is that pass, not a year.');
   say(
     `  disagreement  ${relations} asserted relations ` +
       `(${edgeCounts.conflicts_with} conflicts with, ${edgeCounts.supersedes} supersedes)`,

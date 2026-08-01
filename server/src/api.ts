@@ -9,6 +9,7 @@ import {
   PersonIdentity,
   visibleActors,
 } from './auth.js';
+import { freshnessScheduleFor } from './freshness.js';
 import { countParam, objectBody, optionalCount, requiredCount } from './input.js';
 import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
 import { CanonError } from './model.js';
@@ -342,6 +343,14 @@ const routes: Route[] = [
       limit: optionalCount(body?.limit, 'limit'),
     }),
   ),
+  // What this deployment actually does about review dates: whether the timer is
+  // running, how often, whom the flips are attributed to, and how far an owner's
+  // notice travels. Readable by ANY authenticated actor, and deliberately so —
+  // the person who needs to know whether a review date does anything is the
+  // policy author typing one into the editor, not the operator reading stdout.
+  // It discloses no record content: an interval, a boolean, and the constants
+  // that describe Canon's own actor. See freshnessScheduleFor in freshness.ts.
+  route('GET', '/maintenance/freshness', ({ store }) => freshnessScheduleFor(store)),
 
   // Structured queries (FEATURES.md §6). A typed filter object, not a query
   // language: `{ collectionIds, types, statuses, ownerIds, approverIds,

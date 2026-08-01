@@ -1,7 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { Actor, CanonError, PageStatus, Role } from './model.js';
+import { Actor, ActorKind, CanonError, PageStatus, Role } from './model.js';
 import type { Notifier } from './notify.js';
 import { requireOrgRole } from './orgrole.js';
+import { isSystemActorId, SYSTEM_ACTOR_ID } from './system.js';
 
 // Verification and freshness (FEATURES.md §3, the Next tier of the cut in
 // "What ships first"; CORE-PLAN.md §4 Epic C names this as where `needs_update`
@@ -12,9 +13,13 @@ import { requireOrgRole } from './orgrole.js';
 // What this file is, and is not:
 //
 //   * It is a SWEEP, not a trigger. Nothing watches the clock inside the record.
-//     A deployment runs the sweep on a timer exactly as it runs the notification
-//     outbox flush (index.ts wires both), and `POST /maintenance/freshness`
-//     exists so an operator can also run it by hand.
+//     Canon runs the sweep on a timer exactly as it runs the notification outbox
+//     flush (`startFreshnessSweeps` below, wired in index.ts), and
+//     `POST /maintenance/freshness` exists so an operator can also run it by
+//     hand. The timer runs on EVERY deployment, configured or not: the claim
+//     this feature makes is that stale knowledge announces itself, and a claim
+//     that holds only where somebody remembered to set a variable is not a claim
+//     the product gets to make.
 //   * It is IDEMPOTENT by construction, not by bookkeeping. The sweep flips
 //     `canonical` → `needs_update`; a page it has already flipped is no longer
 //     `canonical`, so the second run does not see it and the owner is not
@@ -186,10 +191,12 @@ export class FreshnessService {
    * record would be worse than one that refuses, and a review date passing is an
    * objective fact about the record rather than a judgement about a collection.
    *
-   * actorId-first, like every other surface here: the flip is attributed, and a
-   * deployment's timer names the actor it runs as (CANON_MAINTENANCE_ACTOR_ID).
-   * Attribution is universal (DATA-BACKBONE.md §2, principle 5), so there is no
-   * anonymous system actor slipping writes into the log.
+   * actorId-first, like every other surface here: the flip is attributed. On the
+   * timer that actor is Canon's own (`SYSTEM_ACTOR_ID`, system.ts) unless a
+   * deployment deliberately names another with CANON_MAINTENANCE_ACTOR_ID.
+   * Attribution is universal (DATA-BACKBONE.md §2, principle 5) — and it is
+   * TRUTHFUL attribution, which is why the default is no longer a person's name
+   * borrowed for the machine's work.
    */
   sweep(actorId: string, options: FreshnessSweepOptions = {}): FreshnessSweepResult {
     const actor = this.host.getActor(actorId);
@@ -277,6 +284,14 @@ export class FreshnessService {
   // mails their owners, which is exactly the blast radius that makes it an
   // operator's act rather than a collection administrator's (orgrole.ts).
   private requireOperator(actorId: string): void {
+    // Canon's own actor needs no grant, and deliberately cannot be given one
+    // (system.ts refuses every path that would). Its authority is not a role
+    // somebody handed it; it is what it is, scoped by the fact that this is the
+    // only place in the product that lets it act at all. Nothing can present it
+    // over HTTP — auth.ts refuses the header and refuses to mint a session for
+    // it — so this branch is reachable only from the timer and from a caller
+    // that already holds the process.
+    if (isSystemActorId(actorId)) return;
     requireOrgRole(this.db, actorId, 'operator', 'Running the freshness sweep');
   }
 
@@ -300,4 +315,188 @@ export class FreshnessService {
         JSON.stringify(ctx.details ?? {}),
       );
   }
+}
+
+// ---------------------------------------------------------------------------
+// The timer, and saying out loud whether it is running
+//
+// WHY THIS MOVED HERE. It used to be eight lines in index.ts that ran only when
+// `CANON_MAINTENANCE_ACTOR_ID` named an actor. A deployment that set nothing —
+// which is every deployment, until somebody read the start-up log — could hold a
+// Canonical policy six years past its review date, wearing the Canonical mark,
+// cited by `/ask` as current, with no warning anywhere. The server said so at
+// start-up, in a log line the policy's author never sees.
+//
+// Three changes, and each is deliberate:
+//
+//   1. The sweep runs by DEFAULT. No variable, no actor to create, no timer to
+//      wire. A deployment that configures nothing still has working freshness,
+//      because "stale knowledge announces itself" is the promise on the tin and
+//      a promise that holds only where somebody set a variable is not one.
+//   2. It runs as CANON ITSELF (system.ts), not as a borrowed person. What a
+//      machine did on a clock is now attributed to the machine.
+//   3. The first pass is IMMEDIATE, not one interval away. A record that has
+//      been down for a week comes back with its overdue pages already flipped
+//      rather than an hour late — and it is what makes the behaviour testable
+//      and demonstrable without waiting an hour to watch it.
+//
+// The schedule is then readable at `GET /maintenance/freshness`, because the
+// person who needs to know whether review dates do anything is the policy author
+// in the editor, not the operator reading stdout. See public/app.js, which now
+// says what this deployment will actually do rather than what the feature does
+// in principle.
+
+/** What this process is doing about freshness, in the words a reader needs. */
+export interface FreshnessSchedule {
+  /** Is a timer in this process running the sweep? */
+  scheduled: boolean;
+  /** How often, in milliseconds. Zero when nothing is scheduled. */
+  intervalMs: number;
+  /** Who the flips are attributed to. Canon's own actor unless configured otherwise. */
+  actor: { id: string; name: string; kind: ActorKind } | null;
+  /**
+   * How far an owner's notice actually travels on this deployment.
+   *
+   *   'email'   a relay is configured, so the notice goes out by email.
+   *   'outbox'  no relay: the notice is written to the record's outbox and is
+   *             readable at `GET /notifications`, and nothing sends it anywhere.
+   *
+   * This is here so that no surface has to guess. The editor used to promise
+   * flatly that "its owner is notified", and on a deployment with no relay and
+   * no inbox that was not true of anything the owner would ever see.
+   */
+  ownerNotice: 'email' | 'outbox';
+  /** Present when `scheduled` is false: why, in a sentence somebody can act on. */
+  reason?: string;
+}
+
+// Registered against the host the sweeps were started for — the same shape
+// notify.ts uses for its Notifier, and for the same reason: an HTTP route needs
+// to reach a fact that only start-up knows, without the store growing a field
+// to carry it.
+const schedules = new WeakMap<object, FreshnessSchedule>();
+
+/** The answer for a process that never started a timer: honest, rather than silent. */
+export const UNSCHEDULED: FreshnessSchedule = {
+  scheduled: false,
+  intervalMs: 0,
+  actor: null,
+  ownerNotice: 'outbox',
+  reason:
+    'This process is not running the freshness sweep, so a review date that passes changes nothing until ' +
+    'something calls POST /maintenance/freshness.',
+};
+
+/** What `GET /maintenance/freshness` answers. Never throws; an unwired host is unscheduled. */
+export function freshnessScheduleFor(host: object): FreshnessSchedule {
+  return schedules.get(host) ?? UNSCHEDULED;
+}
+
+/** The slice of CanonStore the timer needs. CanonStore satisfies it. */
+export interface SweepHost {
+  sweepFreshness(actorId: string, options?: FreshnessSweepOptions): FreshnessSweepResult;
+  getActor(id: string): Actor;
+}
+
+export interface SweepScheduleOptions {
+  /** How often. Defaults to hourly; `0` turns the timer off. */
+  intervalMs?: number;
+  /** CANON_MAINTENANCE_ACTOR_ID, when a deployment names one. Default: Canon itself. */
+  actorId?: string;
+  /** True when a mail relay is configured, so the schedule can say where a notice goes. */
+  mailConfigured?: boolean;
+  /** Run the first pass now rather than one interval from now. Default true. */
+  immediate?: boolean;
+  log?: {
+    info(msg: string, fields?: Record<string, unknown>): void;
+    error(msg: string, fields?: Record<string, unknown>): void;
+  };
+}
+
+/** Hourly. Review dates are days, so a shorter period buys nothing and a longer one delays an owner's notice. */
+export const DEFAULT_SWEEP_INTERVAL_MS = 3_600_000;
+
+export interface SweepSchedule {
+  schedule: FreshnessSchedule;
+  /** The interval timer, for the caller to hand to graceful shutdown. Null when off. */
+  timer: NodeJS.Timeout | null;
+  /** The first pass, if one was run. Useful to a test and to nobody else. */
+  first: FreshnessSweepResult | null;
+}
+
+/**
+ * Start the freshness sweep on a timer, and record what was started so the rest
+ * of the product can tell the truth about it.
+ *
+ * A configured maintenance actor still works exactly as it did — a deployment
+ * that deliberately wants the flips in one named service account's name keeps
+ * it — but it is no longer the thing standing between a deployment and a record
+ * that flips. If it names an actor this record does not hold, that is a
+ * configuration mistake worth one loud line and NOT worth stopping freshness
+ * over: the timer falls back to Canon's own actor and says so. A deployment
+ * whose freshness quietly stopped is precisely the failure this change is about.
+ */
+export function startFreshnessSweeps(host: SweepHost, options: SweepScheduleOptions = {}): SweepSchedule {
+  const log = options.log;
+  const intervalMs = options.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
+  const ownerNotice: FreshnessSchedule['ownerNotice'] = options.mailConfigured ? 'email' : 'outbox';
+  const configured = options.actorId?.trim();
+
+  let actorId = SYSTEM_ACTOR_ID;
+  if (configured && !isSystemActorId(configured)) {
+    try {
+      host.getActor(configured); // it must at least exist; the org role is the sweep's own check
+      actorId = configured;
+    } catch {
+      log?.error('CANON_MAINTENANCE_ACTOR_ID names an actor this record does not hold; sweeping as Canon instead', {
+        configured,
+        actorId: SYSTEM_ACTOR_ID,
+      });
+    }
+  }
+
+  const actor = host.getActor(actorId);
+  const describe = (): FreshnessSchedule['actor'] => ({ id: actor.id, name: actor.name, kind: actor.kind });
+
+  if (intervalMs <= 0) {
+    const schedule: FreshnessSchedule = {
+      scheduled: false,
+      intervalMs: 0,
+      actor: describe(),
+      ownerNotice,
+      reason:
+        'CANON_FRESHNESS_INTERVAL_MS is 0, so the timer is off and this deployment’s own scheduler owns the ' +
+        'sweep. Until it calls POST /maintenance/freshness, a review date that passes changes nothing.',
+    };
+    schedules.set(host, schedule);
+    log?.info('freshness sweep timer off (CANON_FRESHNESS_INTERVAL_MS=0): review dates are your scheduler’s job now');
+    return { schedule, timer: null, first: null };
+  }
+
+  const run = (pass: 'start-up' | 'timer'): FreshnessSweepResult | null => {
+    try {
+      const result = host.sweepFreshness(actorId, {});
+      if (result.flipped > 0) {
+        log?.info('freshness sweep', {
+          pass,
+          flipped: result.flipped,
+          notified: result.notified,
+          unowned: result.unowned,
+          actorId,
+        });
+      }
+      return result;
+    } catch (err) {
+      log?.error('freshness sweep failed', { pass, actorId, error: (err as Error).message });
+      return null;
+    }
+  };
+
+  const first = options.immediate === false ? null : run('start-up');
+  const timer = setInterval(() => void run('timer'), intervalMs);
+  timer.unref(); // never hold the process open on the timer alone
+
+  const schedule: FreshnessSchedule = { scheduled: true, intervalMs, actor: describe(), ownerNotice };
+  schedules.set(host, schedule);
+  return { schedule, timer, first };
 }

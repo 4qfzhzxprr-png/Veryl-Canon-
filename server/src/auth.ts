@@ -61,6 +61,7 @@ import { CanonError } from './model.js';
 import type { Actor } from './model.js';
 import { bootstrapAdministrator, bootstrapSubjectsFromEnv, isOrgRole, orgRoleOf, setHandOrgRole } from './orgrole.js';
 import type { CanonStore } from './store.js';
+import { isSystemActorId, SYSTEM_ACTOR_ID } from './system.js';
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -679,7 +680,28 @@ export function identifyFromHeader(req: IncomingMessage, devAuth: boolean): Pers
   const header = ((req.headers['x-actor-id'] as string) ?? '').trim();
   if (!header) return { actorId: '', viaCookie: false, session: null };
   if (!devAuth) throw devAuthRefused();
+  if (isSystemActorId(header)) throw systemActorRefused();
   return { actorId: header, viaCookie: false, session: null };
+}
+
+/**
+ * Nobody signs in as Canon. The system actor exists so that work Canon does on
+ * its own clock is attributed truthfully (system.ts); an HTTP request arriving
+ * under its name would be a person's act wearing the machine's name, which is
+ * the same lie in the other direction — and, because the sweep does not ask the
+ * system actor for an org role, it would be a way past `requireOrgRole`.
+ *
+ * Placed on the header path AND on session creation, so neither door can reach
+ * it. `unauthenticated` rather than `forbidden`: there is no credential that
+ * would make this work, and the caller should not go looking for one.
+ */
+export function systemActorRefused(): CanonError {
+  return new CanonError(
+    'unauthenticated',
+    `${SYSTEM_ACTOR_ID} is this Canon itself, not an identity. Nobody signs in as it and no request is made ` +
+      'on its behalf; it appears in the audit log only for work Canon does on its own clock.',
+    { reason: 'system_actor', header: 'X-Actor-Id' },
+  );
 }
 
 export function devAuthRefused(): CanonError {
@@ -806,6 +828,12 @@ export class PersonAuth {
     for (const actorId of options.bootstrapActorIds ?? []) {
       // Named at start-up, so a name that is not an actor is a start-up
       // failure with a sentence in it rather than a foreign-key error.
+      if (isSystemActorId(actorId)) {
+        throw new Error(
+          `CANON_BOOTSTRAP_ADMIN_ACTOR_ID names ${SYSTEM_ACTOR_ID}, which is this Canon itself and holds no role. ` +
+            'Name a person; somebody has to be accountable for administering this record.',
+        );
+      }
       const row = this.db.prepare('SELECT id FROM actors WHERE id = ?').get(actorId) as { id: string } | undefined;
       if (!row) {
         throw new Error(
@@ -949,6 +977,7 @@ export class PersonAuth {
 
     if (!header) return { actorId: '', viaCookie: false, session: null };
     if (!this.devAuth) throw devAuthRefused();
+    if (isSystemActorId(header)) throw systemActorRefused();
     return { actorId: header, viaCookie: false, session: null };
   }
 
@@ -1532,6 +1561,11 @@ export class PersonAuth {
   // ---- session plumbing ------------------------------------------------
 
   createSession(actorId: string, subject: string, opts: { refreshToken?: string | null } = {}): CanonSession {
+    // The second half of the refusal in `identify`: no provider claim can mint
+    // a session for Canon's own actor. Provisioning could not reach it anyway —
+    // the row is written by openDb and matches no subject — but a session is the
+    // thing that would matter, so the guard sits where sessions are made.
+    if (isSystemActorId(actorId)) throw systemActorRefused();
     const at = this.now();
     const session: CanonSession = {
       id: randomUUID(),
@@ -1742,6 +1776,12 @@ export function safeReturnTo(raw: string | null): string {
 //     themselves.
 //
 // A global directory to every actor is gone in all three cases.
+//
+// Canon's own actor is in none of them, because `store.listActors` is the
+// directory and the directory is people and agents (system.ts). It is not
+// withheld — its id is the literal string `system:canon` and every event it
+// writes carries `actorKind: 'system'` — it is simply not somebody you can name
+// as an owner, an approver or a member.
 
 export function visibleActors(store: CanonStore, actorId: string, collectionId?: string): Actor[] {
   if (collectionId) {

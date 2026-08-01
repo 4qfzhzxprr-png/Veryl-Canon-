@@ -5,10 +5,18 @@ import { DatabaseSync } from 'node:sqlite';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
-import { ensurePageFreshnessSchema, isPastReview, today } from '../src/freshness.js';
+import {
+  DEFAULT_SWEEP_INTERVAL_MS,
+  ensurePageFreshnessSchema,
+  freshnessScheduleFor,
+  isPastReview,
+  startFreshnessSweeps,
+  today,
+} from '../src/freshness.js';
 import type { Notification, NotificationTransport } from '../src/notify.js';
 import { setHandOrgRole } from '../src/orgrole.js';
 import { CanonStore } from '../src/store.js';
+import { SYSTEM_ACTOR_ID, SYSTEM_ACTOR_NAME } from '../src/system.js';
 
 // Verification and freshness (FEATURES.md §3): a Canonical page carries a
 // review date; when it passes, the page flips to Needs Update and the owner is
@@ -364,6 +372,174 @@ test('freshness: a database written before review dates existed is brought forwa
   // Idempotent: running it again on the migrated database changes nothing.
   ensurePageFreshnessSchema(db);
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM pages').get() as { n: number }).n, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The timer (T1.4). "Stale knowledge announces itself" was true only of a
+// deployment that had named a maintenance actor and wired a timer, which is to
+// say of no deployment at all until somebody read the start-up log. These are
+// the tests that hold the promise to a deployment that configured NOTHING.
+
+/** A record with nobody made an operator and no environment variable set. */
+function bareRecord() {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
+  const marc = store.createActor({ kind: 'person', name: 'Marc', email: 'marc@example.com' });
+  const iris = store.createActor({ kind: 'person', name: 'Iris', email: 'iris@example.com' });
+  const collection = store.createCollection(marc.id, { name: 'Clinical' });
+  store.setMember(marc.id, collection.id, iris.id, 'approve');
+  return { db, store, marc, iris, collection };
+}
+
+test('freshness on a default deployment: the timer flips a past-review page, as Canon and not as a person', () => {
+  const { store, marc, iris, collection } = bareRecord();
+  // The external auditor's finding, exactly: a canonical clinical policy whose
+  // review date is six years past, on a deployment that configured nothing.
+  const policy = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Sedation policy', 'Text.', '2020-01-01');
+  assert.equal(store.getPage(marc.id, policy.id).status, 'canonical');
+
+  // Nothing configured: no CANON_MAINTENANCE_ACTOR_ID, no org role granted to
+  // anybody, no interval set. This is what index.ts now does on every start.
+  const sweeps = startFreshnessSweeps(store);
+  try {
+    assert.equal(sweeps.schedule.scheduled, true, 'the sweep runs without being asked to');
+    assert.equal(sweeps.schedule.intervalMs, DEFAULT_SWEEP_INTERVAL_MS);
+    assert.equal(sweeps.first?.flipped, 1, 'and the FIRST pass is immediate, not an hour away');
+
+    assert.equal(store.getPage(marc.id, policy.id).status, 'needs_update');
+
+    // And the record says a machine did it. This is the half that matters most:
+    // the previous arrangement wrote a real person's name onto work they did not
+    // do, in the log whose entire value is that it does not do that.
+    const events = store.queryAudit(marc.id, { action: 'page.needs_update' });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.pageId, policy.id);
+    assert.equal(events[0]!.actorId, SYSTEM_ACTOR_ID);
+    assert.equal(events[0]!.actorKind, 'system');
+    assert.notEqual(events[0]!.actorId, marc.id);
+    assert.notEqual(events[0]!.actorId, iris.id);
+
+    // The owner is told through the ordinary outbox, exactly as before.
+    assert.equal(ofKind(store, marc.id, 'review_due').length, 1);
+
+    // And the schedule is readable, so a surface can say what will happen
+    // rather than what the feature does in principle.
+    const schedule = freshnessScheduleFor(store);
+    assert.deepEqual(schedule.actor, { id: SYSTEM_ACTOR_ID, name: SYSTEM_ACTOR_NAME, kind: 'system' });
+    assert.equal(schedule.ownerNotice, 'outbox', 'no relay is configured, and the UI is told so rather than left to promise email');
+    assert.equal(schedule.reason, undefined);
+  } finally {
+    if (sweeps.timer) clearInterval(sweeps.timer);
+  }
+});
+
+test('freshness timer: a configured maintenance actor still works, and a wrong one does not stop the clock', () => {
+  const { db, store, marc, iris, collection } = bareRecord();
+  const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
+  setHandOrgRole(db, dana.id, 'operator', null);
+  const first = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Retention', 'Text.', '2020-01-01');
+
+  // A deployment that deliberately wants a named service account keeps it.
+  const named = startFreshnessSweeps(store, { actorId: dana.id, mailConfigured: true });
+  try {
+    assert.equal(named.first?.flipped, 1);
+    // Read as Marc: the event names a collection, and a collection-scoped event
+    // reaches its members. Dana runs this Canon and belongs to nothing in it.
+    assert.equal(store.queryAudit(marc.id, { action: 'page.needs_update' })[0]!.actorId, dana.id);
+    assert.equal(freshnessScheduleFor(store).actor?.id, dana.id);
+    assert.equal(freshnessScheduleFor(store).ownerNotice, 'email');
+  } finally {
+    if (named.timer) clearInterval(named.timer);
+  }
+
+  // A maintenance actor that is not an actor used to mean no sweep at all, and
+  // therefore a record that quietly stopped announcing anything. It now falls
+  // back to Canon and says so, because losing freshness is the worse failure.
+  const second = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Access', 'Text.', '2020-01-01');
+  const errors: string[] = [];
+  const wrong = startFreshnessSweeps(store, {
+    actorId: 'nobody-at-all',
+    log: { info() {}, error: (msg) => void errors.push(msg) },
+  });
+  try {
+    assert.equal(wrong.first?.flipped, 1);
+    assert.equal(store.getPage(marc.id, second.id).status, 'needs_update');
+    assert.equal(freshnessScheduleFor(store).actor?.id, SYSTEM_ACTOR_ID);
+    assert.ok(errors.some((e) => /CANON_MAINTENANCE_ACTOR_ID/.test(e)), 'and it is loud about it');
+  } finally {
+    if (wrong.timer) clearInterval(wrong.timer);
+  }
+  assert.equal(store.getPage(marc.id, first.id).status, 'needs_update');
+});
+
+test('freshness timer: an interval of zero is off, and says so in words somebody can act on', () => {
+  const { store, marc, iris, collection } = bareRecord();
+  const policy = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Retention', 'Text.', '2020-01-01');
+
+  const off = startFreshnessSweeps(store, { intervalMs: 0 });
+  assert.equal(off.timer, null);
+  assert.equal(off.first, null);
+  assert.equal(store.getPage(marc.id, policy.id).status, 'canonical', 'nothing swept, because nothing was asked to');
+
+  const schedule = freshnessScheduleFor(store);
+  assert.equal(schedule.scheduled, false);
+  assert.match(schedule.reason!, /CANON_FRESHNESS_INTERVAL_MS/);
+  assert.match(schedule.reason!, /POST \/maintenance\/freshness/);
+});
+
+test('freshness timer: it repeats, and a second pass finds nothing left to do', async () => {
+  const { store, marc, iris, collection } = bareRecord();
+  canonicalPolicy(store, marc.id, iris.id, collection.id, 'Retention', 'Text.', '2020-01-01');
+  const sweeps = startFreshnessSweeps(store, { intervalMs: 15 });
+  try {
+    assert.equal(sweeps.first?.flipped, 1);
+    // A page that falls due while the process is up is caught by the timer
+    // itself rather than by the start-up pass.
+    const later = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Access', 'Text.', '2020-06-01');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(store.getPage(marc.id, later.id).status, 'needs_update');
+    // Idempotent by construction: one audit event per page, however many passes.
+    assert.equal(store.queryAudit(marc.id, { action: 'page.needs_update' }).length, 2);
+  } finally {
+    if (sweeps.timer) clearInterval(sweeps.timer);
+  }
+});
+
+test('freshness: GET /maintenance/freshness tells any authenticated reader what this deployment does', async () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
+  const server = createApi(store);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+
+  try {
+    // Unauthenticated is refused like every other route: it is deployment
+    // configuration, not a public banner.
+    assert.equal((await fetch(`${base}/maintenance/freshness`)).status, 401);
+
+    // Before anything starts a timer, the answer is the honest negative rather
+    // than silence — an unwired process must not read as a working one.
+    const before = await (await fetch(`${base}/maintenance/freshness`, { headers: { 'x-actor-id': marc.id } })).json();
+    assert.equal(before.scheduled, false);
+    assert.match(before.reason, /POST \/maintenance\/freshness/);
+
+    const sweeps = startFreshnessSweeps(store, { intervalMs: 60_000 });
+    try {
+      const after = await (await fetch(`${base}/maintenance/freshness`, { headers: { 'x-actor-id': marc.id } })).json();
+      assert.equal(after.scheduled, true);
+      assert.equal(after.intervalMs, 60_000);
+      assert.deepEqual(after.actor, { id: SYSTEM_ACTOR_ID, name: SYSTEM_ACTOR_NAME, kind: 'system' });
+      assert.equal(after.ownerNotice, 'outbox');
+      // Ordinary readers, not just operators: the person who needs this is the
+      // policy author typing a review date, and Marc holds no role anywhere.
+      assert.equal(store.isOperator(marc.id), false);
+    } finally {
+      if (sweeps.timer) clearInterval(sweeps.timer);
+    }
+  } finally {
+    server.close();
+  }
 });
 
 test('freshness: the date helpers count days, not instants', () => {

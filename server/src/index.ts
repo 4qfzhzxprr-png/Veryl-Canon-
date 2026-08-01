@@ -4,6 +4,7 @@ import { personAuthFromEnv } from './auth.js';
 import { assertConfigValid, ConfigError } from './config.js';
 import { defaultConnectorRegistry } from './connectors.js';
 import { MIGRATIONS, openDb } from './db.js';
+import { DEFAULT_SWEEP_INTERVAL_MS, startFreshnessSweeps } from './freshness.js';
 import { HttpConnector } from './httpconnector.js';
 import { smtpTransportFromEnv } from './email.js';
 import { loggerFromEnv, redactUrl } from './log.js';
@@ -93,6 +94,32 @@ installGracefulShutdown({
   },
 });
 
+// The freshness sweep (FEATURES.md §3), on the same pattern as the outbox flush
+// below: POST /maintenance/freshness does the same thing on demand, and this
+// timer is what makes "stale knowledge announces itself" true without anyone
+// remembering to press it. Hourly by default — review dates are days, so a
+// shorter period buys nothing and a longer one delays an owner's notice.
+//
+// Unlike the flush, it runs on EVERY deployment, configured or not, and its
+// first pass is immediate — which is why it sits BEFORE `listen`. A record that
+// has been down for a week must not serve one request presenting a page as
+// Canonical that its own review date says is overdue.
+//
+// It used to run only where CANON_MAINTENANCE_ACTOR_ID named an actor, so the
+// product's central claim about staleness was false of every deployment that had
+// not read this log — and the flips it did make were attributed to whichever
+// person that variable named, in a log whose value is that it does not say
+// people did things they did not do. Both are fixed in freshness.ts, where
+// startFreshnessSweeps argues the whole thing; a deployment that deliberately
+// names a maintenance actor still gets exactly what it asked for.
+const sweeps = startFreshnessSweeps(store, {
+  intervalMs: Number(process.env.CANON_FRESHNESS_INTERVAL_MS ?? DEFAULT_SWEEP_INTERVAL_MS),
+  actorId: process.env.CANON_MAINTENANCE_ACTOR_ID,
+  mailConfigured: Boolean(mail),
+  log,
+});
+if (sweeps.timer) timers.push(sweeps.timer);
+
 server.listen(port, () => {
   log.info('Veryl Canon listening', {
     port,
@@ -173,6 +200,28 @@ server.listen(port, () => {
   } else {
     log.info('no Registry configured (CANON_REGISTRY_URL unset): Agent Passports refused');
   }
+  // Freshness, said out loud beside the doors, because it is the same kind of
+  // fact: what this deployment will actually do, rather than what the feature
+  // does in principle. `GET /maintenance/freshness` answers the same question to
+  // the person in the editor, who is the one the answer is really for.
+  if (sweeps.schedule.scheduled) {
+    log.info('freshness sweep running', {
+      everyMs: sweeps.schedule.intervalMs,
+      as: sweeps.schedule.actor?.name,
+      actorId: sweeps.schedule.actor?.id,
+      actorKind: sweeps.schedule.actor?.kind,
+      ownerNotice: sweeps.schedule.ownerNotice,
+      firstPassFlipped: sweeps.first?.flipped ?? 0,
+    });
+    if (sweeps.schedule.ownerNotice === 'outbox') {
+      log.info(
+        'no mail relay configured (CANON_SMTP_URL unset): a past-review notice is written to the outbox and ' +
+          'readable at GET /notifications, and nothing carries it to the owner. The editor says so.',
+      );
+    }
+  } else {
+    log.warn('freshness sweep NOT running', { detail: sweeps.schedule.reason });
+  }
   log.info('probes', { liveness: 'GET /health', readiness: 'GET /ready' });
 });
 
@@ -190,38 +239,4 @@ if (mail && flushInterval > 0) {
   }, flushInterval);
   timer.unref(); // never hold the process open on the timer alone
   timers.push(timer);
-}
-
-// The freshness sweep (FEATURES.md §3), on the same pattern as the flush above:
-// POST /maintenance/freshness does the same thing on demand, and this timer is
-// what makes "stale knowledge announces itself" true without anyone remembering
-// to press it. Hourly by default — review dates are days, so a shorter period
-// buys nothing and a longer one delays an owner's notice.
-//
-// It runs only when CANON_MAINTENANCE_ACTOR_ID names the actor it runs as.
-// Attribution is universal (DATA-BACKBONE.md §2, principle 5): every flip is an
-// audit event, and an audit event with no actor behind it would be the one
-// unattributed write in the record. So the deployment names a maintenance actor
-// — which must hold admin on a collection, like any other operator — rather
-// than Canon inventing a nameless system identity for itself.
-const sweepInterval = Number(process.env.CANON_FRESHNESS_INTERVAL_MS ?? 3_600_000);
-const sweepActorId = process.env.CANON_MAINTENANCE_ACTOR_ID?.trim();
-if (sweepActorId && sweepInterval > 0) {
-  const sweepTimer = setInterval(() => {
-    try {
-      const result = store.sweepFreshness(sweepActorId);
-      if (result.flipped > 0) {
-        log.info('freshness sweep', { flipped: result.flipped, notified: result.notified });
-      }
-    } catch (err) {
-      log.error('freshness sweep failed', { error: (err as Error).message });
-    }
-  }, sweepInterval);
-  sweepTimer.unref();
-  timers.push(sweepTimer);
-} else if (!sweepActorId) {
-  log.info(
-    'no maintenance actor configured (CANON_MAINTENANCE_ACTOR_ID unset): the freshness sweep runs only on ' +
-      'POST /maintenance/freshness',
-  );
 }

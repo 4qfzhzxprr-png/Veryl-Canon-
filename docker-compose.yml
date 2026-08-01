@@ -85,9 +85,11 @@ services:
 
       # ---- timers ------------------------------------------------------
       # No SMTP relay in the demo, so notifications are logged rather than sent
-      # and the flush timer has nothing to do. The freshness sweep needs a
-      # named maintenance actor holding admin on a collection; create one, then
-      # set CANON_MAINTENANCE_ACTOR_ID here and restart.
+      # and the flush timer has nothing to do. The freshness sweep needs nothing
+      # at all: it runs hourly, and once at start-up, as Canon's own system
+      # actor. This line is the default written out so it is visible, not a
+      # requirement — CANON_MAINTENANCE_ACTOR_ID is deliberately absent, because
+      # naming a person there puts their name on work the clock did.
       CANON_FRESHNESS_INTERVAL_MS: '3600000'
       CANON_SHUTDOWN_TIMEOUT_MS: '10000'
     depends_on:

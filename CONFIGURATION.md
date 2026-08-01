@@ -55,7 +55,46 @@ the variable to change. See "Start-up validation" at the end.
 | `CANON_SESSION_TTL_MS` | optional | `28800000` (8h) | Idle lifetime, renewed on use. | — |
 | `CANON_SESSION_MAX_LIFETIME_MS` | optional | `86400000` (24h) | The ceiling no renewal passes. | Bounds SECURITY.md R9: a session outlives a revocation at the provider by at most this. |
 | `CANON_COOKIE_SECURE` | optional | on unless `CANON_BASE_URL` is plain `http` | Force the cookie's `Secure` flag on or off. | Only ever set to `false` locally. |
+| `CANON_SESSION_CONFIRM_MS` | optional | `60000`, and **clamped to 60000** | How long a session may be served without being re-confirmed against the identity provider (SECURITY.md R9). `0` confirms on every request. | This is the **revocation guarantee for people**, not a tuning knob — the same sentence `CANON_REGISTRY_TTL_MS` is for agents. A larger number is silently clamped, because a guarantee a deployment can raise is not one. |
 | `CANON_ALLOWED_ORIGINS` | optional | the redirect URI's own origin | Extra origins a cookie-authenticated write may come from (CSRF). Comma- or space-separated. | Each entry is a site you are trusting to make writes on a signed-in person's behalf. |
+
+## The first administrator
+
+Somebody has to be able to grant the first role, and there is nobody to ask for
+permission to do it — the authority being granted *is* the thing being granted.
+Canon solves it two ways, and a deployment should use the first (orgrole.ts,
+"Bootstrap"). With neither set **and no administrator in the record**, the first
+person to sign in becomes one, loudly and once.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_BOOTSTRAP_ADMIN_SUBJECT` | recommended | unset | Names a person **at the identity provider** — their `sub` claim, or `issuer#sub`. Comma- or space-separated. On every sign-in and every confirmation they are (re-)made an administrator. | The safe answer, and the one to use: it grants nothing to whoever arrives first, it is idempotent, and it cannot lock you out, because it is re-asserted rather than applied once. Setting it closes the first-person window permanently. |
+| `CANON_BOOTSTRAP_ADMIN_ACTOR_ID` | **dev only** | unset | Names an actor **by Canon id**, and makes them an administrator at start-up. Comma- or space-separated. An id this record does not hold is a start-up failure with a sentence in it, not a silent no-op. | The dev door's bootstrap, for a record running on `X-Actor-Id` with no provider to name a subject at. A deployment with SSO uses `CANON_BOOTSTRAP_ADMIN_SUBJECT`. Naming `system:canon` is refused — Canon holds no role and cannot administer anything. |
+
+## Mapping directory groups onto roles
+
+Optional (SECURITY.md R10). Unset, nobody holds anything they were not granted
+by hand. One rule per line (or separated by `;`), `#` starts a comment, and group
+names are compared exactly — they may contain spaces and commas, which is why the
+separator is a line:
+
+```
+# who edits the Compliance collection
+Canon-Compliance-Editors -> collection:8f14…:edit
+Canon-Compliance-Leads   -> collection:8f14…:admin
+Canon-Operators          -> org:operator
+```
+
+A rule naming a collection or a role that does not exist is a **start-up
+failure**, so a typo is never a person quietly holding less than you granted.
+`GET /auth/mapping` reads back what is live; `GET /auth/access/:actorId` says why
+somebody holds what.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_OIDC_GROUPS_CLAIM` | optional | `groups` | Which ID-token claim carries the person's groups. A claim that is absent, or is not a list of strings, reads as **no groups** rather than being guessed at. | Everything below is downstream of this claim, so it is downstream of your provider's group hygiene. |
+| `CANON_GROUP_MAP` | optional | unset = no mapping | The rules, inline, in the syntax above: `<group> -> collection:<id>:<role>` for collection access, or `<group> -> org:operator` / `org:administrator` for an organisation role. | A group mapped to `org:administrator` means **anyone your provider puts in that group can administer permissions here**; Canon prints that warning by name at start-up. Group grants are stored separately from hand grants and recomputed on every confirmation, so removing a group removes exactly what it granted and leaves a hand grant underneath standing. |
+| `CANON_GROUP_MAP_FILE` | optional | unset | A file of the same rules, appended to whatever `CANON_GROUP_MAP` holds. For a mapping too long to live in an environment variable. | Unreadable is a refusal, not an empty mapping: a mapping that silently became nothing is a room full of people who quietly lost their access. |
 
 ## Identity: agents
 
@@ -104,10 +143,15 @@ limited. Each is written `burst/perMinute`, or `off`.
 
 ## Freshness and maintenance
 
+**The freshness sweep runs by default and needs no configuration.** Every
+deployment flips Canonical pages past their review date to **Needs Update**,
+hourly and on start-up, attributed to Canon's own system actor. Nothing below is
+required; each variable exists to turn that off or to change whose name is on it.
+
 | Variable | Required? | Default | Meaning | Safety |
 | --- | --- | --- | --- | --- |
-| `CANON_MAINTENANCE_ACTOR_ID` | required for the timed sweep | unset | The actor the timed freshness sweep runs as. It must hold `admin` on a collection, like any other operator. Unset, the sweep runs only from `POST /maintenance/freshness`. | Every flip is an audit event; Canon does not write to its own log under a nameless system identity (DATA-BACKBONE.md §2, principle 5). |
-| `CANON_FRESHNESS_INTERVAL_MS` | optional | `3600000` (hourly) | How often the sweep runs. `0` turns it off. | With it off and no scheduler, "stale knowledge announces itself" is not true of this deployment. |
+| `CANON_FRESHNESS_INTERVAL_MS` | optional | `3600000` (hourly) | How often the sweep runs, in addition to one immediate pass at start-up. `0` turns the timer off and hands review dates to your own scheduler calling `POST /maintenance/freshness`. | With it off and no scheduler, **"stale knowledge announces itself" is not true of this deployment** — and Canon says so at start-up, on `GET /maintenance/freshness`, and in the editor beside the review-date field, so the policy author finds out as well as the operator. |
+| `CANON_MAINTENANCE_ACTOR_ID` | optional, and normally left unset | unset = `system:canon` | The actor the timed sweep runs as. Unset, it is Canon itself: a `system` actor that cannot be signed in as, granted a role, or created a second time. Set it only if you deliberately want a named service account's name on this work; it must hold the org-level `operator` role. An id this record does not hold logs an error and falls back to `system:canon` rather than stopping the sweep. | **Naming a person here puts their name on work they did not do.** The audit log's whole value is that it does not say that, so an event Canon wrote says `system:canon` / `actorKind: system` and reads as *Canon* wherever an actor is rendered. Attribution stays universal (DATA-BACKBONE.md §2, principle 5) — it is now also true. |
 
 ## Not Canon's: the stubs
 
@@ -139,7 +183,13 @@ Canon checks the environment before it binds a port (`src/config.ts`) and
 | Any URL variable that is not an `http(s)` URL | — |
 | Any numeric variable that is not a number | A typo in an interval silently becomes `NaN`, and a `NaN` interval is a timer that never fires. |
 
+Not in the table, because they are not `config.ts`'s job, but they stop a start
+just as firmly: a `CANON_GROUP_MAP` rule naming a collection or role that does
+not exist, an unreadable `CANON_GROUP_MAP_FILE`, and a
+`CANON_BOOTSTRAP_ADMIN_ACTOR_ID` naming an actor this record does not hold.
+
 Warnings — logged at start-up, never fatal — cover the merely unwise: a short
-session secret, no maintenance actor, dev auth beside a real Registry, private
-addresses reachable in a deployment with SSO, an `http://` base URL with SSO
-live, a relay with no base URL for its deep links, and no door open at all.
+session secret, a maintenance actor named at all (it puts somebody's name on the
+clock's work), the freshness timer turned off, dev auth beside a real Registry,
+private addresses reachable in a deployment with SSO, an `http://` base URL with
+SSO live, a relay with no base URL for its deep links, and no door open at all.

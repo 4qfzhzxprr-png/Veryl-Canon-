@@ -30,6 +30,14 @@ const TYPE_FIELDS = {
 };
 const REVIEWED_TYPES = ['policy', 'spec', 'plan'];
 
+// Canon's own actor (src/system.ts). Mirrored here as a constant rather than
+// looked up, because it is deliberately NOT in the actor directory: it is not
+// somebody you can name as an owner or an approver, so `GET /actors` does not
+// carry it and `actorName` would render a truncated id for the one actor whose
+// name matters most in an audit log — the one that says a machine did this.
+const SYSTEM_ACTOR_ID = 'system:canon';
+const SYSTEM_ACTOR_NAME = 'Canon';
+
 const STATUS_LABELS = {
   draft: 'Draft',
   in_review: 'In Review',
@@ -67,6 +75,14 @@ const state = {
     // The knowledge map, and separately the whole-record map: two endpoints,
     // two probes. See detectMap / detectWholeGraph.
     map: null, wholeGraph: null,
+    // Whether review dates do anything on THIS deployment (GET
+    // /maintenance/freshness). Not a capability probe like the rest: the route
+    // is always there, and what it answers is whether the timer is running,
+    // how often, whom the flips are attributed to, and how far an owner's
+    // notice travels. The editor used to promise a flip and a notification
+    // flatly; on a deployment where neither happened, that was the product
+    // lying to the one person who could have done something about it.
+    freshness: null,
     // Attestation and export (FEATURES.md §7). One probe covers the whole
     // family — as-of, the page bundle, the collection register — because they
     // ship together. See detectAttestation.
@@ -192,8 +208,13 @@ function actorById(id) {
 
 function actorName(id) {
   if (!id) return '—';
+  if (id === SYSTEM_ACTOR_ID) return SYSTEM_ACTOR_NAME;
   const a = actorById(id);
   return a ? a.name : id.slice(0, 8) + '…';
+}
+
+function isSystemActor(id) {
+  return id === SYSTEM_ACTOR_ID;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,11 +294,17 @@ function badge(status, size = '') {
   return `<span class="badge badge-${esc(status)} ${size}">${esc(label)}</span>`;
 }
 
+// Three kinds now, and the third is the point: work Canon does on its own clock
+// is tagged `system` wherever an actor is rendered, so nobody reading a page or
+// an audit row can mistake it for a colleague's act.
 function kindTag(kind) {
-  return kind === 'agent' ? '<span class="kind-tag agent">agent</span>' : '<span class="kind-tag">person</span>';
+  if (kind === 'agent') return '<span class="kind-tag agent">agent</span>';
+  if (kind === 'system') return '<span class="kind-tag system">system</span>';
+  return '<span class="kind-tag">person</span>';
 }
 
 function actorLabel(id) {
+  if (isSystemActor(id)) return `${esc(SYSTEM_ACTOR_NAME)} ${kindTag('system')}`;
   const a = actorById(id);
   if (!a) return esc(actorName(id));
   return `${esc(a.name)}${a.kind === 'agent' ? ' <span class="kind-tag agent">agent</span>' : ''}`;
@@ -491,6 +518,7 @@ function renderChrome() {
     detectAsk();
     detectSources();
     detectMap();
+    detectFreshness();
   } else {
     nav.hidden = true;
     chip.innerHTML = '';
@@ -511,6 +539,94 @@ async function detectSearch() {
     state.features.search = err.status !== 404 && err.status !== 0;
   }
   document.getElementById('search-slot').hidden = state.features.search !== true;
+}
+
+// ---------------------------------------------------------------------------
+// Freshness: what this deployment actually does about review dates
+//
+// The editor asks people to set a review date and used to tell them, flatly,
+// "when this date passes, the page flips to Needs Update and its owner is
+// notified". On a default deployment neither half was true: the sweep ran only
+// where an operator had named a maintenance actor and wired a timer, and there
+// is no notification surface in the product at all, so an owner with eight
+// stale pages saw nothing anywhere.
+//
+// Both halves are now told the truth. The flip is true everywhere, because the
+// sweep ships on a timer (src/freshness.ts). The notification is qualified by
+// what the deployment can actually do: with a mail relay it is an email, and
+// without one the notice is written to the record's outbox and nothing carries
+// it anywhere, which is a thing to say rather than a thing to imply.
+
+let freshnessProbe = null;
+
+async function detectFreshness() {
+  if (state.features.freshness === null) {
+    freshnessProbe ??= api('GET', '/maintenance/freshness')
+      .then((s) => s)
+      // An older server without the route: the honest answer is "not known",
+      // and every sentence below then falls back to describing the feature
+      // rather than promising a deployment's behaviour.
+      .catch(() => false);
+    const found = await freshnessProbe;
+    freshnessProbe = null;
+    if (state.features.freshness === null) state.features.freshness = found;
+  }
+  return state.features.freshness || null;
+}
+
+/** Is this page overdue right now, whatever the sweep has got round to? */
+function isPastReview(reviewDate) {
+  if (!reviewDate) return false;
+  return reviewDate < new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * A page that is past its review date and STILL wearing the Canonical mark.
+ *
+ * The sweep is not a trigger; it is a pass, so between a date passing and the
+ * next pass there is a window where a page is overdue and unmarked. That window
+ * is minutes on a running deployment and forever on one whose timer is off — and
+ * an external reviewer found exactly the second case: a canonical clinical
+ * policy displaying a review date six years past, with no warning of any kind,
+ * served to readers and cited as current. The status is the record's answer and
+ * only the sweep may change it, so this does not touch the status; it says out
+ * loud, on the page, what the reader can already work out from the date, and
+ * says which of the two situations they are in.
+ */
+function overdueNoticeHTML(page) {
+  if (page.status !== 'canonical' || !isPastReview(page.reviewDate)) return '';
+  const f = state.features.freshness;
+  const tail = !f
+    ? 'A freshness sweep marks pages like this Needs Update.'
+    : f.scheduled
+      ? `${esc(SYSTEM_ACTOR_NAME)} sweeps for these every ${esc(fmtDuration(f.intervalMs))} and has not reached ` +
+        'this one yet.'
+      : `<strong>This deployment is not running the freshness sweep</strong>, so this page keeps the Canonical ` +
+        'mark until somebody runs maintenance. Nothing is going to mark it on its own.';
+  return `<div class="notice notice-stale">Past its review date (${fmtDate(page.reviewDate)}), and still marked
+    Canonical. ${tail}</div>`;
+}
+
+/** The sentence under the review-date field. What WILL happen, on this deployment. */
+function freshnessPromise() {
+  const f = state.features.freshness;
+  if (!f) {
+    return 'When this date passes, a freshness sweep marks the page Needs Update. It is still the official ' +
+      'record and can still be cited, marked as past review, until it is re-approved.';
+  }
+  if (!f.scheduled) {
+    return `<strong>This deployment is not running the freshness sweep, so this date will not flip the page on ` +
+      `its own.</strong> ${esc(f.reason ?? '')} The date is still recorded, still queryable, and still shown on ` +
+      'the page — but somebody has to run maintenance for it to mean anything.';
+  }
+  const every = fmtDuration(f.intervalMs);
+  const notice = f.ownerNotice === 'email'
+    ? 'and its owner is emailed'
+    : 'and a notice for its owner is written to the record. ' +
+      '<span class="muted">This deployment has no mail relay configured and Canon has no inbox screen yet, ' +
+      'so nothing reaches the owner until one of those exists.</span>';
+  return `When this date passes, ${esc(SYSTEM_ACTOR_NAME)} marks the page Needs Update within ${esc(every)}, ` +
+    `${notice}`;
 }
 
 // Grounded answers are feature-detected the same way search is: probe once,
@@ -1118,6 +1234,10 @@ async function viewPage(id) {
     api('GET', `/collections/${page.collectionId}`),
     api('GET', `/collections/${page.collectionId}/tree`),
     loadActors().catch(() => null),
+    // Awaited, not fired and forgotten: the page's own overdue notice says
+    // something different depending on whether this deployment sweeps, and a
+    // notice that changes its mind a moment after paint is worse than either.
+    detectFreshness().catch(() => null),
   ]);
   let draft = null;
   try {
@@ -1189,7 +1309,8 @@ async function viewPage(id) {
         </div>
         ${draftBanner}
         ${isArchived ? '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>' : ''}
-        ${page.status === 'needs_update' ? `<div class="notice">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed, so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review date, and submit it for review to return it to Canonical.</div>` : ''}
+        ${page.status === 'needs_update' ? `<div class="notice notice-stale">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed, so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review date, and submit it for review to return it to Canonical.</div>` : ''}
+        ${overdueNoticeHTML(page)}
         ${inReview ? reviewBannerHTML(review, Boolean(rules.approver)) : ''}
 
         <dl class="field-block">
@@ -1198,7 +1319,11 @@ async function viewPage(id) {
           ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${pendingFieldCell(page.ownerId, pendingOf('ownerId'), actorLabel, hasPublished)}</dd></div>` : ''}
           ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${pendingFieldCell(page.approverId, pendingOf('approverId'), actorLabel, hasPublished)}</dd></div>` : ''}
           ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${pendingFieldCell(page.effectiveDate, pendingOf('effectiveDate'), fmtDate, hasPublished)}</dd></div>` : ''}
-          ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${pendingFieldCell(page.reviewDate, pendingOf('reviewDate'), fmtDate, hasPublished)}${page.status === 'needs_update' ? ' · <span class="muted">past review</span>' : ''}</dd></div>` : ''}
+          ${/* Past review is read from the DATE, not from the status: a page whose
+                review date passed since the last sweep is already stale, and saying
+                so here is what makes the warning true in the window before the
+                sweep reaches it (USER-TESTING.md T1.4). */ ''}
+          ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${pendingFieldCell(page.reviewDate, pendingOf('reviewDate'), fmtDate, hasPublished)}${isPastReview(page.reviewDate) ? ' · <span class="past-review">past review</span>' : ''}</dd></div>` : ''}
           <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
@@ -2108,6 +2233,9 @@ async function renderCommentsPanel(pageId) {
 async function viewEditor(id) {
   const page = await api('GET', `/pages/${id}`);
   await loadActors().catch(() => null);
+  // The sentence under the review-date field is a promise about this
+  // deployment, so it waits for the answer rather than guessing (freshnessPromise).
+  await detectFreshness().catch(() => null);
   let draft;
   try {
     draft = await api('PUT', `/pages/${id}/draft`, {}); // acquires the page lock
@@ -2176,7 +2304,7 @@ async function viewEditor(id) {
             ${rules.approver ? `<label>Approver <select name="approverId">${actorOptions(draft.fields.approverId)}</select></label>` : ''}
             ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>` : ''}
             ${rules.reviewDate ? `<label>Review date${rules.reviewDateRequired ? ' <span class="muted">(required)</span>' : ''} <input type="date" name="reviewDate" value="${esc(draft.fields.reviewDate ?? '')}"></label>
-            <p class="muted">When this date passes, the page flips to Needs Update and its owner is notified.</p>` : ''}
+            <p class="${state.features.freshness && !state.features.freshness.scheduled ? 'notice notice-stale' : 'muted'}">${freshnessPromise()}</p>` : ''}
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
@@ -2579,6 +2707,11 @@ async function viewAudit() {
           <select name="actor">
             <option value="">All actors</option>
             ${(state.actors ?? []).map((a) => `<option value="${esc(a.id)}">${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('')}
+            <!-- Canon's own actor is not in the directory (it is nobody you can
+                 name as an owner), but it IS in the log, and an auditor sampling
+                 the log has to be able to isolate the machine's acts from the
+                 people's. So it is offered here and only here. -->
+            <option value="${esc(SYSTEM_ACTOR_ID)}">${esc(SYSTEM_ACTOR_NAME)} (system)</option>
           </select>
         </label>
       </form>
@@ -2611,7 +2744,7 @@ async function viewAudit() {
                 .join(' ');
               return `<tr>
                 <td class="nowrap">${fmtDateTime(e.at)}</td>
-                <td>${esc(actorName(e.actorId))} ${e.actorKind === 'agent' ? '<span class="kind-tag agent">agent</span>' : ''}</td>
+                <td>${esc(actorName(e.actorId))} ${e.actorKind === 'person' ? '' : kindTag(e.actorKind)}</td>
                 <td><code class="action-code">${esc(e.action)}</code></td>
                 <td>${e.pageId ? `<a href="#/pages/${esc(e.pageId)}">page</a>` : e.collectionId ? `<a href="#/collections/${esc(e.collectionId)}">collection</a>` : '<span class="muted">—</span>'}</td>
                 <td class="audit-details">${details || '<span class="muted">—</span>'}</td>

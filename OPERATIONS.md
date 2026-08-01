@@ -101,9 +101,12 @@ that is invisible later.
    anyone' <base>/collections` must answer `401 dev_auth_disabled`. This is
    SECURITY.md §5, assumption 1, and it is the single most consequential setting
    in the product.
-5. **Create the maintenance actor**, grant it `admin` on a collection, and set
-   `CANON_MAINTENANCE_ACTOR_ID` to its id. Until you do, review dates do
-   nothing on a timer.
+5. **Confirm the freshness sweep is running**, in the start-up log
+   (`freshness sweep running`, `actorId: system:canon`) or at
+   `GET /maintenance/freshness`. It runs by default and needs no configuration —
+   there is nothing to create and no actor to name. If it says otherwise, you
+   have set `CANON_FRESHNESS_INTERVAL_MS=0` and review dates are now your
+   scheduler's job.
 6. **Take a backup, and restore it somewhere else.** Not later — now, while the
    record is empty and a mistake costs nothing. A backup procedure nobody has
    run is a belief. See below.
@@ -324,7 +327,9 @@ Lines worth alerting on:
 | `*** CANON_DEV_AUTH=true …` | **The door is open and nothing is verified.** Never in a deployment. |
 | `configuration` at `warn` | A setting that works and is probably not what was wanted. Read the `detail`. |
 | `outbox flush failed` | The relay is refusing or unreachable. Notifications queue and retry; nothing is lost until a message hits five attempts and is marked dead. |
-| `freshness sweep failed` | Review dates have stopped being enforced. Check the maintenance actor still holds `admin`. |
+| `freshness sweep failed` | Review dates have stopped being enforced. Almost always a `CANON_MAINTENANCE_ACTOR_ID` that no longer holds the `operator` role; unset it and the sweep runs as Canon, which needs no grant. |
+| `freshness sweep NOT running` at `warn` | This deployment's review dates do nothing on their own. Only ever the result of `CANON_FRESHNESS_INTERVAL_MS=0`. The editor tells authors the same thing, so you will hear it from them too. |
+| `CANON_MAINTENANCE_ACTOR_ID names an actor this record does not hold` | The configured actor is gone. The sweep did **not** stop — it fell back to `system:canon` — but every flip is now attributed differently from the ones before it. Fix or unset the variable. |
 | `shutdown: in-flight requests did not finish in time` | A request outlived the drain deadline and was cut. Raise `CANON_SHUTDOWN_TIMEOUT_MS`, or find the slow request. |
 | `record closed` | The clean end of a shutdown. Its *absence* after a stop means the WAL was not checkpointed. |
 | An `error` with a correlation id | The client got a `500` with that id and nothing else; the detail is here (SECURITY.md R7). |
@@ -338,12 +343,15 @@ record, queryable at `GET /audit` and exportable at `GET /audit.csv`.
 
 Canon has exactly two timers. Both do work that is also reachable over HTTP, so
 either can be driven by your own scheduler instead — and if you turn one off
-without doing that, the feature it serves quietly stops being true.
+without doing that, the feature it serves stops being true. "Quietly" is no
+longer accurate of the freshness one, and deliberately: turning it off is now
+said in the start-up log, on `GET /maintenance/freshness`, and to the author in
+the editor beside the review-date field they are about to fill in.
 
 | Timer | Variable | Default | What it does | What breaks if it stops |
 | --- | --- | --- | --- | --- |
 | **Outbox flush** | `CANON_FLUSH_INTERVAL_MS` | 60s | Takes a bounded batch of queued notifications and hands them to the relay. Retries with backoff (1, 5, 15, 60 minutes) and marks a message dead after five attempts. | **Nothing is delivered.** Review requests, approvals, send-backs and mentions all sit in the outbox. Nothing is lost — the outbox is the record of what is owed — but every review stalls, silently, because the person who was supposed to act was never told. Equivalent: `POST /notifications/flush` from cron, about once a minute. Only runs at all when `CANON_SMTP_URL` is set. |
-| **Freshness sweep** | `CANON_FRESHNESS_INTERVAL_MS` | 1h | Flips Canonical pages past their review date to **Needs Update**, notifies their owners, writes a `page.needs_update` audit event. | **Stale knowledge stops announcing itself.** Pages sail past their review dates still wearing the Canonical mark, and `/ask` keeps citing them as current with no "past review" marker, because the marker comes from the status the sweep sets. Nothing is corrupted and the next run catches everything up: the sweep is idempotent by construction, not by bookkeeping — a page it has flipped is no longer Canonical, so it is not seen twice. Equivalent: `POST /maintenance/freshness`. Only runs when `CANON_MAINTENANCE_ACTOR_ID` names an actor holding `admin`. |
+| **Freshness sweep** | `CANON_FRESHNESS_INTERVAL_MS` | 1h, **plus one pass at start-up, before the port is bound** | Flips Canonical pages past their review date to **Needs Update**, notifies their owners, writes a `page.needs_update` audit event attributed to `system:canon`. | **Stale knowledge stops announcing itself.** Pages sail past their review dates still wearing the Canonical mark, and `/ask` keeps citing them as current with no "past review" marker, because the marker comes from the status the sweep sets. Nothing is corrupted and the next run catches everything up: the sweep is idempotent by construction, not by bookkeeping — a page it has flipped is no longer Canonical, so it is not seen twice. Equivalent: `POST /maintenance/freshness`. **Runs on every deployment, configured or not**; only `CANON_FRESHNESS_INTERVAL_MS=0` stops it, and when it is stopped the editor stops promising authors a flip. |
 
 Both are cleared on shutdown before the database closes, so neither can fire
 against a closed record.

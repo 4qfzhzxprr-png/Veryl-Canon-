@@ -13,6 +13,7 @@ import { Migration, runMigrations } from './migrate.js';
 import { REFERENCES_SCHEMA } from './references.js';
 import { RELATIONS_SCHEMA } from './relations.js';
 import { SOURCES_SCHEMA } from './sources.js';
+import { ensureSystemActor, ensureSystemActorKind } from './system.js';
 
 // Connection settings, not schema. They are applied on every open and they are
 // deliberately outside the migration runner: SQLite refuses to change journal
@@ -30,7 +31,7 @@ PRAGMA foreign_keys = ON;
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS actors (
   id           TEXT PRIMARY KEY,
-  kind         TEXT NOT NULL CHECK (kind IN ('person', 'agent')),
+  kind         TEXT NOT NULL CHECK (kind IN ('person', 'agent', 'system')),
   name         TEXT NOT NULL,
   email        TEXT,
   registry_ref TEXT,
@@ -203,6 +204,22 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 3,
+    name: 'system_actor_kind',
+    // Canon acting on its own clock is a `system` actor, not a borrowed person
+    // (system.ts). That is a new value in a CHECK constraint on an existing
+    // table, and SQLite cannot alter one, so this is a rebuild — which needs
+    // foreign keys off around a BEGIN of its own, exactly as the freshness
+    // rebuild folded into the baseline does. Hence `ownTransaction`.
+    //
+    // A fresh database never runs the body: the baseline above already writes
+    // the three-value CHECK, and ensureSystemActorKind returns the moment it
+    // sees `'system'` in the stored definition. A partner's record written by
+    // an earlier build is rebuilt once and then matches.
+    ownTransaction: true,
+    up: ensureSystemActorKind,
+  },
 ];
 
 export function openDb(path: string): DatabaseSync {
@@ -221,5 +238,10 @@ export function openDb(path: string): DatabaseSync {
   // chain does and does not prove is written out at the top of auditchain.ts.
   // After the migrations, because it triggers on a table they create.
   ensureAuditChain(db);
+  // Canon's own actor row (system.ts). After the migrations for the same reason
+  // the chain is: migration 3 is what teaches `actors.kind` the third value, and
+  // this INSERT would fail the CHECK on a record that has not run it. A record
+  // that already holds the row is untouched.
+  ensureSystemActor(db);
   return db;
 }

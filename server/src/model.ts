@@ -1,7 +1,14 @@
 // Core model per DATA-BACKBONE.md and CORE-PLAN.md.
 // Structure over prose: everything a rule depends on lives here as data.
 
-export type ActorKind = 'person' | 'agent';
+// Who can appear in the record's history. `system` is Canon itself, acting on
+// its own clock — the freshness sweep and nothing else, today. It is a third
+// kind rather than a special person because the audit log states the kind on
+// every event, and an event that said `person` for work no person did would be
+// a falsehood in the one place this product promises there are none. There is
+// exactly one system actor and it cannot be signed in as; see system.ts, which
+// argues the whole thing.
+export type ActorKind = 'person' | 'agent' | 'system';
 
 // Core ships four fixed document types. Custom types come in a later tier.
 export type DocType = 'policy' | 'spec' | 'plan' | 'note';
