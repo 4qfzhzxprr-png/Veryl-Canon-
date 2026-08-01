@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { AUDIT_PAGE_DEFAULT, CanonStore } from '../src/store.js';
 
 // USER-TESTING.md T2.2. An external auditor found the log capped at 1,000 rows
@@ -177,4 +178,65 @@ test('API: the log pages, counts and exports over HTTP', async () => {
   } finally {
     server.close();
   }
+});
+
+// USER-TESTING.md T4.9. A non-technical contributor found her typed questions
+// in the audit log, readable by other people. `auditWhere` already restricted
+// an ask that named NO collection to the asker and to operators — but an ask
+// scoped to a collection is an event naming that collection, so it reached
+// every member, question text and all. Measured on a running server before
+// this: a colleague holding only `view` could read "how do I raise a grievance
+// about my manager".
+test('audit: a question is readable by the person who asked it and by an operator, and by nobody else', () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db);
+  const priya = store.createActor({ kind: 'person', name: 'Priya' });
+  const colleague = store.createActor({ kind: 'person', name: 'Colleague' });
+  const operator = store.createActor({ kind: 'person', name: 'Ops' });
+  const stranger = store.createActor({ kind: 'person', name: 'Stranger' });
+  const collection = store.createCollection(priya.id, { name: 'People' });
+  store.setMember(priya.id, collection.id, colleague.id, 'view');
+  // The operator is given a role here too, and that is not incidental: an ask
+  // that NAMES a collection is an event naming that collection, so `auditWhere`
+  // rule 1 governs it and an operator holding no role in the collection cannot
+  // see the event at all — the org role widens nothing on its own. So the two
+  // readers who get the text are "the person who asked" and "somebody who can
+  // already see the event AND is an operator", and the second only exists
+  // where a role puts them in the collection.
+  store.setMember(priya.id, collection.id, operator.id, 'view');
+  setHandOrgRole(db, operator.id, 'operator', null);
+
+  const QUESTION = 'how do I raise a grievance about my manager';
+  db.prepare(
+    `INSERT INTO audit_events (at, actor_id, actor_kind, action, collection_id, page_id, details_json)
+     VALUES (?, ?, 'person', 'answer.ask', ?, NULL, ?)`,
+  ).run('2026-08-01T10:00:00.000Z', priya.id, collection.id, JSON.stringify({ question: QUESTION, refused: false }));
+
+  const asked = (actorId: string) => store.queryAudit(actorId, { action: 'answer.ask' });
+
+  assert.equal(asked(priya.id)[0]!.details.question, QUESTION, 'the asker reads her own question');
+  assert.equal(asked(operator.id)[0]!.details.question, QUESTION, 'an operator investigating an incident reads it');
+
+  // The colleague still sees THAT it happened — that is genuine audit material
+  // and answers "who looked at this before that decision" — but not the words.
+  const seen = asked(colleague.id);
+  assert.equal(seen.length, 1, 'the event is not hidden, only the sentence');
+  assert.match(String(seen[0]!.details.question), /^\[redacted/);
+  assert.doesNotMatch(String(seen[0]!.details.question), /grievance/);
+  assert.equal(seen[0]!.actorId, priya.id, 'who asked, and when, is still attributable');
+
+  assert.equal(asked(stranger.id).length, 0, 'somebody with no role sees no event at all');
+
+  // And an operator with no role in the collection sees nothing either: being
+  // an operator is not a way into a collection's events.
+  const outsideOperator = store.createActor({ kind: 'person', name: 'Ops2' });
+  setHandOrgRole(db, outsideOperator.id, 'operator', null);
+  assert.equal(asked(outsideOperator.id).length, 0);
+
+  // The stored event is untouched: redaction is on the way out, so an operator
+  // keeps the record and the hash chain still covers the row as written.
+  const stored = db.prepare('SELECT details_json FROM audit_events WHERE action = ?').get('answer.ask') as {
+    details_json: string;
+  };
+  assert.equal(JSON.parse(stored.details_json).question, QUESTION);
 });

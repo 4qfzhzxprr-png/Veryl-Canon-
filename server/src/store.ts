@@ -104,6 +104,40 @@ export interface AuditSummary {
 export const AUDIT_PAGE_DEFAULT = 200;
 export const AUDIT_PAGE_MAX = 1000;
 
+/**
+ * The one field in the audit log that is nobody else's business.
+ *
+ * `auditWhere` decides WHICH events a reader may see, and for an ask that
+ * named no collection it already restricts the row to the asker and to
+ * operators. But an ask scoped to a collection is an event NAMING that
+ * collection, so it reaches every member of it — and the row carries the
+ * question verbatim. Measured on a running server: a colleague holding only
+ * `view` could read "how do I raise a grievance about my manager", typed by
+ * somebody who had every reason to think they were asking a machine.
+ *
+ * The event itself is genuine audit material and stays whole: that this person
+ * asked something of this collection at this instant, and which pages the
+ * answer drew on, is exactly what an auditor reconstructing "who looked at the
+ * coverage criteria before that denial" needs. It is the SENTENCE that is
+ * private, and it is the only part removed.
+ *
+ * Redaction happens on the way out rather than at write time, because the
+ * stored event must stay whole — an operator investigating an incident needs
+ * the question, and the hash chain covers the row as written. `[redacted]`
+ * rather than a missing key, so a reader can tell a withheld question from an
+ * event that never had one, and so nobody reads an absence as "no question was
+ * asked".
+ */
+export function redactAuditDetails(
+  action: string,
+  details: Record<string, unknown>,
+  mayReadPrivateText: boolean,
+): Record<string, unknown> {
+  if (mayReadPrivateText || action !== 'answer.ask') return details;
+  if (typeof details.question !== 'string') return details;
+  return { ...details, question: '[redacted: only the person who asked it, and an operator, may read a question]' };
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -1360,7 +1394,11 @@ export class CanonStore {
       pageId: (r.page_id as string) ?? null,
       pageTitle: (r.page_title as string) ?? null,
       collectionName: (r.collection_name as string) ?? null,
-      details: JSON.parse(r.details_json as string) as Record<string, unknown>,
+      details: redactAuditDetails(
+        r.action as string,
+        JSON.parse(r.details_json as string) as Record<string, unknown>,
+        (r.actor_id as string) === actorId || isOrgOperator(this.db, actorId),
+      ),
     }));
   }
 
