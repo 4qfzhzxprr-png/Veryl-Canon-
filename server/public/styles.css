@@ -123,6 +123,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   border-radius: 6px;
   font-weight: 500;
 }
+/* A nav entry is one line. "My queue" carries a count beside it, and a label
+   that breaks across two lines with the number underneath reads as two
+   things. */
+.topnav a { white-space: nowrap; }
 .topnav a:hover { color: var(--text); text-decoration: none; background: var(--surface-2); }
 .topnav a.active { color: var(--text); background: var(--surface-2); }
 
@@ -630,6 +634,10 @@ label.check input { width: auto; display: inline; margin: 0; }
 .table tbody tr:hover { background: var(--surface-2); }
 
 .audit-details { font-size: 0.84rem; }
+/* The audit table carries five columns and free-form details; below about
+   56rem it must scroll inside its own container rather than pushing the page
+   sideways and taking the filters and the "200 of 1,170" count with it. */
+.audit { min-width: 56rem; }
 .detail-kv { margin-right: 0.8rem; display: inline-block; }
 .action-code { font-size: 0.78rem; }
 
@@ -1812,6 +1820,82 @@ label.check input { width: auto; display: inline; margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.25rem; }
 .type-help { font-size: 0.84rem; margin: 0.4rem 0 0; }
 
+/* ---------- the queue (USER-TESTING.md T2.1) ----------------------------- */
+
+/* The count beside the nav entry. It is the whole reason the entry exists —
+   nobody was told that 25 drafts were waiting — so it reads as a number, not
+   as decoration, and it disappears entirely at zero rather than showing a
+   confident 0 somebody has to parse. */
+.nav-count {
+  display: inline-block;
+  margin-left: 0.4rem;
+  min-width: 1.35em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.queue-lede { max-width: 62ch; margin: 0 0 1.5rem; }
+
+.queue-strand { margin: 0 0 1.9rem; }
+.queue-strand-head {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.queue-strand-count {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 99px;
+  padding: 0.05rem 0.5rem;
+}
+.queue-strand-blurb { margin: 0.25rem 0 0.7rem; font-size: 0.87rem; max-width: 70ch; }
+/* An empty strand is an answer — "nothing is waiting on your approval" — so it
+   is kept and made small, rather than hidden and mistaken for a strand nobody
+   asked about. */
+.queue-strand-empty { margin-bottom: 1rem; }
+.queue-strand-empty .queue-strand-head { font-size: 0.92rem; font-weight: 600; color: var(--muted); }
+.queue-empty { font-size: 0.87rem; margin: 0.1rem 0 0; font-style: italic; }
+.queue-table td:first-child { width: 100%; }
+.queue-meta { font-size: 0.8rem; margin-top: 0.15rem; }
+.queue-note {
+  font-size: 0.84rem;
+  margin-top: 0.3rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border-strong);
+}
+.queue-when { color: var(--muted); font-size: 0.82rem; }
+
+.queue-notices { list-style: none; margin: 0; padding: 0; }
+.queue-notice {
+  border-top: 1px solid var(--border);
+  padding: 0.6rem 0;
+}
+.queue-notice:first-child { border-top: none; }
+.queue-notice-kind {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-right: 0.5rem;
+}
+/* Undelivered is a fact about the mail relay, not about the record: it is said
+   plainly and quietly, because the notice itself has arrived — it is on this
+   screen. */
+.queue-unsent { color: var(--amber); }
+.queue-truncated { font-size: 0.87rem; }
+
 /* ---------- responsive --------------------------------------------------- */
 
 @media (max-width: 900px) {
@@ -1820,7 +1904,10 @@ label.check input { width: auto; display: inline; margin: 0; }
   .editor-grid { grid-template-columns: 1fr; }
   .search-slot { flex: 1 1 auto; }
   .topbar { flex-wrap: wrap; height: auto; padding: 0.5rem 1rem; }
-  .topnav { margin-left: 0; }
+  /* The nav wraps rather than pushing the page sideways. It gained an entry
+     (My queue, with its count) and on a narrow screen the row no longer fits;
+     nothing in this product may scroll horizontally. */
+  .topnav { margin-left: 0; flex-wrap: wrap; }
   .doc-body { padding: 1.25rem 1.25rem; }
   .answer, .refusal, .ask-skeleton { padding-left: 1.1rem; padding-right: 1.1rem; }
   .citation-foot { padding-left: 1.1rem; }

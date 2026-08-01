@@ -51,6 +51,25 @@ const STATUS_LABELS = {
 
 const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
 
+// Mirrors NotificationKind in src/notify.ts. The outbox has been written to
+// since notifications shipped and nothing in this UI ever read it (USER-TESTING
+// T2.1); the queue renders it, and a row needs a word for what it is. An
+// unknown kind falls through to its own code rather than to "notification",
+// because a name we have not learned yet is still more informative than none.
+const NOTIFICATION_LABELS = {
+  mention: 'Mentioned',
+  review_requested: 'Review requested',
+  draft_approved: 'Approved',
+  draft_sent_back: 'Sent back',
+  review_withdrawn: 'Withdrawn',
+  proposal_opened: 'Proposal',
+  proposal_accepted: 'Proposal accepted',
+  proposal_rejected: 'Proposal rejected',
+  proposal_superseded: 'Proposal superseded',
+  review_due: 'Review due',
+  divergence_opened: 'Sources disagree',
+};
+
 // ---------------------------------------------------------------------------
 // State
 
@@ -87,17 +106,24 @@ const state = {
     // Canonical passages. A Canon that serves one and not the others shows
     // exactly the one it serves.
     relations: null, divergences: null,
+    // The queue (GET /queue). Not probed on its own: the first load of the nav
+    // badge answers the question, and a 404 hides the entry.
+    queue: null,
   },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
   sourcesById: null, // cached GET /sources, keyed by id, for reference provenance
+  // The queue (GET /queue, USER-TESTING.md T2.1). `data` is the last answer,
+  // `at` when it arrived: the nav badge and the view share one fetch rather
+  // than each asking, and a stale badge is refreshed on navigation.
+  queue: { data: null, at: 0, loading: null },
 };
 
 function resetFeatures() {
   state.features = {
     search: null, comments: null, ask: null, related: null, references: null, sources: null,
     map: null, wholeGraph: null, attestation: null,
-    relations: null, divergences: null,
+    relations: null, divergences: null, queue: null,
   };
   askProbe = null;
   sourcesProbe = null;
@@ -107,6 +133,10 @@ function resetFeatures() {
   wholeGraphCache = null;
   state.map = null;
   state.sourcesById = null;
+  // Whose queue it was is part of what was cached, so signing out drops it.
+  state.queue = { data: null, at: 0, loading: null };
+  const count = document.getElementById('nav-queue-count');
+  if (count) count.hidden = true;
 }
 
 function readStoredActor() {
@@ -152,6 +182,15 @@ async function api(method, path, body, opts = {}) {
     });
   } catch {
     throw { status: 0, code: 'network', message: 'Cannot reach the Canon server.', details: {} };
+  }
+  // Any write may have changed what is waiting on this person — approving,
+  // sending back, submitting, publishing, closing a divergence, being granted
+  // or losing a membership. Rather than remembering to invalidate the queue at
+  // each of those call sites and forgetting one, the cached queue is dropped
+  // after every request that was not a read, and the next navigation asks
+  // again. Read-only methods keep it, which is what makes the badge cheap.
+  if (res.ok && !['GET', 'HEAD', 'OPTIONS'].includes(method) && path !== '/queue') {
+    state.queue.at = 0;
   }
   let data = null;
   try { data = await res.json(); } catch { /* non-JSON body */ }
@@ -527,6 +566,9 @@ function renderChrome() {
     detectSources();
     detectMap();
     detectFreshness();
+    // The queue's badge is part of the chrome: the first thing somebody who
+    // has just signed in should learn is how much is waiting on them.
+    refreshQueueNav({ force: true });
   } else {
     nav.hidden = true;
     chip.innerHTML = '';
@@ -628,11 +670,17 @@ function freshnessPromise() {
       'the page — but somebody has to run maintenance for it to mean anything.';
   }
   const every = fmtDuration(f.intervalMs);
+  // What the owner is actually told, on THIS deployment. Until the queue
+  // existed the honest version of this sentence ended "and nothing carries it
+  // to the owner" (USER-TESTING.md T2.1): the outbox was written and no screen
+  // ever read it. It is read now — the notice appears in the owner's queue,
+  // whether or not there is a mail relay to carry it any further.
   const notice = f.ownerNotice === 'email'
     ? 'and its owner is emailed'
-    : 'and a notice for its owner is written to the record. ' +
-      '<span class="muted">This deployment has no mail relay configured and Canon has no inbox screen yet, ' +
-      'so nothing reaches the owner until one of those exists.</span>';
+    : 'and a notice for its owner is written to the record, where it appears in their ' +
+      '<a href="#/queue">queue</a>. ' +
+      '<span class="muted">This deployment has no mail relay configured, so it does not travel further ' +
+      'than that.</span>';
   return `When this date passes, ${esc(SYSTEM_ACTOR_NAME)} marks the page Needs Update within ${esc(every)}, ` +
     `${notice}`;
 }
@@ -760,16 +808,32 @@ async function route() {
     await render(viewIdentity);
     return;
   }
+  // `#/inbox`, `#/me` and `#/mine` were the three other things people typed
+  // when they went looking for their own work, and all three used to fall
+  // through to the home view without a word (USER-TESTING.md T2.1). They are
+  // the same request as `#/queue`, so they rewrite to it — `replace`, not an
+  // assignment, so the alias does not sit in the history for Back to land on.
+  if (parts[0] === 'inbox' || parts[0] === 'me' || parts[0] === 'mine') {
+    location.replace(`${location.pathname}${location.search}#/queue`);
+    return;
+  }
   const section = parts[0] === 'audit' ? 'audit'
     : parts[0] === 'ask' ? 'ask'
     : parts[0] === 'sources' ? 'sources'
+    : parts[0] === 'queue' ? 'queue'
     : 'home';
   document.querySelectorAll('#topnav a').forEach((a) => {
     a.classList.toggle('active', a.dataset.nav === section);
   });
+  // The badge is refreshed on every navigation, and cached for a few seconds
+  // (loadQueue), so moving around the record does not re-run the queue. It is
+  // deliberately NOT awaited: a number arriving a moment after the page is a
+  // number, and a page that waits for it is a slower page.
+  refreshQueueNav();
   try {
     if (parts.length === 0) return await render(viewHome);
     if (parts[0] === 'identity') return await render(viewIdentity);
+    if (parts[0] === 'queue') return await render(viewQueue);
     if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
@@ -990,6 +1054,293 @@ async function viewHome() {
   });
   app.querySelector('#new-collection')?.addEventListener('click', openCreate);
   app.querySelector('#new-collection-empty')?.addEventListener('click', openCreate);
+}
+
+// ---------------------------------------------------------------------------
+// The queue (USER-TESTING.md T2.1)
+//
+// "There isn't one. Five nav items, none scoped to me... I found my work by
+// walking five collection sidebars, eyeballing 44 badges, and opening every one
+// of those 44 pages to read the Approver field — the sidebar doesn't show it.
+// 25 were mine. Did I believe I'd found all of it? No, and I still don't."
+//
+// One screen, one call, six strands, and — the part that answers what he
+// actually complained about — a NUMBER BESIDE THE NAV ITEM. He did not fail to
+// find a page; he failed to be told there was anything to find. The count is
+// most of the value and it is the cheapest thing here.
+//
+// Everything on this screen comes from GET /queue, which is assembled server-
+// side from reads that filter by permission in their SELECT (queue.ts). The UI
+// composes nothing and asks about nobody: there is no actor parameter to send.
+//
+// #/queue IS THE ROUTE. `#/inbox`, `#/me` and `#/mine` were the three other
+// things people typed, and all four used to redirect home in silence; they now
+// rewrite to this one rather than being three more names for it, so a
+// bookmarked link keeps working and the address bar still says where you are.
+
+/** How long the nav badge trusts its last answer before asking again. */
+const QUEUE_CACHE_MS = 20_000;
+
+/**
+ * Fetch the queue, at most once every QUEUE_CACHE_MS unless forced, sharing
+ * one in-flight request between the nav badge and the view.
+ *
+ * A server that does not have the route (an older deployment behind a newer
+ * page) answers 404, and the nav entry simply is not there — the same
+ * feature-detection every other optional surface here gets. Any other failure
+ * leaves the last known answer alone: a badge that flickers to zero because one
+ * request timed out is worse than a badge that is thirty seconds old.
+ */
+async function loadQueue({ force = false } = {}) {
+  if (!state.actor) return null;
+  if (!force && state.queue.data && Date.now() - state.queue.at < QUEUE_CACHE_MS) return state.queue.data;
+  if (state.queue.loading) return state.queue.loading;
+  state.queue.loading = (async () => {
+    try {
+      const data = await api('GET', '/queue');
+      state.queue.data = data;
+      state.queue.at = Date.now();
+      state.features.queue = true;
+      return data;
+    } catch (err) {
+      if (err.status === 404 || err.status === 405) state.features.queue = false;
+      throw err;
+    } finally {
+      state.queue.loading = null;
+    }
+  })();
+  return state.queue.loading;
+}
+
+/** The nav entry and its count. Called on every route, and after any act that could change it. */
+async function refreshQueueNav({ force = false } = {}) {
+  const link = document.getElementById('nav-queue');
+  const count = document.getElementById('nav-queue-count');
+  if (!link || !state.actor) return;
+  let data = null;
+  try {
+    data = await loadQueue({ force });
+  } catch {
+    // Feature-detection sets the flag; anything else keeps the last answer.
+  }
+  link.hidden = state.features.queue === false;
+  if (!count) return;
+  const total = Number(data?.counts?.total ?? state.queue.data?.counts?.total ?? 0);
+  count.hidden = total === 0;
+  count.textContent = total > 99 ? '99+' : String(total);
+  // The number is announced, because it is the whole point of putting it here.
+  link.setAttribute('aria-label', total ? `My queue, ${total} waiting` : 'My queue');
+}
+
+/**
+ * Where a notice points, as a hash route. The outbox stores server-side paths
+ * (`/pages/<id>`, sometimes with a `#comment-…` fragment); this router reads
+ * one hash and would take the fragment for part of the page id, so the fragment
+ * is dropped and the notice lands on the page it is about.
+ */
+function noticeHref(link) {
+  const path = String(link ?? '').split('#')[0];
+  return path.startsWith('/') ? `#${path}` : '#/';
+}
+
+/**
+ * One strand: a heading that states what the list is, and the list.
+ *
+ * An EMPTY strand is still drawn, and that is deliberate. The question Marcus
+ * could not answer was not "where is my work" but "have I found all of it" —
+ * "No, and I still don't". A strand that says *nothing is waiting on your
+ * approval* is an answer to that question; a strand that quietly disappears
+ * when it is empty is indistinguishable from a strand that was never asked.
+ * It is drawn small, though: the explanatory line is for a strand that has
+ * something in it to explain.
+ */
+function queueSection(title, blurb, rows, emptyLine) {
+  if (!rows.length) {
+    return `
+      <section class="queue-strand queue-strand-empty">
+        <h2 class="queue-strand-head">${esc(title)}</h2>
+        <p class="muted queue-empty">${esc(emptyLine)}</p>
+      </section>`;
+  }
+  return `
+    <section class="queue-strand">
+      <h2 class="queue-strand-head">${esc(title)} <span class="queue-strand-count">${rows.length}</span></h2>
+      <p class="muted queue-strand-blurb">${blurb}</p>
+      <div class="table-scroll"><table class="table queue-table"><tbody>${rows.join('')}</tbody></table></div>
+    </section>`;
+}
+
+/**
+ * One page in a strand: what it is, where it lives, the one fact this strand
+ * turns on, and — where a strand has one — the sentence somebody wrote about
+ * it. The send-back comment is shown rather than hidden behind a hover: an
+ * author who has to guess what to change is back where the send-back left them.
+ */
+function queuePageRow(page, collections, right, note = null) {
+  const collection = collections.get(page.collectionId);
+  return `
+    <tr>
+      <td>
+        <a href="#/pages/${esc(page.pageId)}">${esc(page.title)}</a>
+        <div class="queue-meta muted">${esc(TYPE_LABELS[page.type] ?? page.type)}
+          · ${esc(collection?.name ?? 'a collection')}</div>
+        ${note ? `<div class="queue-note">${esc(note)}</div>` : ''}
+      </td>
+      <td class="nowrap">${badge(page.status, 'sm')}</td>
+      <td class="nowrap queue-when">${right}</td>
+    </tr>`;
+}
+
+async function viewQueue() {
+  document.querySelectorAll('#topnav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === 'queue'));
+  let queue;
+  try {
+    queue = await loadQueue({ force: true });
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) {
+      app.innerHTML = `
+        <div class="page-narrow">
+          <div class="empty-state">
+            <h2>No queue on this server</h2>
+            <p>This deployment does not serve <code>GET /queue</code>, so there is nothing to scope to you.</p>
+            <p><a class="btn" href="#/">Back to collections</a></p>
+          </div>
+        </div>`;
+      return;
+    }
+    throw err;
+  }
+  const [collectionList] = await Promise.all([api('GET', '/collections'), loadActors().catch(() => null)]);
+  const collections = new Map(collectionList.map((c) => [c.id, c]));
+
+  // The send-back comment lives in the audit event and in the notice the
+  // outbox wrote; the queue reads it off the notice, which is the one place a
+  // reader can already be shown it. Newest wins, per page.
+  const sendBackReason = new Map();
+  for (const n of [...(queue.notices ?? [])].reverse()) {
+    if (n.kind !== 'draft_sent_back') continue;
+    const id = /^\/pages\/([^/#?]+)/.exec(n.link ?? '')?.[1];
+    if (id) sendBackReason.set(id, n.body);
+  }
+
+  const c = queue.counts ?? {};
+  const nothing = !c.total && !(queue.notices ?? []).length;
+
+  const strands = [
+    queueSection(
+      'Waiting for your approval',
+      'Pages In Review that <strong>you</strong> can grant the Canonical mark to — the approver named on the ' +
+        'draft under review, which is the approver the server will accept.',
+      (queue.awaitingMyApproval ?? []).map((p) =>
+        queuePageRow(p, collections, `waiting ${esc(fmtAgo(p.updatedAt) ?? '')}`),
+      ),
+      'Nothing is waiting on your approval.',
+    ),
+    queueSection(
+      'Sent back to you',
+      'An approver returned these with a comment. They are drafts again, and yours to edit.',
+      (queue.sentBackToMe ?? []).map((p) =>
+        queuePageRow(p, collections, esc(fmtAgo(p.updatedAt) ?? ''), sendBackReason.get(p.pageId) ?? null),
+      ),
+      'Nothing has been sent back to you.',
+    ),
+    queueSection(
+      'Yours, and out of date',
+      'Pages you own whose review date has passed. They still carry the mark they were given and can still be ' +
+        'cited; they come back to Canonical the ordinary way — edit, submit, and the named approver accepts.',
+      (queue.myPagesPastReview ?? []).map((p) =>
+        queuePageRow(p, collections, `review due ${esc(fmtDate(p.reviewDate))}`),
+      ),
+      'Nothing you own is past its review date.',
+    ),
+    queueSection(
+      'Contradicted',
+      'Somebody asserted that a page you own conflicts with another page. Canon never resolves one — a person ' +
+        'settles it, and the record keeps what they said.',
+      (queue.conflictsOnMyPages ?? []).map((r) => `
+        <tr>
+          <td>
+            <a href="#/pages/${esc(r.mine.id)}">${esc(r.mine.title)}</a>
+            <div class="queue-meta muted">conflicts with
+              <a href="#/pages/${esc(r.other.id)}">${esc(r.other.title)}</a>
+              · asserted by ${esc(actorName(r.assertedBy))}</div>
+            ${r.note ? `<div class="queue-note">${esc(r.note)}</div>` : ''}
+          </td>
+          <td class="nowrap">${badge(r.mine.status, 'sm')}</td>
+          <td class="nowrap queue-when">${esc(fmtAgo(r.assertedAt) ?? '')}</td>
+        </tr>`),
+      'No conflict has been asserted against a page you own.',
+    ),
+    queueSection(
+      'Sources disagreeing',
+      'A corroborating system is answering differently from the system that owns the fact, on a page you own. ' +
+        'Canon records the disagreement and decides nothing.',
+      (queue.divergencesOnMyPages ?? []).map((d) => `
+        <tr>
+          <td>
+            <a href="#/pages/${esc(d.pageId)}">${esc(d.pageTitle ?? 'the page')}</a>
+            <div class="queue-meta muted">the authority says
+              ${esc(referenceValueText(d.authorityValue) ?? 'nothing')}, a corroborating source says
+              ${esc(referenceValueText(d.otherValue) ?? 'nothing')}</div>
+          </td>
+          <td class="nowrap"><span class="badge badge-unresolved sm">open</span></td>
+          <td class="nowrap queue-when">${esc(fmtAgo(d.observedAt) ?? '')}</td>
+        </tr>`),
+      'No source is contradicting a page you own.',
+    ),
+    queueSection(
+      'Your drafts',
+      'Unpublished work you hold the lock on. Nobody else can see it and nobody else can edit it.',
+      (queue.myDrafts ?? []).map((p) => queuePageRow(p, collections, `edited ${esc(fmtAgo(p.updatedAt) ?? '')}`)),
+      'You have no drafts in progress.',
+    ),
+  ];
+
+  // Notices last, and outside the count. The outbox has no read state, so a
+  // number counting these would never go down; what they add is the sentence —
+  // who asked, who sent it back, what they said — beside the work itself.
+  const notices = (queue.notices ?? []).map((n) => `
+    <li class="queue-notice">
+      <span class="queue-notice-kind">${esc(NOTIFICATION_LABELS[n.kind] ?? n.kind)}</span>
+      <a href="${esc(noticeHref(n.link))}">${esc(n.subject)}</a>
+      <div class="queue-meta muted">${esc(n.body)}</div>
+      <div class="queue-meta muted">${esc(fmtAgo(n.createdAt) ?? '')}${
+        n.sentAt ? '' : ' · <span class="queue-unsent">not yet delivered</span>'
+      }</div>
+    </li>`);
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <h1>My queue</h1>
+        <div class="actions"><button class="btn subtle" id="queue-refresh">Refresh</button></div>
+      </div>
+      <p class="muted queue-lede">Everything the record is waiting on <strong>you</strong> for, across every
+      collection you belong to. Nothing here is somebody else's work, and nothing here is a page you could not
+      already open.</p>
+      ${nothing ? `
+        <div class="empty-state">
+          <h2>Nothing is waiting on you</h2>
+          <p>No approvals, no pages of yours past review, no contradictions against anything you own, and
+          no drafts in progress.</p>
+        </div>` : strands.join('')}
+      ${notices.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">Notices</h2>
+          <p class="muted queue-strand-blurb">What Canon has told you. These are not counted in the badge:
+          the record keeps no read state for them, so a number here would never go down.</p>
+          <ul class="queue-notices">${notices.join('')}</ul>
+        </section>` : ''}
+      ${queue.truncated ? `
+        <p class="muted queue-truncated">One of these lists is showing as much as this screen carries. There is
+        more; narrow it with a <a href="#/">collection</a> or a query.</p>` : ''}
+    </div>`;
+
+  app.querySelector('#queue-refresh')?.addEventListener('click', async () => {
+    await refreshQueueNav({ force: true });
+    route();
+  });
+  await refreshQueueNav();
 }
 
 // ---------------------------------------------------------------------------
@@ -2848,11 +3199,17 @@ async function viewAudit(query = {}) {
       moreHost.innerHTML = '';
       return;
     }
+    // Five columns, one of them free-form detail JSON, so the table has a real
+    // minimum width and a narrow viewport must scroll IT rather than the page.
+    // Same container the Sources table uses; a body that scrolls sideways
+    // takes the filters and the count off screen with it.
     tableHost.innerHTML = `
-      <table class="table audit">
-        <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Where</th><th>Details</th></tr></thead>
-        <tbody>${shown.map(rowHtml).join('')}</tbody>
-      </table>`;
+      <div class="table-scroll">
+        <table class="table audit">
+          <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Where</th><th>Details</th></tr></thead>
+          <tbody>${shown.map(rowHtml).join('')}</tbody>
+        </table>
+      </div>`;
     // The sentence that was missing. A screen showing a page and saying
     // nothing about the rest asserts a completeness it does not have.
     const all = shown.length >= matching;

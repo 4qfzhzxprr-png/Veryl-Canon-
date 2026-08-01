@@ -194,6 +194,31 @@ in the knowledge map's list view, that she owns a Canonical policy with an open
 conflict against it. Nothing told her. `#/queue`, `#/inbox`, `#/me` and
 `#/mine` all silently redirect home. Every fact this needs already exists in
 the record and none of it is rendered.
+**Fixed.** `#/queue` is a screen and `GET /queue` is the read behind it
+(`server/src/queue.ts`), with the count beside the nav entry — which is what he
+actually asked for, since he did not fail to find the pages, he failed to be
+told there was anything to find. `#/inbox`, `#/me` and `#/mine` rewrite to it
+rather than falling through in silence. Six strands, each one work the asking
+actor can act on: pages waiting on **their** approval, drafts sent back to them,
+pages they own that are past review, conflicts asserted against a page they own,
+sources contradicting one, and their own drafts. The approver strand reads the
+**draft's** approver through the same rule `approve` enforces — `awaitingApprovalBy`
+in `queries.ts`, mirroring the T1.3 invariant clause for clause — so it lists
+work the server will actually accept and nothing else. The queue writes no query
+of its own: every strand is a read that already filters by membership in its
+`SELECT`, which is why a spanning screen can be trusted. The notification outbox
+is rendered for the first time since it shipped, as the last strand and outside
+the count (there is no read state to count against), which also lets the
+editor's freshness promise stop saying that nothing carries a notice to the
+owner. Verified against the demo corpus: the approver of 25 in-review pages sees
+exactly those 25 and every other person sees none of them; a page-owner sees her
+two stale policies, the conflict against her Canonical plan page, and her
+`review_due` notices; a colleague who can read one of those pages does not have
+it in his queue; `?actor=` cannot change whose queue it is; a passport is
+refused at the door. What is not in it: open agent proposals, because
+`ProposalService.list` answers only per page and there is no spanning
+permission-filtered read to compose — the one strand this queue is missing, and
+it is named in `queue.ts` rather than left to be noticed.
 
 **T2.2 · The audit log is not a population an auditor can rely on.**
 *(Ruth #5, #6, #7 — "the finding I would lead with"; Marcus, Priya.)* The

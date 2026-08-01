@@ -162,6 +162,16 @@ export interface DivergenceHost {
 export interface DivergenceFilter {
   state?: DivergenceState;
   collectionId?: string;
+  /**
+   * Only divergences on pages owned by this actor. The owner is the person §7
+   * already notifies when one opens, so "the record disagrees with itself on a
+   * page you are accountable for" is a question the record can answer, and
+   * USER-TESTING.md T2.1 is what happens when nothing asks it: a page owner
+   * learned about a contradiction against her own Canonical policy by accident,
+   * from a list view she had opened for another reason. Applied in the SELECT
+   * alongside the membership join, never after it.
+   */
+  ownerId?: string;
   limit?: number;
 }
 
@@ -551,6 +561,7 @@ export class DivergenceService {
     this.host.getActor(actorId);
     const state = this.validState(filter.state);
     const collectionId = filter.collectionId ?? null;
+    const ownerId = filter.ownerId ?? null;
     const limit = Math.min(Math.max(filter.limit ?? DEFAULT_DIVERGENCE_LIMIT, 1), MAX_DIVERGENCE_LIMIT);
     const rows = this.db
       .prepare(
@@ -558,10 +569,11 @@ export class DivergenceService {
            JOIN pages p ON p.id = d.page_id
            JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
           WHERE (? IS NULL OR d.state = ?) AND (? IS NULL OR p.collection_id = ?)
+            AND (? IS NULL OR p.owner_id = ?)
           ORDER BY d.observed_at DESC, d.rowid DESC
           LIMIT ?`,
       )
-      .all(actorId, state, state, collectionId, collectionId, limit) as Record<string, unknown>[];
+      .all(actorId, state, state, collectionId, collectionId, ownerId, ownerId, limit) as Record<string, unknown>[];
     return rows.map(toDivergence);
   }
 

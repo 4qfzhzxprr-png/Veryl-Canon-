@@ -30,6 +30,26 @@ import { isBackdated, isNotYetInForce, recordAnchorDate } from './effectivedate.
 // day be forgotten. Saved queries add nothing to this: a saved query is a stored
 // filter, run under the permissions of whoever runs it.
 //
+// THREE MEMBERS THAT ARE NOT COLUMNS ON `pages`, AND WHY THEY LIVE HERE ANYWAY
+//
+// `awaitingApprovalBy`, `sentBackTo` and `draftHeldBy` are what a person means
+// by "my work" (USER-TESTING.md T2.1), and none of the three is a column: the
+// approver a page in review is waiting on lives in the DRAFT's `fields_json`,
+// who holds a draft lives in `drafts.editor_id`, and "was this sent back" is a
+// fact about the audit log. A Director of Compliance found his 25 pending
+// approvals by opening 44 pages one at a time to read a field the listing did
+// not show, which is what a filter surface is for.
+//
+// They are here rather than in a service of their own for one reason: the
+// permission join. Every one of them narrows the SAME candidate SELECT that
+// already joins `collection_members` for the asking actor, so a queue can no
+// more show a page the asker may not see than a query can. A second query path
+// that assembled somebody's work from `drafts` and `audit_events` directly is
+// exactly where the leak gets in, and it would be a leak into the one screen
+// people check every morning. Each is a bounded sub-clause — an EXISTS, or a
+// scalar subquery over one page's workflow events — with bound parameters only,
+// and each states in prose which server rule it is the read-side mirror of.
+//
 // WHAT IS DELIBERATELY NOT HERE
 //
 // `labels`. FEATURES.md §1 lists labels, but the record has no label field yet —
@@ -59,6 +79,30 @@ export type QueryDirection = 'asc' | 'desc';
 const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical', 'needs_update', 'archived'];
 
 /**
+ * The types whose review names ONE approver, read off TYPE_RULES rather than
+ * listed. On any other reviewed type (a Plan) the draft names nobody and every
+ * holder of `approve` on the collection may accept it, which is the branch
+ * `awaitingApprovalBy` takes below.
+ */
+const APPROVER_TYPES: readonly DocType[] = DOC_TYPES.filter((t) => TYPE_RULES[t].requiresApprover);
+
+/**
+ * The collection roles that satisfy `approve`, derived from ROLE_RANK exactly
+ * as `requireRole` derives it — the same question, asked in SQL because the
+ * queue asks it about thousands of pages at once rather than about one.
+ */
+const APPROVING_ROLES: readonly Role[] = (Object.keys(ROLE_RANK) as Role[]).filter(
+  (r) => ROLE_RANK[r] >= ROLE_RANK.approve,
+);
+
+/**
+ * The events that are acts in the review workflow, newest-first over one page.
+ * `sentBackTo` reads the last of them: a send-back is the current state of a
+ * page only until its author does something about it.
+ */
+const WORKFLOW_ACTIONS = ['page.send_back', 'page.submit', 'page.approve', 'page.publish', 'page.withdraw'] as const;
+
+/**
  * The filter. Every member is optional; an empty query means "every page I may
  * see". Within a member the values are OR-ed (types: ['policy','spec'] is
  * either); across members they are AND-ed, which is what a person means by
@@ -69,7 +113,39 @@ export interface PageQuery {
   types?: DocType[];
   statuses?: PageStatus[];
   ownerIds?: string[];
+  /**
+   * The approver of the PUBLISHED version — `pages.approver_id`, which is
+   * history: who granted the mark to what is on screen. It is NOT who a page in
+   * review is waiting on; that is `awaitingApprovalBy` below, and the two
+   * legitimately differ (store.ts, "the review workflow" invariant).
+   */
   approverIds?: string[];
+  /**
+   * Pages In Review that this actor can currently approve.
+   *
+   * The read-side mirror of `CanonStore.approve`, matched to it clause for
+   * clause, because a queue that lists work the server would refuse is worse
+   * than no queue:
+   *
+   *   * the DRAFT's approver, not the page row's. `approve` publishes the draft,
+   *     so the approver it enforces is the one named in the draft's
+   *     `fields_json` — the same answer `reviewState` publishes to every screen.
+   *   * on a type that names no approver (a Plan), any holder of `approve` on
+   *     the collection accepts it, so every one of them has it in their queue.
+   *   * `approve` also requires the `approve` role, on every type. A person
+   *     named as approver who does not hold it would be shown a page they
+   *     cannot act on, so they are not shown it here either.
+   */
+  awaitingApprovalBy?: string;
+  /**
+   * Pages whose most recent act in the review workflow was a send-back, with the
+   * draft still in this actor's hands: work returned to a named person with a
+   * comment saying why. It stops being sent-back the moment they resubmit,
+   * because the resubmission is then the most recent act.
+   */
+  sentBackTo?: string;
+  /** Pages carrying an open draft this actor holds — their work in progress. */
+  draftHeldBy?: string;
   /** True: only pages with an owner. False: only pages without one (health's question). */
   hasOwner?: boolean;
   /** Only pages with a review date at all — the ones freshness can act on. */
@@ -261,6 +337,49 @@ export class QueryService {
     if (filter.approverIds?.length) {
       clauses.push(`p.approver_id IN (${placeholders(filter.approverIds.length)})`);
       params.push(...filter.approverIds);
+    }
+    // "Waiting on me", in SQL, against the same three conditions `approve`
+    // enforces in TypeScript. `APPROVER_TYPES` and `APPROVING_ROLES` are derived
+    // from TYPE_RULES and ROLE_RANK rather than written out, so a fifth document
+    // type or a sixth role changes this clause by changing those tables.
+    if (filter.awaitingApprovalBy) {
+      clauses.push(
+        `(p.status = 'in_review'
+          AND EXISTS (SELECT 1 FROM collection_members am
+                       WHERE am.collection_id = p.collection_id AND am.actor_id = ?
+                         AND am.role IN (${placeholders(APPROVING_ROLES.length)}))
+          AND EXISTS (SELECT 1 FROM drafts d
+                       WHERE d.page_id = p.id
+                         AND (CASE WHEN p.type IN (${placeholders(APPROVER_TYPES.length)})
+                                   THEN json_extract(d.fields_json, '$.approverId') = ?
+                                   ELSE 1 END)))`,
+      );
+      params.push(filter.awaitingApprovalBy, ...APPROVING_ROLES, ...APPROVER_TYPES, filter.awaitingApprovalBy);
+    }
+    // Sent back, and not yet resubmitted. The audit log is the record of who did
+    // what, so it is also where "what happened to this page last" is asked —
+    // `store.lastSubmission` reads it for the same reason. The scalar subquery
+    // takes the most recent event from the workflow's own vocabulary and asks
+    // whether it was the send-back; anything the author has done since (a
+    // resubmission, a withdrawal, a direct publish) displaces it, and the page
+    // leaves this list without anybody having to remember to clear a flag.
+    if (filter.sentBackTo) {
+      clauses.push(
+        `(p.status = 'draft'
+          AND EXISTS (SELECT 1 FROM drafts d WHERE d.page_id = p.id AND d.editor_id = ?)
+          AND (SELECT a.action FROM audit_events a
+                WHERE a.page_id = p.id
+                  AND a.action IN (${placeholders(WORKFLOW_ACTIONS.length)})
+                ORDER BY a.id DESC LIMIT 1) = 'page.send_back')`,
+      );
+      params.push(filter.sentBackTo, ...WORKFLOW_ACTIONS);
+    }
+    // The page lock, read as a filter. `editDraft` refuses a draft somebody else
+    // holds, so "the draft on this page is mine" and "this page is mine to
+    // finish" are the same sentence.
+    if (filter.draftHeldBy) {
+      clauses.push('EXISTS (SELECT 1 FROM drafts d WHERE d.page_id = p.id AND d.editor_id = ?)');
+      params.push(filter.draftHeldBy);
     }
     if (filter.hasOwner === true) clauses.push('p.owner_id IS NOT NULL');
     if (filter.hasOwner === false) clauses.push('p.owner_id IS NULL');
@@ -574,6 +693,13 @@ function stringList(value: unknown, field: string): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** One actor id, for the members that name a person rather than a set of them. */
+function actorish(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || !value.trim()) throw new CanonError('invalid', `${field} takes one actor id`);
+  return value;
+}
+
 function dateish(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string') throw new CanonError('invalid', `${field} takes an ISO date`);
@@ -622,6 +748,13 @@ export function validateQuery(raw: PageQuery): PageQuery {
   if (ownerIds) query.ownerIds = ownerIds;
   const approverIds = stringList(raw.approverIds, 'approverIds');
   if (approverIds) query.approverIds = approverIds;
+
+  const awaitingApprovalBy = actorish(raw.awaitingApprovalBy, 'awaitingApprovalBy');
+  if (awaitingApprovalBy) query.awaitingApprovalBy = awaitingApprovalBy;
+  const sentBackTo = actorish(raw.sentBackTo, 'sentBackTo');
+  if (sentBackTo) query.sentBackTo = sentBackTo;
+  const draftHeldBy = actorish(raw.draftHeldBy, 'draftHeldBy');
+  if (draftHeldBy) query.draftHeldBy = draftHeldBy;
 
   const hasOwner = boolish(raw.hasOwner, 'hasOwner');
   if (hasOwner !== undefined) query.hasOwner = hasOwner;

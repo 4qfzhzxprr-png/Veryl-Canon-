@@ -46,7 +46,7 @@ import { Source, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
 import { Divergence, DivergenceFilter, DivergenceService, DivergenceState } from './divergence.js';
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
-import { PageRelationView, RelationInput, RelationService } from './relations.js';
+import { OwnedConflict, PageRelationView, RelationInput, RelationService } from './relations.js';
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
 import {
   normalizeBasis,
@@ -55,6 +55,7 @@ import {
   validateEffectiveDateShape,
 } from './effectivedate.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
+import { QueueService, WorkQueue } from './queue.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
 import { AuditChainVerification, verifyAuditChain } from './auditchain.js';
 import { refuseSystemActor, SYSTEM_ACTOR_ID, SYSTEM_ACTOR_NAME } from './system.js';
@@ -145,6 +146,9 @@ export class CanonStore {
   // queries.ts; delegates at the end of this class, same as everything above.
   private readonly freshness: FreshnessService;
   private readonly queries: QueryService;
+  // The queue (USER-TESTING.md T2.1) lives in queue.ts. It writes no query of
+  // its own: it composes the permission-filtered reads above for one actor.
+  private readonly queue: QueueService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -166,6 +170,7 @@ export class CanonStore {
     this.relations = new RelationService(db, this);
     this.freshness = new FreshnessService(db, this, this.notifier);
     this.queries = new QueryService(db, this);
+    this.queue = new QueueService(db, this);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -1703,6 +1708,19 @@ export class CanonStore {
 
   removeRelation(actorId: string, relationId: string): void {
     this.relations.remove(actorId, relationId);
+  }
+
+  /** Every asserted conflict against a page this owner is accountable for. */
+  listConflictsForOwner(actorId: string, ownerId: string, options: { limit?: number } = {}): OwnedConflict[] {
+    return this.relations.listConflictsForOwner(actorId, ownerId, options);
+  }
+
+  // ---- the queue (USER-TESTING.md T2.1) ---------------------------------
+  // A thin delegate; the argument lives in queue.ts. It answers for the ASKING
+  // actor and takes no subject parameter, deliberately: see the note there.
+
+  myQueue(actorId: string, options: { on?: string } = {}): WorkQueue {
+    return this.queue.queue(actorId, options);
   }
 
   /**

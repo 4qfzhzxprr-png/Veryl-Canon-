@@ -174,6 +174,99 @@ test('queries: permission filtering is in the SELECT — a non-member sees nothi
   expectCode(() => store.runQuery('no-such-actor', {}), 'not_found');
 });
 
+test('queries: awaitingApprovalBy reads the DRAFT\'s approver, never the published page\'s', () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const nina = store.createActor({ kind: 'person', name: 'Nina', email: 'nina@example.com' });
+  store.setMember(dana.id, collection.id, nina.id, 'approve');
+
+  // Published, and approved by Iris: `pages.approver_id` now names her. Its
+  // review date has passed, so the sweep flips it to Needs Update and it comes
+  // back to Canonical through the ordinary workflow (FEATURES.md §3) — which is
+  // exactly the situation a Director of Compliance spends his week in.
+  const page = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Retention policy', {
+    ownerId: marc.id,
+    reviewDate: daysFromToday(-1),
+  });
+  store.sweepFreshness(dana.id);
+  // The next draft proposes Nina instead, and goes into review. Both rows are
+  // true about different questions (store.ts, the review workflow invariant),
+  // and only one of them is "who is this waiting on".
+  store.editDraft(marc.id, page.id, { body: 'Second version.', fields: { approverId: nina.id } });
+  store.submitForReview(marc.id, page.id);
+
+  assert.deepEqual(store.runQuery(nina.id, { awaitingApprovalBy: nina.id }).map((r) => r.pageId), [page.id]);
+  assert.deepEqual(store.runQuery(iris.id, { awaitingApprovalBy: iris.id }), []);
+  // The page row still names Iris, and `approverIds` still answers that — the
+  // two members are two questions, not two spellings of one.
+  assert.deepEqual(store.runQuery(dana.id, { approverIds: [iris.id] }).map((r) => r.pageId), [page.id]);
+  assert.equal(store.runQuery(dana.id, { approverIds: [nina.id] }).length, 0);
+});
+
+test('queries: awaitingApprovalBy lists only work the server would actually accept', () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const nina = store.createActor({ kind: 'person', name: 'Nina', email: 'nina@example.com' });
+  store.setMember(dana.id, collection.id, nina.id, 'approve');
+
+  // A Plan names no approver, so `approve` accepts any holder of the role: it
+  // is waiting on all of them, and appears in all of their queues.
+  const plan = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Migration plan' });
+  store.editDraft(marc.id, plan.id, { body: 'Steps.', fields: { ownerId: marc.id } });
+  store.submitForReview(marc.id, plan.id);
+  assert.deepEqual(store.runQuery(iris.id, { awaitingApprovalBy: iris.id }).map((r) => r.pageId), [plan.id]);
+  assert.deepEqual(store.runQuery(nina.id, { awaitingApprovalBy: nina.id }).map((r) => r.pageId), [plan.id]);
+  assert.deepEqual(store.runQuery(dana.id, { awaitingApprovalBy: dana.id }).map((r) => r.pageId), [plan.id]);
+  // Marc holds `edit`, so no Plan is ever waiting on him, and he did not
+  // acquire one by submitting it.
+  assert.deepEqual(store.runQuery(marc.id, { awaitingApprovalBy: marc.id }), []);
+
+  // A page may name an approver who does not hold the role. `approve` would
+  // refuse them, so the queue does not offer it: the whole promise of a queue
+  // is that everything in it is something you can act on.
+  const spec = store.createPage(marc.id, { collectionId: collection.id, type: 'spec', title: 'Vault spec' });
+  store.editDraft(marc.id, spec.id, {
+    body: 'How it works.',
+    fields: { ownerId: marc.id, approverId: dana.id },
+  });
+  const speaker = store.createActor({ kind: 'person', name: 'Speaker', email: 'speaker@example.com' });
+  store.setMember(dana.id, collection.id, speaker.id, 'edit');
+  const spec2 = store.createPage(marc.id, { collectionId: collection.id, type: 'spec', title: 'Second spec' });
+  store.editDraft(marc.id, spec2.id, {
+    body: 'How that works.',
+    fields: { ownerId: marc.id, approverId: speaker.id },
+  });
+  store.submitForReview(marc.id, spec.id);
+  store.submitForReview(marc.id, spec2.id);
+  assert.deepEqual(store.runQuery(speaker.id, { awaitingApprovalBy: speaker.id }), []);
+  assert.deepEqual(store.runQuery(dana.id, { awaitingApprovalBy: dana.id }).map((r) => r.title).sort(), [
+    'Migration plan',
+    'Vault spec',
+  ]);
+});
+
+test('queries: sentBackTo holds until its author does something about it', () => {
+  const { store, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'spec', title: 'Vault spec' });
+  store.editDraft(marc.id, page.id, { body: 'First cut.', fields: { ownerId: marc.id, approverId: iris.id } });
+
+  // A draft in progress is not a draft sent back, and nobody has sent it back.
+  assert.deepEqual(store.runQuery(marc.id, { draftHeldBy: marc.id }).map((r) => r.pageId), [page.id]);
+  assert.deepEqual(store.runQuery(marc.id, { sentBackTo: marc.id }), []);
+
+  store.submitForReview(marc.id, page.id);
+  // In review, the draft is still Marc's but it is not his move.
+  assert.deepEqual(store.runQuery(marc.id, { sentBackTo: marc.id }), []);
+
+  store.sendBack(iris.id, page.id, { comment: 'Name the escalation path.' });
+  assert.deepEqual(store.runQuery(marc.id, { sentBackTo: marc.id }).map((r) => r.pageId), [page.id]);
+  // It was sent back to whoever holds the draft, and to nobody else.
+  assert.deepEqual(store.runQuery(iris.id, { sentBackTo: iris.id }), []);
+
+  // Resubmitting is the later act, so the send-back stops being the answer —
+  // no flag is cleared anywhere, because none was ever set.
+  store.submitForReview(marc.id, page.id);
+  assert.deepEqual(store.runQuery(marc.id, { sentBackTo: marc.id }), []);
+});
+
 test('queries: the filter vocabulary is fixed, and a typo is refused rather than silently empty', () => {
   const { store, marc, iris, compliance, collection } = setup();
   const canonical = canonicalPolicy(store, marc.id, iris.id, collection.id, 'Retention policy', {

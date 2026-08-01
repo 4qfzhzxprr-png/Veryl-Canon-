@@ -154,6 +154,16 @@ export interface PageRelationView extends PageRelation {
   other: RelationOtherPage;
 }
 
+/**
+ * A conflict listed for the person accountable for one of its ends: the same
+ * view as `list`, anchored on the page they own, plus that page's own title and
+ * status so a listing can name it without a second read.
+ */
+export interface OwnedConflict extends PageRelationView {
+  /** The page this actor owns — the one `pageId` names. */
+  mine: RelationOtherPage;
+}
+
 export interface RelationInput {
   toPageId: string;
   kind: RelationKind;
@@ -353,6 +363,95 @@ export class RelationService {
         },
       ),
     );
+  }
+
+  /**
+   * Every `conflicts_with` assertion touching a page `ownerId` owns, across the
+   * record, newest assertion first.
+   *
+   * §7 makes contradiction explicit so that it may be DRAWN, and the knowledge
+   * map draws it. What nothing did was TELL the owner: a new contributor found
+   * out that her own Canonical policy had a conflict asserted against it by
+   * opening the map's list view for an unrelated reason (USER-TESTING.md T2.1).
+   * A relation is asserted by somebody else, about her page, and the record
+   * held it silently. This is the read that closes that.
+   *
+   * Owner means `pages.owner_id`, and here that IS the right column — unlike
+   * the approver, whose mid-review answer lives on the draft (store.ts). A
+   * conflict is asserted against what is PUBLISHED, and the published page's
+   * owner is the person §3 makes accountable for keeping it true.
+   *
+   * Permission-filtered on BOTH ends in the SELECT, exactly as `list` is: the
+   * owned page must be in a collection this asker belongs to, and so must the
+   * page it conflicts with. A conflict whose far end is invisible is absent
+   * rather than half-rendered, because "your policy conflicts with something
+   * you may not see" is a sentence that tells you about the something.
+   *
+   * Archived pages are left out at either end. Archiving is how the record says
+   * a page is no longer live; a contradiction with a retired page is not work.
+   */
+  listConflictsForOwner(actorId: string, ownerId: string, options: { limit?: number } = {}): OwnedConflict[] {
+    this.host.getActor(actorId);
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 500);
+    const rows = this.db
+      .prepare(
+        `SELECT r.id, r.from_page_id, r.to_page_id, r.kind, r.note, r.asserted_by, r.asserted_at,
+                mine.id AS mine_id, mine.title AS mine_title, mine.type AS mine_type,
+                mine.status AS mine_status, mine.collection_id AS mine_collection_id,
+                o.id AS other_id, o.title AS other_title, o.type AS other_type,
+                o.status AS other_status, o.collection_id AS other_collection_id
+           FROM page_relations r
+           JOIN pages mine ON mine.id IN (r.from_page_id, r.to_page_id)
+                          AND mine.owner_id = ? AND mine.status != 'archived'
+           JOIN collection_members mm ON mm.collection_id = mine.collection_id AND mm.actor_id = ?
+           JOIN pages o ON o.id = CASE WHEN r.from_page_id = mine.id THEN r.to_page_id ELSE r.from_page_id END
+                       AND o.status != 'archived'
+           JOIN collection_members om ON om.collection_id = o.collection_id AND om.actor_id = ?
+          WHERE r.kind = 'conflicts_with'
+          ORDER BY r.asserted_at DESC, r.rowid DESC
+          LIMIT ?`,
+      )
+      .all(ownerId, actorId, actorId, limit) as Record<string, unknown>[];
+
+    // One conflict, one row in the answer. When the owner owns BOTH ends the
+    // join matches the relation twice, once anchored on each; the pair is one
+    // assertion and one piece of work, so the first anchor wins and the second
+    // is dropped rather than listed as a second conflict.
+    const seen = new Set<string>();
+    const out: OwnedConflict[] = [];
+    for (const row of rows) {
+      const id = row.id as string;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const mine: RelationOtherPage = {
+        id: row.mine_id as string,
+        title: row.mine_title as string,
+        type: row.mine_type as DocType,
+        status: row.mine_status as PageStatus,
+        collectionId: row.mine_collection_id as string,
+      };
+      const view = this.view(
+        {
+          id,
+          fromPageId: row.from_page_id as string,
+          toPageId: row.to_page_id as string,
+          kind: row.kind as RelationKind,
+          note: (row.note as string) ?? null,
+          assertedBy: row.asserted_by as string,
+          assertedAt: row.asserted_at as string,
+        },
+        mine.id,
+        {
+          id: row.other_id as string,
+          title: row.other_title as string,
+          type: row.other_type as DocType,
+          status: row.other_status as PageStatus,
+          collectionId: row.other_collection_id as string,
+        },
+      );
+      out.push({ ...view, mine });
+    }
+    return out;
   }
 
   /**

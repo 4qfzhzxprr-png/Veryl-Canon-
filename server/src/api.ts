@@ -373,9 +373,12 @@ const routes: Route[] = [
 
   // Structured queries (FEATURES.md §6). A typed filter object, not a query
   // language: `{ collectionIds, types, statuses, ownerIds, approverIds,
-  // hasOwner, hasReviewDate, hasEffectiveDate, hasEffectiveDateBasis,
-  // backdated, reviewDateBefore/After, updatedBefore/After,
-  // createdBefore/After, sort, direction, limit }`. `backdated: true` with
+  // awaitingApprovalBy, sentBackTo, draftHeldBy, hasOwner, hasReviewDate,
+  // hasEffectiveDate, hasEffectiveDateBasis, backdated,
+  // reviewDateBefore/After, updatedBefore/After, createdBefore/After, sort,
+  // direction, limit }`. `awaitingApprovalBy` is the one that reads the DRAFT's
+  // approver rather than the page row's, and the three after `approverIds` are
+  // what the queue is built from (queue.ts). `backdated: true` with
   // `hasEffectiveDateBasis: false` is the sample behind record health's
   // `backdatedWithoutBasis` count (USER-TESTING.md T1.5): the pages claiming to
   // pre-date this record with nothing recorded about why. Naming `savedQueryId` runs
@@ -469,6 +472,21 @@ const routes: Route[] = [
         )
       : bundle;
   }),
+
+  // The queue (USER-TESTING.md T2.1): everything the record is waiting on the
+  // ASKING actor for, assembled from the permission-filtered reads above and
+  // nothing else. There is no `/queue/:actorId` and no `?actor=` — the subject
+  // is whoever is asking, which is the argument queue.ts makes at length.
+  //
+  // Deliberately absent from agentauth.ts's route table, so a passport is
+  // refused at the door. Two reasons, and the second is the load-bearing one:
+  // a queue is a person's morning screen, and the Registry's narrowing works by
+  // filtering a flat list of rows by `collectionId` — it cannot reach page rows
+  // nested inside six named strands, which is the same reason `GET /queries/:id`
+  // returns a definition and never results.
+  route('GET', '/queue', ({ store, actorId, query }) =>
+    store.myQueue(actorId, { on: query.get('on') ?? undefined }),
+  ),
 
   // Record health (FEATURES.md §8), built on the query surface above.
   route('GET', '/collections/:id/health', ({ store, actorId, params, query }) =>
