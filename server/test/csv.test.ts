@@ -5,7 +5,7 @@ import { createApi } from '../src/api.js';
 import { AUDIT_CSV_COLUMNS, AUDIT_CSV_MAX_ROWS, auditCsv, csvField, csvRow } from '../src/csv.js';
 import { openDb } from '../src/db.js';
 import type { AuditEvent } from '../src/model.js';
-import { CanonStore } from '../src/store.js';
+import { AUDIT_PAGE_DEFAULT, CanonStore } from '../src/store.js';
 
 // An independent RFC 4180 reader, so the export is checked against the format
 // rather than against the writer that produced it.
@@ -149,12 +149,15 @@ test('API: GET /audit.csv downloads the filtered log as CSV', async () => {
     assert.equal(filtered[1]![4], 'page.publish');
     assert.equal(filtered[1]![6], page.id);
 
-    const byActor = parseCsv(
-      await (
-        await fetch(`${base}/audit.csv?actor=${dana.id}&limit=1`, { headers: { 'x-actor-id': dana.id } })
-      ).text(),
-    );
-    assert.equal(byActor.length, 2, 'limit is honoured');
+    // `limit` is REFUSED rather than honoured, and refused rather than
+    // ignored. An export bounded by a caller's row count is a sample wearing a
+    // population's clothes, and silently dropping the parameter would leave
+    // the caller believing they had asked for one.
+    const limited = await fetch(`${base}/audit.csv?actor=${dana.id}&limit=1`, {
+      headers: { 'x-actor-id': dana.id },
+    });
+    assert.equal(limited.status, 400);
+    assert.match((await limited.json()).message, /takes no limit/);
 
     const unauthenticated = await fetch(`${base}/audit.csv`);
     assert.equal(unauthenticated.status, 401);
@@ -163,15 +166,35 @@ test('API: GET /audit.csv downloads the filtered log as CSV', async () => {
   }
 });
 
-test('csv: the export is bounded by a documented row cap', () => {
+// USER-TESTING.md T2.2. An export is the whole filtered population or it is
+// worthless as evidence: a file holding the most recent N rows of a filter,
+// with nothing on it to say so, is a sample presented as a population — and it
+// is the artefact that gets attached to a report and read by somebody who was
+// not there. So the export takes no `limit` at all, and it walks past the page
+// size that bounds the interactive listing.
+test('csv: the export carries the whole filtered population, past one page of it', () => {
   const store = new CanonStore(openDb(':memory:'));
   const dana = store.createActor({ kind: 'person', name: 'Dana' });
   const collection = store.createCollection(dana.id, { name: 'Busy' });
-  // More audit events than the cap, cheaply: every page creation writes one.
-  for (let i = 0; i < 40; i++) {
+  // Comfortably more events than one page of the interactive listing, cheaply:
+  // every page creation writes one.
+  for (let i = 0; i < AUDIT_PAGE_DEFAULT + 20; i++) {
     store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: `N${i}` });
   }
-  const response = store.auditCsv(dana.id, { limit: 10 });
-  assert.equal(response.body.split('\r\n').filter(Boolean).length, 11, 'header plus ten records');
-  assert.equal(store.auditCsv(dana.id, { limit: 99_999 }).headers['x-canon-row-cap'], String(AUDIT_CSV_MAX_ROWS));
+  const total = store.auditSummary(dana.id).matching;
+  assert.ok(total > AUDIT_PAGE_DEFAULT, `needs more than one page to be a real test, had ${total}`);
+
+  const response = store.auditCsv(dana.id);
+  const records = response.body.split('\r\n').filter(Boolean).length - 1; // less the header
+  assert.equal(records, total, 'every matching event is in the file');
+  assert.equal(response.headers['x-canon-rows'], String(total));
+  assert.equal(response.headers['x-canon-truncated'], 'false');
+  assert.equal(response.headers['x-canon-row-cap'], String(AUDIT_CSV_MAX_ROWS));
+
+  // A filter narrows the file, and the file is still the WHOLE of what matched.
+  const filtered = store.auditCsv(dana.id, { action: 'page.create' });
+  assert.equal(
+    filtered.body.split('\r\n').filter(Boolean).length - 1,
+    store.auditSummary(dana.id, { action: 'page.create' }).matching,
+  );
 });

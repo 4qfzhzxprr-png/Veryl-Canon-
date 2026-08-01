@@ -10,7 +10,7 @@ import {
   visibleActors,
 } from './auth.js';
 import { freshnessScheduleFor } from './freshness.js';
-import { countParam, objectBody, optionalCount, requiredCount } from './input.js';
+import { countParam, idParam, instantParam, objectBody, optionalCount, requiredCount } from './input.js';
 import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
@@ -200,14 +200,25 @@ const routes: Route[] = [
     }),
   ),
 
+  // One page of the log, newest first. `?before=<event id>` walks older: the
+  // cursor for the next page is the id of the last event in this one. The
+  // shape is unchanged — an array of events — because every existing caller
+  // and test reads it that way; how many matched in total is a different
+  // question with its own route below.
   route('GET', '/audit', ({ store, actorId, query }) =>
     store.queryAudit(actorId, {
-      actorId: query.get('actor') ?? undefined,
-      action: query.get('action') ?? undefined,
-      from: query.get('from') ?? undefined,
-      to: query.get('to') ?? undefined,
+      ...auditFilterFrom(query),
+      before: countParam(query.get('before'), 'before'),
       limit: countParam(query.get('limit'), 'limit'),
     }),
+  ),
+  // How big the filtered population is, and which actions are in it. Both are
+  // things the screen cannot honestly draw without: a table showing a page and
+  // saying nothing about the rest asserts a completeness it does not have, and
+  // an action list hard-coded in the client was missing ten action types the
+  // record actually writes while offering four it never does.
+  route('GET', '/audit/summary', ({ store, actorId, query }) =>
+    store.auditSummary(actorId, auditFilterFrom(query)),
   ),
 
   route('POST', '/pages/:id/comments', ({ store, actorId, params, body }) =>
@@ -232,15 +243,22 @@ const routes: Route[] = [
 
   // Epic E, M4: the audit log as a CSV download, same filters as GET /audit,
   // and the Confluence and Google Docs importers.
-  route('GET', '/audit.csv', ({ store, actorId, query }) =>
-    store.auditCsv(actorId, {
-      actorId: query.get('actor') ?? undefined,
-      action: query.get('action') ?? undefined,
-      from: query.get('from') ?? undefined,
-      to: query.get('to') ?? undefined,
-      limit: countParam(query.get('limit'), 'limit'),
-    }),
-  ),
+  // The export carries the WHOLE filtered population, so it deliberately takes
+  // no `limit` — and refuses one rather than ignoring it. A file holding the
+  // most recent N rows of a filter, with nothing on it to say so, is a sample
+  // presented as a population, and this is the artefact that gets attached to
+  // a report. Narrowing is what `from`/`to` are for; `x-canon-truncated` says
+  // so when even the whole population did not fit.
+  route('GET', '/audit.csv', ({ store, actorId, query }) => {
+    if (query.has('limit')) {
+      throw new CanonError(
+        'invalid',
+        'An export carries every event matching its filters, so it takes no limit. Narrow it with from and to instead.',
+        { field: 'limit' },
+      );
+    }
+    return store.auditCsv(actorId, auditFilterFrom(query));
+  }),
 
   route('POST', '/imports', ({ store, actorId, body }) => store.runImport(actorId, body)),
   route('GET', '/imports', ({ store, actorId }) => store.listImportRuns(actorId)),
@@ -486,6 +504,32 @@ const RATE_LIMITED: { method: string; pattern: RegExp; bucket: BucketName }[] = 
   // Walks an operator-named directory and writes a page per document.
   { method: 'POST', pattern: /^\/imports$/, bucket: 'import' },
 ];
+
+/**
+ * The audit filters, read from a query string in ONE place.
+ *
+ * Three routes ask the same questions of the log — the listing, the summary
+ * that tells a reader how many matched, and the export. An auditor's whole
+ * ability to trust a sample rests on those three agreeing, and the previous
+ * shape had each of them spelling the parameters out inline: the listing read
+ * four, the export read four different ones, and `collection` and `page` were
+ * read by neither while being accepted by both. Ruth's report is precise about
+ * why that is worse than refusing them outright — a filter that is accepted
+ * and ignored returns an answer that LOOKS narrowed and is not.
+ *
+ * Every reader here refuses what it cannot honour (input.ts), so `?from=last
+ * Tuesday` is a 400 naming the field rather than a silently unfiltered log.
+ */
+function auditFilterFrom(query: URLSearchParams) {
+  return {
+    actorId: idParam(query.get('actor'), 'actor'),
+    action: idParam(query.get('action'), 'action'),
+    collectionId: idParam(query.get('collection'), 'collection'),
+    pageId: idParam(query.get('page'), 'page'),
+    from: instantParam(query.get('from'), 'from', 'start'),
+    to: instantParam(query.get('to'), 'to', 'end'),
+  };
+}
 
 function bucketFor(method: string, pathname: string): BucketName | null {
   return RATE_LIMITED.find((r) => r.method === method && r.pattern.test(pathname))?.bucket ?? null;

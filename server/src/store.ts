@@ -39,7 +39,7 @@ import { Notification, NotificationTransport, Notifier } from './notify.js';
 import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
 import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
-import { AUDIT_CSV_MAX_ROWS, RawResponse, auditCsvResponse } from './csv.js';
+import { AUDIT_CSV_MAX_ROWS, AUDIT_CSV_PAGE_ROWS, RawResponse, auditCsvResponse } from './csv.js';
 import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './import.js';
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceInput, SourceService } from './sources.js';
@@ -68,6 +68,40 @@ import {
 export interface TreeNode extends Page {
   children: TreeNode[];
 }
+
+/**
+ * What can be asked of the audit log. Every one of these is applied in the SQL
+ * that generates the rows — there is no such thing here as a filter that is
+ * accepted and then not used, which is what USER-TESTING.md T2.2 found and is
+ * the reason this interface exists at all rather than being spelled out inline
+ * at each of the three call sites (listing, count, export) that must agree.
+ */
+export interface AuditFilter {
+  actorId?: string;
+  action?: string;
+  collectionId?: string;
+  pageId?: string;
+  /** Inclusive lower bound on `at`, as ISO-8601 UTC. */
+  from?: string;
+  /** Inclusive upper bound on `at`, as ISO-8601 UTC. */
+  to?: string;
+  /** Cursor: only events with an id strictly lower than this. See queryAudit. */
+  before?: number;
+  limit?: number;
+}
+
+/** How big the filtered population is, and what is in it. See auditSummary. */
+export interface AuditSummary {
+  matching: number;
+  actions: { action: string; count: number }[];
+}
+
+// One page of the log. The maximum is unchanged — it was never the problem;
+// treating it as the end of the log was. The default is what the screen asks
+// for, kept at what it has always shown so that the number an auditor sees
+// beside "of 1,187" is the number of rows actually in front of them.
+export const AUDIT_PAGE_DEFAULT = 200;
+export const AUDIT_PAGE_MAX = 1000;
 
 function now(): string {
   return new Date().toISOString();
@@ -1235,11 +1269,117 @@ export class CanonStore {
       );
   }
 
-  queryAudit(
-    actorId: string,
-    filter: { actorId?: string; action?: string; from?: string; to?: string; limit?: number } = {},
-  ): AuditEvent[] {
+  /**
+   * The rows one page of the audit log, newest first.
+   *
+   * PAGING: A CURSOR, NOT AN OFFSET, AND WHY
+   *
+   * An external auditor found that the log capped at 1,000 rows with no offset,
+   * cursor or page parameter, so a record of 1,187 events had 187 of them
+   * unreachable by any documented route (USER-TESTING.md T2.2). The cap is
+   * still here — it is a sane page size — but it is no longer the horizon.
+   *
+   * `before` is an event id, and a page is "the newest N events with an id
+   * lower than this one". An OFFSET would have been fewer lines and it would
+   * have been wrong, for a reason particular to this table:
+   *
+   *   * `audit_events` is APPEND-ONLY and ordered by a monotonic AUTOINCREMENT
+   *     id, and this query reads it NEWEST FIRST. So every event written while
+   *     somebody is paging is inserted at the *front* of the result — the end
+   *     they have already read. With OFFSET, each new event shifts the whole
+   *     tail down by one, and the reader silently sees a row they have already
+   *     seen and never sees the one it displaced. On a log that is being
+   *     appended to by the very people whose acts are being sampled, an offset
+   *     produces duplicates and holes in the sample and gives no sign of it.
+   *     An id is fixed: `id < 903` names the same set of older rows whatever
+   *     arrives above it.
+   *   * The id is the PRIMARY KEY, so `id < ?` is a range scan that starts at
+   *     the right row. `LIMIT ? OFFSET 4000` reads and discards four thousand
+   *     rows every time, which gets slower the further back an auditor walks —
+   *     exactly backwards, since walking back is the whole point.
+   *   * A cursor is honest about what it cannot do: it can only walk in the
+   *     direction of the sort. Random access into the middle of a log ("page
+   *     37") is not a thing anybody sampling a population actually needs, and
+   *     an offset offers it while quietly not delivering it under concurrent
+   *     writes.
+   *
+   * There is no `nextCursor` in the response because there does not need to
+   * be: the response is a list of events and the cursor for the next page is
+   * the `id` of the last one. That keeps this route's shape exactly what it
+   * has always been — an array of events — which matters because integrators
+   * and every test in this repository already read it that way. How many
+   * events matched in total is a different question and has its own answer:
+   * `auditSummary` below.
+   */
+  queryAudit(actorId: string, filter: AuditFilter = {}): AuditEvent[] {
     this.getActor(actorId);
+    const { where, params } = this.auditWhere(actorId, filter);
+    // Bound, and bound as a parameter rather than as text spliced into SQL: a
+    // caller reaching the store directly with a non-numeric limit would
+    // otherwise write into the statement.
+    const asked = Number(filter.limit ?? AUDIT_PAGE_DEFAULT);
+    const limit = Number.isFinite(asked)
+      ? Math.min(Math.max(Math.trunc(asked), 1), AUDIT_PAGE_MAX)
+      : AUDIT_PAGE_DEFAULT;
+    const rows = this.db
+      .prepare(`SELECT * FROM audit_events ${where} ORDER BY id DESC LIMIT ?`)
+      .all(...params, limit) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as number,
+      at: r.at as string,
+      actorId: r.actor_id as string,
+      actorKind: r.actor_kind as ActorKind,
+      action: r.action as string,
+      collectionId: (r.collection_id as string) ?? null,
+      pageId: (r.page_id as string) ?? null,
+      details: JSON.parse(r.details_json as string) as Record<string, unknown>,
+    }));
+  }
+
+  /**
+   * How large the filtered population actually is, and what action types are
+   * in it. Two answers a screen needs and cannot honestly draw without:
+   *
+   *   * `matching` is what turns "200 rows" into "200 of 1,187 matching". A
+   *     table that shows a page and says nothing about the rest is asserting a
+   *     completeness it does not have, which is what made a sample drawn from
+   *     this log indefensible.
+   *   * `actions` is the action list BUILT FROM THE RECORD. The UI used to
+   *     offer a hard-coded sixteen; the record held twenty-two action types,
+   *     ten of which no filter could reach, while four of the sixteen offered
+   *     never occur. A vocabulary maintained by hand drifts from the log the
+   *     moment anybody adds a feature, and it drifts silently, in the
+   *     direction of hiding events.
+   *
+   * The counts in `actions` apply every OTHER filter but not the action
+   * filter itself — otherwise choosing an action would collapse the list of
+   * actions to the one already chosen, and there would be no way back. A date
+   * range or a collection does narrow it, which is the useful behaviour: "what
+   * kinds of thing happened in this collection last week" is a real question.
+   *
+   * `before` is ignored here on purpose. It is a position within a walk, and
+   * the size of the population is not a property of where you have got to.
+   */
+  auditSummary(actorId: string, filter: AuditFilter = {}): AuditSummary {
+    this.getActor(actorId);
+    const whole = this.auditWhere(actorId, { ...filter, before: undefined });
+    const matching = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM audit_events ${whole.where}`).get(...whole.params) as { n: number }
+    ).n;
+    const vocabulary = this.auditWhere(actorId, { ...filter, before: undefined, action: undefined });
+    const rows = this.db
+      .prepare(`SELECT action, COUNT(*) AS n FROM audit_events ${vocabulary.where} GROUP BY action ORDER BY action`)
+      .all(...vocabulary.params) as { action: string; n: number }[];
+    return { matching, actions: rows.map((r) => ({ action: r.action, count: r.n })) };
+  }
+
+  /**
+   * The WHERE clause every audit read shares: the permission rules, then the
+   * caller's filters. One place, because a listing, a count and an export that
+   * disagreed about who may see what would be a permission bug that only
+   * showed up in one of the three.
+   */
+  private auditWhere(actorId: string, filter: AuditFilter): { where: string; params: (string | number)[] } {
     // Permission filtering happens in the SQL that generates the rows, not
     // after they are read. Two rules, because the log holds two kinds of
     // event:
@@ -1294,6 +1434,27 @@ export class CanonStore {
       clauses.push('action = ?');
       params.push(filter.action);
     }
+    // The two filters that were ACCEPTED AND IGNORED (USER-TESTING.md T2.2).
+    // They are ordinary columns and always were; nothing here was hard, which
+    // is the uncomfortable part. `collection_id` narrows to a collection —
+    // note that this is narrower than "everything about this collection",
+    // because an event that names no collection (an agent session, a refused
+    // passport) is not attributable to one and is therefore correctly absent.
+    if (filter.collectionId) {
+      clauses.push('collection_id = ?');
+      params.push(filter.collectionId);
+    }
+    // A page filter does NOT imply its collection: it is the narrower question
+    // and the permission clause above already governs whether the asker may
+    // see any of it.
+    if (filter.pageId) {
+      clauses.push('page_id = ?');
+      params.push(filter.pageId);
+    }
+    // Inclusive at both ends, on the stored ISO-8601 UTC text. The caller is
+    // responsible for handing in a bound in that same shape — from the HTTP
+    // surface that is `instantParam` in input.ts, which is where a bare date
+    // becomes the right edge of the day it names.
     if (filter.from) {
       clauses.push('at >= ?');
       params.push(filter.from);
@@ -1302,25 +1463,13 @@ export class CanonStore {
       clauses.push('at <= ?');
       params.push(filter.to);
     }
-    const where = `WHERE ${clauses.join(' AND ')}`;
-    // Bound, and bound as a parameter rather than as text spliced into SQL: a
-    // caller reaching the store directly with a non-numeric limit would
-    // otherwise write into the statement.
-    const asked = Number(filter.limit ?? 200);
-    const limit = Number.isFinite(asked) ? Math.min(Math.max(Math.trunc(asked), 1), 1000) : 200;
-    const rows = this.db
-      .prepare(`SELECT * FROM audit_events ${where} ORDER BY id DESC LIMIT ?`)
-      .all(...params, limit) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: r.id as number,
-      at: r.at as string,
-      actorId: r.actor_id as string,
-      actorKind: r.actor_kind as ActorKind,
-      action: r.action as string,
-      collectionId: (r.collection_id as string) ?? null,
-      pageId: (r.page_id as string) ?? null,
-      details: JSON.parse(r.details_json as string) as Record<string, unknown>,
-    }));
+    // The cursor. Strictly less-than, so handing back the last id of a page
+    // yields the next page with no row repeated and none skipped.
+    if (filter.before !== undefined) {
+      clauses.push('id < ?');
+      params.push(filter.before);
+    }
+    return { where: `WHERE ${clauses.join(' AND ')}`, params };
   }
 
   // ---- comments, mentions, notifications (Epic C, M2) ------------------
@@ -1377,14 +1526,47 @@ export class CanonStore {
   // Thin delegates; the logic lives in csv.ts and import.ts. The importer is
   // stateless apart from the record it writes to, so it is built per call.
 
-  // The CSV export answers the same filters as queryAudit and is bounded by
-  // the same hard row cap (see AUDIT_CSV_MAX_ROWS in csv.ts).
-  auditCsv(
-    actorId: string,
-    filter: { actorId?: string; action?: string; from?: string; to?: string; limit?: number } = {},
-  ): RawResponse {
-    const limit = Math.min(filter.limit ?? AUDIT_CSV_MAX_ROWS, AUDIT_CSV_MAX_ROWS);
-    return auditCsvResponse(this.queryAudit(actorId, { ...filter, limit }));
+  /**
+   * The export, and it is the whole filtered population rather than the first
+   * page of it.
+   *
+   * This used to hand `queryAudit` a limit and return whatever came back —
+   * which, once `queryAudit` gained a page size, meant an auditor exporting
+   * "everything by this actor" received the most recent 1,000 rows of it with
+   * nothing on the file to say so. That is the screen's "200 of 1,187 in
+   * silence" defect (USER-TESTING.md T2.2) reproduced in the one artefact that
+   * leaves the building and gets attached to a report.
+   *
+   * So it walks, using the same cursor a reader walks with: take a page, take
+   * the id of its last row, ask for the next page below it. The walk stops at
+   * `AUDIT_CSV_MAX_ROWS` because the file is built in memory as one string and
+   * something has to bound it — and when it stops there, `x-canon-truncated`
+   * says so on the response rather than leaving the reader to infer it.
+   *
+   * The filter is the full `AuditFilter` minus `before` and `limit`: a walk
+   * starts at the top of the filtered population by definition, and its size
+   * is the cap, so accepting either would only let a caller ask for something
+   * this method then has to override.
+   */
+  auditCsv(actorId: string, filter: Omit<AuditFilter, 'before' | 'limit'> = {}): RawResponse {
+    const events: AuditEvent[] = [];
+    let before: number | undefined;
+    for (;;) {
+      const room = AUDIT_CSV_MAX_ROWS - events.length;
+      if (room <= 0) break;
+      const page = this.queryAudit(actorId, {
+        ...filter,
+        before,
+        limit: Math.min(AUDIT_CSV_PAGE_ROWS, room),
+      });
+      events.push(...page);
+      // Short page means the population is exhausted. `at` is not unique — a
+      // seeded record has 1,100 events sharing one instant — so the cursor is
+      // the id, which is.
+      if (page.length < Math.min(AUDIT_CSV_PAGE_ROWS, room)) break;
+      before = page[page.length - 1]!.id;
+    }
+    return auditCsvResponse(events);
   }
 
   runImport(actorId: string, input: ImportInput): ImportSummary {

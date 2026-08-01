@@ -60,12 +60,28 @@ export const AUDIT_CSV_COLUMNS = [
   'details',
 ] as const;
 
-// The export is bounded by construction: it asks the audit query for at most
-// this many rows and builds exactly that many records, so a log of any size
-// produces a response of a known maximum size. It is the same hard cap the
-// JSON audit query applies. To walk a longer log, narrow with from/to and
-// export the windows in turn — the `at` column is what you page on.
-export const AUDIT_CSV_MAX_ROWS = 1000;
+// WHAT AN EXPORT CONTAINS
+//
+// This used to read 1,000, the same number as one page of the JSON query, and
+// that made the export the FIRST PAGE of a filtered log rather than the
+// filtered log. An auditor who exports "everything by this actor" and receives
+// the most recent thousand rows of it, with nothing on the file to say so, has
+// been handed a sample presented as a population — which is the same defect as
+// the screen showing 200 of 1,187 in silence, in the one artefact that leaves
+// the building. So the export now walks the whole filtered population, a page
+// at a time, and this is the ceiling on the whole walk rather than on one page.
+//
+// It is still a ceiling, because the response is built in memory as one string
+// and something has to bound it. A hundred thousand events is a large record's
+// several years and roughly twenty megabytes of CSV; a deployment that exceeds
+// it gets `x-canon-truncated: true` and should narrow with from/to and export
+// the windows in turn.
+export const AUDIT_CSV_MAX_ROWS = 100_000;
+
+// The chunk the walk reads at a time — one page of the audit query. Nothing
+// about the file depends on it; it exists so a large export is a sequence of
+// bounded statements rather than one enormous one.
+export const AUDIT_CSV_PAGE_ROWS = 1000;
 
 export function auditCsv(events: AuditEvent[]): string {
   let out = csvRow([...AUDIT_CSV_COLUMNS]);
@@ -112,6 +128,10 @@ export function auditCsvResponse(events: AuditEvent[]): RawResponse {
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': `attachment; filename="canon-audit-${stamp()}.csv"`,
       'x-canon-row-cap': String(AUDIT_CSV_MAX_ROWS),
+      // How many records are actually in the file, so a reader can check the
+      // file against the count the screen showed them without counting lines
+      // in a spreadsheet — and can tell an empty result from a failed one.
+      'x-canon-rows': String(events.length),
       // An export that exactly fills the cap may have more behind it; say so
       // rather than let an auditor assume they hold the whole log.
       'x-canon-truncated': events.length >= AUDIT_CSV_MAX_ROWS ? 'true' : 'false',
