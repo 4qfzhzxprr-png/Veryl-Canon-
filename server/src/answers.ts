@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, PageStatus } from './model.js';
 import { STOPWORDS } from './embeddings.js';
+import { objectBody, optionalCount, optionalString, optionalStringArray } from './input.js';
 import { ANSWERABLE_STATUSES, type RetrievalService } from './retrieval.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
@@ -725,17 +726,26 @@ export class AnswerService {
 
   async ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
     const actor = this.host.getActor(actorId);
-    const question = request.question?.trim();
+    // `AskRequest` is what the type system believes; this value came from
+    // `JSON.parse` and is whatever the caller sent. Both doors to an answer —
+    // POST /ask and Studio's Knowledge API — arrive here, so the check belongs
+    // here and not in either of them. See input.ts on why nothing is coerced.
+    const sent = objectBody(request);
+    const question = (optionalString(sent.question, 'question') ?? '').trim();
     if (!question) throw new CanonError('invalid', 'An answer requires a question');
+    const collectionId = optionalString(sent.collectionId, 'collectionId');
+    const limit = optionalCount(sent.limit, 'limit');
+    const alsoVisibleTo = optionalString(sent.alsoVisibleTo, 'alsoVisibleTo');
+    const collectionIds = optionalStringArray(sent.collectionIds, 'collectionIds');
 
     const candidates = await this.retrieval.retrieve(actorId, {
       question,
-      collectionId: request.collectionId,
-      limit: request.limit,
+      collectionId,
+      limit,
       canonicalOnly: true, // Canonical pages only, enforced in the candidate SQL
       expand: true, // multi-hop: the policy states the rule, its child procedure the steps
-      alsoVisibleTo: request.alsoVisibleTo,
-      collectionIds: request.collectionIds,
+      alsoVisibleTo,
+      collectionIds,
     });
 
     // Belt and braces over the SQL filter: nothing outside the answerable
@@ -813,7 +823,7 @@ export class AnswerService {
     }
 
     if (!generated || !generated.answer.trim() || citations.length === 0) {
-      this.audit(actor, question, request.collectionId ?? null, true, []);
+      this.audit(actor, question, collectionId ?? null, true, []);
       return { answer: null, citations: [], refused: true, reason: 'no_canonical_match' };
     }
 
@@ -860,7 +870,7 @@ export class AnswerService {
     this.audit(
       actor,
       question,
-      request.collectionId ?? null,
+      collectionId ?? null,
       false,
       citations.map((c) => c.pageId),
       disagreement,

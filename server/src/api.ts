@@ -9,6 +9,7 @@ import {
   PersonIdentity,
   visibleActors,
 } from './auth.js';
+import { countParam, objectBody, optionalCount, requiredCount } from './input.js';
 import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
 import { CanonError } from './model.js';
 import { flushNotifications } from './notify.js';
@@ -167,10 +168,10 @@ const routes: Route[] = [
 
   route('GET', '/pages/:id/versions', ({ store, actorId, params }) => store.listVersions(actorId, params.id!)),
   route('GET', '/pages/:id/versions/:n', ({ store, actorId, params }) =>
-    store.getVersion(actorId, params.id!, Number(params.n)),
+    store.getVersion(actorId, params.id!, countParam(params.n!, 'version')!),
   ),
   route('POST', '/pages/:id/restore', ({ store, actorId, params, body }) =>
-    store.restore(actorId, params.id!, Number(body.version)),
+    store.restore(actorId, params.id!, requiredCount(body.version, 'version')),
   ),
 
   route('GET', '/search', ({ store, actorId, query }) =>
@@ -180,7 +181,7 @@ const routes: Route[] = [
       type: query.get('type') ?? undefined,
       status: query.get('status') ?? undefined,
       ownerId: query.get('owner') ?? undefined,
-      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+      limit: countParam(query.get('limit'), 'limit'),
     }),
   ),
 
@@ -190,7 +191,7 @@ const routes: Route[] = [
       action: query.get('action') ?? undefined,
       from: query.get('from') ?? undefined,
       to: query.get('to') ?? undefined,
-      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+      limit: countParam(query.get('limit'), 'limit'),
     }),
   ),
 
@@ -203,14 +204,14 @@ const routes: Route[] = [
   route('GET', '/notifications', ({ store, actorId }) => store.listNotifications(actorId)),
   // Delivery pass over the notification outbox; a deployment runs it on a timer.
   route('POST', '/notifications/flush', ({ store, actorId, body }) =>
-    flushNotifications(store, actorId, body?.limit === undefined ? undefined : Number(body.limit)),
+    flushNotifications(store, actorId, optionalCount(body?.limit, 'limit')),
   ),
 
   route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
   route('GET', '/pages/:id/related', ({ store, actorId, params, query }) =>
     store.related(actorId, params.id!, {
       canonicalOnly: query.get('canonical') === 'true',
-      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+      limit: countParam(query.get('limit'), 'limit'),
     }),
   ),
 
@@ -222,7 +223,7 @@ const routes: Route[] = [
       action: query.get('action') ?? undefined,
       from: query.get('from') ?? undefined,
       to: query.get('to') ?? undefined,
-      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+      limit: countParam(query.get('limit'), 'limit'),
     }),
   ),
 
@@ -269,7 +270,7 @@ const routes: Route[] = [
     store.listDivergences(actorId, {
       state: (query.get('state') as 'open' | 'closed' | null) ?? undefined,
       collectionId: query.get('collection') ?? undefined,
-      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+      limit: countParam(query.get('limit'), 'limit'),
     }),
   ),
   route('GET', '/divergences/:id', ({ store, actorId, params }) => store.getDivergence(actorId, params.id!)),
@@ -324,7 +325,7 @@ const routes: Route[] = [
   route('POST', '/maintenance/freshness', ({ store, actorId, body }) =>
     store.sweepFreshness(actorId, {
       on: body?.on ?? undefined,
-      limit: body?.limit === undefined ? undefined : Number(body.limit),
+      limit: optionalCount(body?.limit, 'limit'),
     }),
   ),
 
@@ -388,7 +389,7 @@ const routes: Route[] = [
   // `GET /audit.csv` is closed to agents for exactly the same reason.
   route('GET', '/audit/verify', ({ store, actorId, query }) =>
     store.verifyAuditChain(actorId, {
-      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+      limit: countParam(query.get('limit'), 'limit'),
     }),
   ),
   route('GET', '/pages/:id/as-of', ({ store, actorId, params, query }) =>
@@ -426,7 +427,7 @@ const routes: Route[] = [
   // Record health (FEATURES.md §8), built on the query surface above.
   route('GET', '/collections/:id/health', ({ store, actorId, params, query }) =>
     store.collectionHealth(actorId, params.id!, {
-      staleDraftDays: query.get('draftDays') ? Number(query.get('draftDays')) : undefined,
+      staleDraftDays: countParam(query.get('draftDays'), 'draftDays'),
       on: query.get('on') ?? undefined,
     }),
   ),
@@ -500,11 +501,17 @@ async function readBody(req: IncomingMessage): Promise<any> {
   }
   const raw = Buffer.concat(chunks).toString('utf8');
   if (!raw) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     throw new CanonError('invalid', 'Request body must be JSON');
   }
+  // Well-formed JSON is not the same as a body. `42`, `"hello"`, `null` and
+  // `[…]` all parse, and every handler beneath here reads fields off the
+  // result — so a bare string body silently becomes "no fields were sent"
+  // rather than the mistake it is. See input.ts.
+  return objectBody(parsed);
 }
 
 function send(res: ServerResponse, status: number, payload: unknown): void {
