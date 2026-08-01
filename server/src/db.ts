@@ -11,6 +11,7 @@ import { PROPOSALS_SCHEMA } from './proposals.js';
 import { QUERIES_SCHEMA } from './queries.js';
 import { Migration, runMigrations } from './migrate.js';
 import { REFERENCES_SCHEMA } from './references.js';
+import { RELATIONS_SCHEMA } from './relations.js';
 import { SOURCES_SCHEMA } from './sources.js';
 
 // Connection settings, not schema. They are applied on every open and they are
@@ -149,6 +150,7 @@ export function applyBaselineSchema(db: DatabaseSync): void {
   db.exec(REFERENCES_SCHEMA); // reference fields and their labelled cache; DDL in references.ts
   db.exec(DIVERGENCE_SCHEMA); // divergences between an authority and a corroborating source (§7); DDL in divergence.ts
   db.exec(PROPOSALS_SCHEMA); // agent proposals (FEATURES.md §5, Next tier); DDL in proposals.ts
+  db.exec(RELATIONS_SCHEMA); // page relations: conflicts with, supersedes (§7); DDL in relations.ts
   db.exec(QUERIES_SCHEMA); // saved structured queries (Next tier); DDL in queries.ts
   db.exec(ORG_SCHEMA); // org roles, and hand-granted vs group-granted membership; DDL in orgrole.ts
   // Freshness (Next tier) added `review_date` and the `needs_update` status to

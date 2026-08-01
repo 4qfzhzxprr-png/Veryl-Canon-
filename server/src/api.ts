@@ -295,6 +295,21 @@ const routes: Route[] = [
   route('POST', '/proposals/:id/reject', ({ store, actorId, params, body }) =>
     store.rejectProposal(actorId, params.id!, body ?? {}),
   ),
+
+  // Page relations (DATA-BACKBONE.md §7, "Two pages contradict each other").
+  // Asserting one takes `edit` on BOTH pages' collections and is a person's
+  // act: POST and DELETE are deliberately absent from agentauth.ts's route
+  // table, exactly as accepting a proposal is, so an agent presenting a
+  // passport is refused at the door. Reading them is an ordinary read of the
+  // record and is classified there.
+  route('POST', '/pages/:id/relations', ({ store, actorId, params, body }) =>
+    store.assertRelation(actorId, params.id!, body ?? {}),
+  ),
+  route('GET', '/pages/:id/relations', ({ store, actorId, params }) => store.listRelations(actorId, params.id!)),
+  route('DELETE', '/relations/:id', ({ store, actorId, params }) => {
+    store.removeRelation(actorId, params.id!);
+    return { ok: true };
+  }),
   // Veryl Studio's Knowledge API (STUDIO-CONTRACT.md). Its handlers live in
   // knowledge.ts, mounted here as ordinary routes so they meet the same
   // passport authentication and the same Registry enforcement as everything

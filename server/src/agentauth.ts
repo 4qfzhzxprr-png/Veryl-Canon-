@@ -323,6 +323,31 @@ const RULES: Rule[] = [
   // If a future tier ever wants a certified agent to accept another agent's
   // proposal, it takes a deliberate change here AND there, plus a paragraph in
   // FEATURES.md — never a quiet route addition.
+
+  // Page relations (DATA-BACKBONE.md §7; relations.ts). READING them is
+  // `read`, scoped to the page's collection, exactly as reading its proposals
+  // or its references is: "this page conflicts with that one" is a fact of the
+  // record, and an agent that may read the page should be able to see it —
+  // indeed noticing it is the thing agents are for. Each relation is then
+  // filtered by whether the asker may see its OTHER end, inside the handler,
+  // by the same collection-membership join the map uses.
+  { method: 'GET', pattern: /^\/pages\/([^/]+)\/relations$/, action: 'read', scope: PAGE },
+
+  // ASSERTING AND REMOVING ONE ARE DELIBERATELY ABSENT, on the same terms as
+  // accepting a proposal. §7 asks for a relation "asserted by a person or
+  // proposed by an agent and accepted by one", and Canon keeps that literally:
+  // POST /pages/:id/relations and DELETE /relations/:id are in no rule above,
+  // so an agent's request for either is refused by `classify` returning null —
+  // 403, `route_not_available_to_agents`, audited as `agent.denied`. There is
+  // no `permittedActions` value that opens them: `write` is about changing what
+  // the record SAYS, and asserting that two Canonical policies contradict each
+  // other is a judgement about the record that a person takes responsibility
+  // for. The agent's path is the one that already exists and needs nothing
+  // here — it raises a PROPOSAL carrying its reasoning (POST
+  // /pages/:id/proposals, classified above), and a person settles it by making
+  // the assertion. relations.ts refuses an actor of kind `agent` a second
+  // time, which is the check that also holds in dev mode.
+
   // Veryl Studio's Knowledge API (STUDIO-CONTRACT.md). A Studio app is an
   // agent and reaches Canon through this same door: its passport is verified
   // by the Registry, and the Registry's limits are applied here, before the
