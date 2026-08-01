@@ -195,7 +195,7 @@ test('migrations: an out-of-order or renumbered list is refused before anything 
   );
 });
 
-test('migrations: a record written by the build before migrations existed converges on version 1', () => {
+test('migrations: a record written by the build before migrations existed converges on the current version', () => {
   const scratchDir = scratch();
   try {
     const path = scratchDir.path('legacy.db');
@@ -213,10 +213,13 @@ test('migrations: a record written by the build before migrations existed conver
     );
     legacy.close();
 
-    // The new build opens it: the baseline is a no-op, the version is recorded,
-    // and the record is untouched.
+    // The new build opens it: the baseline is a no-op, everything numbered
+    // after it runs, the version is recorded, and the record is untouched. The
+    // assertion is against `latestVersion` rather than a literal, because the
+    // property under test is CONVERGENCE — a legacy database and a fresh one
+    // end at the same version — not the number itself.
     const db = openDb(path);
-    assert.equal(currentSchemaVersion(db), 1);
+    assert.equal(currentSchemaVersion(db), latestVersion(MIGRATIONS));
     const actor = db.prepare('SELECT name FROM actors WHERE id = ?').get('dana') as { name: string };
     assert.equal(actor.name, 'Dana');
     db.close();

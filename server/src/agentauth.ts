@@ -92,10 +92,11 @@ type Scope =
   | { kind: 'newCollection' } // creates a collection: only '*' can reach it
   | { kind: 'source'; id: string } // source id in the path
   | { kind: 'sourceAdmin' } // registers or changes a source: only '*' can reach it
+  | { kind: 'divergence'; id: string } // collection resolved from the divergence's page
   | { kind: 'filtered'; filter: FilteredScope }; // spans collections or sources
 
 /** What a spanning response is narrowed by, and how (see `narrow` below). */
-type FilteredScope = 'collections' | 'search' | 'audit' | 'sources' | 'graph';
+type FilteredScope = 'collections' | 'search' | 'audit' | 'sources' | 'graph' | 'divergences';
 
 interface Rule {
   method: string;
@@ -196,6 +197,54 @@ const RULES: Rule[] = [
     action: 'write',
     scope: (g) => ({ kind: 'reference', id: g[0] ?? '' }),
   },
+
+  // Divergence (DATA-BACKBONE.md §7). READING one is `read`, scoped to the
+  // page's collection: a divergence says that two of the systems behind a page
+  // disagree, which is a fact about that page and readable by whoever may read
+  // the page. Nothing about it is a separate permission — an agent that may
+  // resolve a page's references can already see both values, so hiding the
+  // observation that they differ would protect nothing and would leave an
+  // agent composing an answer from two numbers it had no way to know conflict.
+  { method: 'GET', pattern: /^\/pages\/([^/]+)\/divergences$/, action: 'read', scope: PAGE },
+  {
+    method: 'GET',
+    pattern: /^\/divergences\/([^/]+)$/,
+    action: 'read',
+    scope: (g) => ({ kind: 'divergence', id: g[0] ?? '' }),
+  },
+  // The record-wide listing SPANS collections by design — "where do my systems
+  // disagree" is a question about the whole record — so it takes §4.2's rule
+  // for a spanning request: narrowed to the agent's permitted collections,
+  // never refused because the record holds a collection the agent may not see.
+  // A divergence carries a `pageId` rather than a `collectionId` (§7's shape is
+  // exactly that and is not padded to suit this layer), so the narrowing
+  // resolves the page's collection; hence its own filter rather than reusing
+  // `search`.
+  { method: 'GET', pattern: /^\/divergences$/, action: 'read', scope: () => ({ kind: 'filtered', filter: 'divergences' }) },
+
+  // CLOSING ONE IS DELIBERATELY ABSENT, on exactly the precedent
+  // POST /proposals/:id/accept and /reject set above, and this comment is the
+  // rule rather than an omission to be tidied up later.
+  //
+  // §7 is explicit that a divergence "is closed by a person, with a reason",
+  // and that closing it "is a decision the record keeps, not a flag that
+  // silently clears". The reasons it names — the copy was wrong and has been
+  // corrected upstream, the definitions differ and here is why, this source
+  // should not have been corroborating this field — are all claims about
+  // external systems that Canon cannot verify and that somebody has to be
+  // accountable for. The Registry's vocabulary is `read`, `comment` and
+  // `write` (REGISTRY-CONTRACT.md §4), and none of them means "may settle a
+  // contradiction"; granting it would mean stretching `write` to cover
+  // something no passport ever meant to grant, which is the same argument that
+  // keeps the freshness sweep out of this table.
+  //
+  // So POST /divergences/:id/close is in no rule here: an agent's request for
+  // it is refused by `classify` returning null — 403,
+  // `route_not_available_to_agents`, audited as `agent.denied`. divergence.ts
+  // refuses an actor of kind `agent` a second time, which is the check that
+  // also holds in dev mode where no passport is presented at all. An agent
+  // that knows why the systems differ has the path FEATURES.md §5 gives it:
+  // raise a proposal, and a person settles it.
 
   // Reading the source register is `read`, and the listing is narrowed to the
   // agent's permitted sources rather than refused — the same treatment
@@ -569,6 +618,8 @@ export class AgentAuth {
         return this.collectionOfComment(scope.id);
       case 'reference':
         return this.collectionOfReference(scope.id);
+      case 'divergence':
+        return this.collectionOfDivergence(scope.id);
       case 'bodyCollection': {
         const value = (body as { collectionId?: unknown } | undefined)?.collectionId;
         return typeof value === 'string' && value ? value : null;
@@ -604,6 +655,15 @@ export class AgentAuth {
     return row?.collection_id ?? null;
   }
 
+  // The same shape again, one join further out: a divergence belongs to a
+  // page, and the page's collection is what governs reading it.
+  private collectionOfDivergence(divergenceId: string): string | null {
+    const row = this.db
+      .prepare('SELECT p.collection_id FROM divergences d JOIN pages p ON p.id = d.page_id WHERE d.id = ?')
+      .get(divergenceId) as { collection_id: string } | undefined;
+    return row?.collection_id ?? null;
+  }
+
   // Responses that span collections are narrowed to the permitted ones, so a
   // listing, a search, or the audit log never carries an agent something the
   // Registry does not permit it to see.
@@ -626,6 +686,16 @@ export class AgentAuth {
     }
     if (filter === 'search') {
       return result.filter((r) => permitsCollection(session.permittedCollections, (r as { collectionId: string }).collectionId));
+    }
+    if (filter === 'divergences') {
+      // §7's shape carries `pageId`, not `collectionId`, so the collection is
+      // resolved per row rather than read off it. A row whose page has gone is
+      // dropped: an unresolvable collection cannot be shown to be permitted,
+      // and fail closed is the rule everywhere else in this file.
+      return result.filter((d) => {
+        const collectionId = this.collectionOfPage((d as { pageId: string }).pageId);
+        return collectionId !== null && permitsCollection(session.permittedCollections, collectionId);
+      });
     }
     // Audit events that name no collection (sessions, refusals) are not
     // collection-scoped and stay; the rest are narrowed like everything else.

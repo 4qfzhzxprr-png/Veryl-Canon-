@@ -279,6 +279,10 @@ const COPY: Record<NotificationKind, KindCopy> = {
     cta: 'Open the page',
     why: 'You are receiving this because you own a page whose review date has passed.',
   },
+  divergence_opened: {
+    cta: 'Open the page',
+    why: 'You are receiving this because you own a page whose sources disagree.',
+  },
 };
 
 // A mention carries the comment itself; a send-back carries the approver's

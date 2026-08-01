@@ -795,7 +795,15 @@ test('a reference from an unpermitted source is refused visibly, not omitted', a
       collectionIds: [collection.id],
     });
     r.store.addReference(dana.id, page.id, { sourceId: allowed.id, selector: 'deductible', key: 'plan-gold', label: 'Deductible' });
-    r.store.addReference(dana.id, page.id, { sourceId: barred.id, selector: 'deductible', key: 'plan-gold', label: 'Salary band' });
+    // The second source answers the same fact, so under DATA-BACKBONE.md §7 it
+    // is CORROBORATING: at most one authority per (page, selector, key).
+    r.store.addReference(dana.id, page.id, {
+      sourceId: barred.id,
+      selector: 'deductible',
+      key: 'plan-gold',
+      label: 'Salary band',
+      role: 'corroborating',
+    });
 
     const agent = r.registry.register({ name: 'Benefits Assistant' });
     r.registry.certify(agent.agentId);
