@@ -5,17 +5,26 @@ import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import { CanonStore } from '../src/store.js';
-import { extractiveGenerator } from '../src/answers.js';
+import {
+  AnswerService,
+  DISAGREEMENT_LEAD,
+  detectDisagreement,
+  extractiveGenerator,
+  type AnswerGenerator,
+  type AnswerPassage,
+} from '../src/answers.js';
+import type { RetrievalService } from '../src/retrieval.js';
 
 function setup() {
-  const store = new CanonStore(openDb(':memory:'), { deliver() {} });
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, { deliver() {} });
   const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
   const marc = store.createActor({ kind: 'person', name: 'Marc', email: 'marc@example.com' });
   const iris = store.createActor({ kind: 'person', name: 'Iris', email: 'iris@example.com' });
   const collection = store.createCollection(dana.id, { name: 'Compliance' });
   store.setMember(dana.id, collection.id, marc.id, 'edit');
   store.setMember(dana.id, collection.id, iris.id, 'approve');
-  return { store, dana, marc, iris, collection };
+  return { db, store, dana, marc, iris, collection };
 }
 
 async function expectCodeAsync(fn: () => Promise<unknown>, code: string) {
@@ -403,4 +412,354 @@ test('ask: graph-expanded neighbours ride on their anchor, not on their own word
     result.citations.some((c) => c.pageId === policy.id),
     'the anchor page must be cited',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Contradiction awareness — DATA-BACKBONE.md §7, "Answers must never smooth a
+// contradiction". An answer that reads two disagreeing passages into one
+// fluent sentence has done the thing the whole document exists to prevent,
+// invisibly, with citations attached that make it look verified.
+
+function passage(pageId: string, title: string, text: string): AnswerPassage {
+  return { pageId, title, version: 1, text };
+}
+
+test('ask: two Canonical pages that disagree are both cited, and the answer says they differ', async () => {
+  const { store, marc, iris, collection } = setup();
+  const seven = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+  );
+  const ten = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client data retention policy',
+    'Client records are retained for ten years after the engagement closes.',
+  );
+
+  const result = await store.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.equal(result.refused, false, 'refusal is not the right answer here — two cited answers are');
+
+  // The response carries the disagreement, naming both pages.
+  assert.ok(result.disagreement, 'the record gives two answers, so the response must say so');
+  assert.deepEqual([...result.disagreement!.pageIds].sort(), [seven.id, ten.id].sort());
+  assert.ok(result.disagreement!.note.startsWith(DISAGREEMENT_LEAD));
+  assert.ok(result.disagreement!.note.includes('seven years'));
+  assert.ok(result.disagreement!.note.includes('ten years'));
+
+  // Both are cited. Canon does not choose.
+  assert.deepEqual(result.citations.map((c) => c.pageId).sort(), [seven.id, ten.id].sort());
+  // And the citation invariant is unchanged: every cited snippet is in the text.
+  for (const citation of result.citations) assert.ok(result.answer!.includes(citation.snippet));
+  // The warning lives in the prose too, not only in a field a caller might drop.
+  assert.ok(result.answer!.includes(DISAGREEMENT_LEAD));
+});
+
+test('disagreement: the shapes Canon claims to detect, it detects', () => {
+  const conflicting: [string, AnswerPassage[]][] = [
+    ['a retention period stated two ways', [
+      passage('a', 'Records retention policy', 'Client records are retained for seven years from the end of the engagement.'),
+      passage('b', 'Client data policy', 'Client records are retained for ten years after the engagement closes.'),
+    ]],
+    ['a currency amount', [
+      passage('a', 'Travel policy', 'The meal allowance for travelling staff is $1,500 for each trip.'),
+      passage('b', 'Expense policy', 'The meal allowance for travelling staff is $1,200 for each trip.'),
+    ]],
+    ['a percentage', [
+      passage('a', 'Sampling policy', 'Reviewers must sample 80 percent of closed client files each quarter.'),
+      passage('b', 'Quality policy', 'Reviewers sample 50 percent of closed client files each quarter.'),
+    ]],
+    ['a deadline in days', [
+      passage('a', 'Breach policy', 'A personal data breach is reported to the regulator within 5 business days.'),
+      passage('b', 'Breach procedure', 'A personal data breach is reported to the regulator within 10 business days.'),
+    ]],
+    ['a figure buried among agreeing ones', [
+      passage('a', 'Retention policy', 'Client records are retained for seven years from the end of the engagement. Audit logs are retained for ten years.'),
+      passage('b', 'Data policy', 'Client records are retained for ten years from the end of the engagement.'),
+    ]],
+    ['an explicit negation of the same claim', [
+      passage('a', 'Vault access policy', 'Approval from the duty officer is required before any vault access is granted.'),
+      passage('b', 'Vault exception page', 'Approval from the duty officer is not required for vault access.'),
+    ]],
+  ];
+
+  for (const [name, passages] of conflicting) {
+    const found = detectDisagreement(passages);
+    assert.ok(found, `undetected disagreement: ${name}`);
+    assert.deepEqual(found!.pageIds, ['a', 'b'], name);
+    assert.ok(found!.note.startsWith(DISAGREEMENT_LEAD), name);
+    // The note quotes the record rather than paraphrasing it, and names both pages.
+    for (const p of passages) assert.ok(found!.note.includes(p.title), `${name} must name ${p.title}`);
+  }
+});
+
+test('disagreement: agreeing passages are never accused of contradicting each other', () => {
+  // The failure that would make this feature unusable is the false positive: a
+  // confident, cited claim that the record contradicts itself when it does
+  // not. Every set below is a set of passages that AGREE, or that are simply
+  // about different things, and several of them share a number on purpose.
+  const agreeing: [string, AnswerPassage[]][] = [
+    ['the same period said twice', [
+      passage('a', 'Records retention policy', 'Client records are retained for seven years from the end of the engagement.'),
+      passage('b', 'Client data policy', 'Client records must be retained for seven years, then destroyed.'),
+    ]],
+    ['the same period in exactly convertible units', [
+      passage('a', 'Records retention policy', 'Client records are retained for one year from the end of the engagement.'),
+      passage('b', 'Client data policy', 'Client records are retained for twelve months after the engagement closes.'),
+    ]],
+    ['units that do not convert exactly are not compared at all', [
+      passage('a', 'Breach policy', 'A personal data breach is reported to the regulator within 30 days.'),
+      passage('b', 'Breach procedure', 'A personal data breach is reported to the regulator within 1 month.'),
+    ]],
+    ['version numbers that differ', [
+      passage('a', 'Handbook', 'This handbook, version 3, sets out the escalation ladder for security incidents.'),
+      passage('b', 'Escalation policy', 'Version 4 of the escalation ladder applies to all security incidents.'),
+    ]],
+    ['dates that differ', [
+      passage('a', 'Vault policy', 'This vault access policy took effect on 2024-01-01 and applies to all staff.'),
+      passage('b', 'Vault procedure', 'The vault access procedure was last rewritten on 2025-06-30 for all staff.'),
+    ]],
+    ['the same unit, different subjects', [
+      passage('a', 'Records retention policy', 'Client records are retained for seven years from the end of the engagement.'),
+      passage('b', 'Badge policy', 'Contractor badges expire three years after they are issued.'),
+    ]],
+    ['a cap and a threshold, both in dollars', [
+      passage('a', 'Expense policy', 'Meal expenses are capped at $75 for each day of travel.'),
+      passage('b', 'Approval policy', 'Travel expenses over $500 require the approval of a partner.'),
+    ]],
+    ['a percentage and its stated exemption', [
+      passage('a', 'Sampling policy', 'Reviewers must sample 80 percent of closed client files each quarter.'),
+      passage('b', 'Sampling exemptions', 'Some 20 percent of closed client files are exempt from quarterly sampling.'),
+    ]],
+    ['a range against a point inside it', [
+      passage('a', 'Incident policy', 'Security incidents are triaged between thirty and sixty days of being raised.'),
+      passage('b', 'Incident procedure', 'Security incidents are triaged within thirty days of being raised.'),
+    ]],
+    ['the same rule written positively and negatively', [
+      passage('a', 'Contractor policy', 'Contractors must be escorted at all times inside the building.'),
+      passage('b', 'Contractor procedure', 'Contractors are not permitted to enter the building without an escort.'),
+    ]],
+    ['a negation about a different subject', [
+      passage('a', 'Badge policy', 'Badge renewal is required every year for permanent staff.'),
+      passage('b', 'Visitor policy', 'A badge is not required for visitors attending an open day.'),
+    ]],
+    ['a negation about something else entirely', [
+      passage('a', 'Vault access policy', 'Every access to the vault is logged and reviewed each month.'),
+      passage('b', 'Vault review procedure', 'Reviewers do not sign the ledger until every entry has been checked.'),
+    ]],
+    ['a policy and the child procedure that implements it', [
+      passage('a', 'Contractor access policy', 'Contractors may enter the building only with an escort.'),
+      passage('b', 'Contractor escort procedure', 'Step one: the duty officer countersigns the escort register. Step two: the escort stays for the whole visit.'),
+    ]],
+    ['bare counts, which are not quantities Canon compares', [
+      passage('a', 'Review policy', 'Two reviewers sign off every client file before it is closed.'),
+      passage('b', 'Sign-off procedure', 'Three reviewers sign off every client file before it is closed.'),
+    ]],
+  ];
+
+  for (const [name, passages] of agreeing) {
+    assert.equal(detectDisagreement(passages), null, `false positive: ${name}`);
+  }
+});
+
+test('disagreement: a single passage never disagrees with itself', () => {
+  // One passage, several figures in it, and no second page to disagree with.
+  assert.equal(
+    detectDisagreement([
+      passage('a', 'Retention policy', 'Client records are retained for seven years, and audit logs are retained for ten years.'),
+    ]),
+    null,
+  );
+  // Two passages that are the same page — the shape graph expansion could in
+  // principle produce — are never played off against each other either.
+  assert.equal(
+    detectDisagreement([
+      passage('same', 'Retention policy', 'Client records are retained for seven years.'),
+      passage('same', 'Retention policy', 'Client records are retained for ten years.'),
+    ]),
+    null,
+  );
+  assert.equal(detectDisagreement([]), null);
+});
+
+test('ask: a generator that smooths the conflict cannot suppress it', async () => {
+  const { db, store, marc, iris, collection } = setup();
+  const seven = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+  );
+  const ten = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client data retention policy',
+    'Client records are retained for ten years after the engagement closes.',
+  );
+
+  // Exactly what a real language model does when handed two passages that
+  // disagree: one confident sentence, one citation, no mention of the
+  // conflict. This is the failure mode §7 exists to prevent.
+  const smoothing: AnswerGenerator = {
+    name: 'fluent-smoother',
+    generate({ passages }) {
+      return {
+        answer: 'Client records are retained for seven years from the end of the engagement.',
+        citedPageIds: [passages[0]!.pageId],
+      };
+    },
+  };
+  const retrieval = (store as unknown as { retrieval: RetrievalService }).retrieval;
+  const service = new AnswerService(db, store, retrieval, smoothing);
+
+  const result = await service.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.equal(result.refused, false);
+  // The field is computed outside the generator, so it survives the smoothing.
+  assert.ok(result.disagreement, 'a generator must not be able to make a disagreement vanish');
+  assert.deepEqual([...result.disagreement!.pageIds].sort(), [seven.id, ten.id].sort());
+  // The page the generator dropped is cited anyway — citing one side of a
+  // contradiction and quietly dropping the other IS the smoothing.
+  assert.deepEqual(result.citations.map((c) => c.pageId).sort(), [seven.id, ten.id].sort());
+  // And the prose says so: Canon writes the notice itself, in front of
+  // whatever the generator wrote, quoting both sides verbatim.
+  assert.ok(result.answer!.includes(DISAGREEMENT_LEAD));
+  assert.ok(result.answer!.includes('seven years'));
+  assert.ok(result.answer!.includes('ten years'));
+  for (const citation of result.citations) assert.ok(result.answer!.includes(citation.snippet));
+  // The generator's own sentence is still there — Canon adds, it does not censor.
+  assert.ok(result.answer!.includes('Client records are retained for seven years from the end of the engagement.'));
+});
+
+test('ask: the disagreement is filtered by permission like everything else', async () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const seven = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+  );
+  // The contradicting page lives in a collection Marc is not a member of.
+  const restricted = store.createCollection(dana.id, { name: 'Legal' });
+  store.setMember(dana.id, restricted.id, iris.id, 'approve');
+  const ten = publishCanonical(
+    store,
+    dana.id,
+    iris.id,
+    restricted.id,
+    'Client data retention policy',
+    'Client records are retained for ten years after the engagement closes.',
+  );
+
+  // Marc cannot see it, so for him the record does not disagree — and it does
+  // not leak the existence of the page it disagrees with.
+  const marcSees = await store.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.equal(marcSees.refused, false);
+  assert.equal(marcSees.disagreement, undefined);
+  assert.deepEqual(marcSees.citations.map((c) => c.pageId), [seven.id]);
+  assert.ok(!marcSees.answer!.includes('ten years'));
+
+  // Dana can see both, and for her the record disagrees with itself.
+  const danaSees = await store.ask(dana.id, { question: 'How long are client records retained?' });
+  assert.ok(danaSees.disagreement);
+  assert.deepEqual([...danaSees.disagreement!.pageIds].sort(), [seven.id, ten.id].sort());
+});
+
+test('ask: the topical gate still refuses, disagreement or not', async () => {
+  const { store, marc, iris, collection } = setup();
+  publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+  );
+  publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client data retention policy',
+    'Client records are retained for ten years after the engagement closes.',
+  );
+
+  // A contradiction in the record is not a reason to answer a question the
+  // record does not cover. Refusal comes first; there is nothing to disagree
+  // about when nothing is cited.
+  const result = await store.ask(marc.id, { question: 'What is our policy on submarine procurement?' });
+  assert.equal(result.refused, true);
+  assert.equal(result.answer, null);
+  assert.deepEqual(result.citations, []);
+  assert.equal(result.disagreement, undefined);
+});
+
+test('ask: an answer that carried a disagreement says so in the audit log', async () => {
+  const { store, marc, iris, collection } = setup();
+  const seven = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+  );
+  const ten = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client data retention policy',
+    'Client records are retained for ten years after the engagement closes.',
+  );
+  publishCanonical(store, marc.id, iris.id, collection.id, 'Vault policy', 'Every access to the vault is logged.');
+
+  await store.ask(marc.id, { question: 'How long are client records retained?' });
+  await store.ask(marc.id, { question: 'Is vault access logged?' });
+
+  const events = store.queryAudit(marc.id, { action: 'answer.ask' });
+  assert.equal(events.length, 2);
+  const [plain, contradicted] = events; // newest first
+  assert.ok(Array.isArray(contradicted!.details.disagreement));
+  assert.deepEqual([...(contradicted!.details.disagreement as string[])].sort(), [seven.id, ten.id].sort());
+  // An ordinary answer carries no such claim.
+  assert.equal(plain!.details.disagreement, undefined);
+  assert.equal(plain!.details.refused, false);
+});
+
+test('extractive: conflicting passages are set against each other, not listed', () => {
+  const passages = [
+    passage('a', 'Records retention policy', 'Client records are retained for seven years.'),
+    passage('b', 'Client data retention policy', 'Client records are retained for ten years.'),
+    passage('c', 'Destruction procedure', 'Records are shredded on site once the retention period ends.'),
+  ];
+  const disagreement = detectDisagreement(passages);
+  assert.ok(disagreement);
+
+  const generated = extractiveGenerator.generate({ question: 'How long are records retained?', passages, disagreement });
+  assert.ok(generated);
+  // The disagreement leads, before any quotation, so the reader meets the
+  // warning before they meet either answer.
+  assert.ok(generated!.answer.startsWith(DISAGREEMENT_LEAD));
+  // The conflicting pair is quoted together, above everything else.
+  const conflictingEnds = generated!.answer.indexOf('Client records are retained for ten years.');
+  const unrelatedAt = generated!.answer.indexOf('Records are shredded on site');
+  assert.ok(conflictingEnds !== -1 && unrelatedAt !== -1 && conflictingEnds < unrelatedAt);
+  assert.ok(generated!.answer.includes('On the rest of it, the record says'));
+  assert.deepEqual(generated!.citedPageIds, ['a', 'b', 'c']);
+
+  // Without a disagreement the extractive default is exactly what it was.
+  const plain = extractiveGenerator.generate({ question: 'How long are records retained?', passages: [passages[2]!] });
+  assert.ok(plain!.answer.startsWith('The record says:'));
 });
