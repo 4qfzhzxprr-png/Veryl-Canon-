@@ -2348,6 +2348,29 @@ async function viewHistory(id) {
 // ---------------------------------------------------------------------------
 // Single-version view
 
+// What standing does the version on the screen hold?
+//
+// This heading used to badge `page.status` whatever version was open, which
+// made it a statement about today printed beside text from years ago: v1 of a
+// page long since approved read CANONICAL, and every superseded version of a
+// page the freshness sweep had flipped read NEEDS UPDATE — as though the old
+// text were the thing that had gone stale.
+//
+// Status is a column on `pages`, not a field on a version (see model.ts), so a
+// superseded version has no status of its own to show. It could be derived —
+// attestation.ts reconstructs the status history from the audit log — but the
+// answer is a range, not a value: a version can be approved, sit Canonical for
+// a year, go past review, and be replaced, and no single badge is true of all
+// of that. So a superseded version gets no status badge at all. It is marked
+// superseded, which is the one thing the record does say about it, and the
+// notice above already links the version that is current. Point-in-time
+// standing has a place that answers it properly, with the approval and the
+// dates attached: the attestation.
+function versionStanding(page, isCurrent) {
+  if (isCurrent) return badge(page.status);
+  return '<span class="role-tag">superseded</span>';
+}
+
 async function viewVersion(id, n) {
   const [page, version] = await Promise.all([
     api('GET', `/pages/${id}`),
@@ -2364,7 +2387,7 @@ async function viewVersion(id, n) {
         ${isCurrent ? 'This is the current version.' : `The current version is v${page.currentVersion ?? '—'}.
           ${page.status !== 'archived' ? `<button class="btn subtle" id="restore-here">Restore this version</button>` : ''}`}
       </div>
-      <h1 class="doc-title">${esc(version.title)} ${badge(page.status)}</h1>
+      <h1 class="doc-title">${esc(version.title)} ${versionStanding(page, isCurrent)}</h1>
       <dl class="field-block">
         <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
         ${version.fields.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(version.fields.ownerId)}</dd></div>` : ''}
@@ -2788,9 +2811,16 @@ async function viewSources() {
 //
 // The contract (DATA-BACKBONE.md §5):
 //   POST /ask { question, collectionId?, limit? }
-//     -> { answer: string|null, citations: [{ pageId, title, version, snippet }],
+//     -> { answer: string|null,
+//          citations: [{ pageId, title, version, snippet, status? }],
 //          refused: boolean, reason?: "no_canonical_match",
+//          pastReview?: [{ pageId, title }],
 //          disagreement?: { pageIds: [...], note } }
+//
+// A citation's `status` is the standing of the page behind the quotation —
+// `canonical`, or `needs_update` when it is past its review date. It is the
+// most trust-bearing thing on this screen, so it is rendered ONLY when the
+// server sent it. See `citationBadge` below for why there is no default.
 //
 // Three things the UI has to carry, because they are the product's promises:
 // every claim is verifiable by clicking through to the cited page and version;
@@ -2815,6 +2845,22 @@ function normalizeCitation(c, i = 0) {
     snippet: c.snippet ?? c.excerpt ?? '',
     status: c.status ?? null,
   };
+}
+
+// The status badge on a source card, and the one place in the Ask view allowed
+// to draw one.
+//
+// It used to fall back to the Canonical mark whenever a citation arrived
+// without a status, and the server had never sent one — so every source card
+// printed CANONICAL, including cards for pages the same answer's prose was
+// calling past review. A default is a claim, and defaulting to the most
+// trust-bearing value in the product is the most expensive claim available:
+// the badge said "approved and current" with nothing behind it. There is no
+// fallback here for that reason. A server that does not send a status gets no
+// badge, the card still names the page and its version, and the reader clicks
+// through — one click is cheaper than one false CANONICAL.
+function citationBadge(c) {
+  return c.status ? badge(c.status, 'sm') : '';
 }
 
 // Turn "[1]" style markers in the answer into buttons that jump to the
@@ -2886,7 +2932,7 @@ function disagreementHTML(dg) {
     const c = p.cite;
     const title = c ? c.title : 'A cited page';
     const meta = c
-      ? `${badge(c.status ?? 'canonical', 'sm')}${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}`
+      ? `${citationBadge(c)}${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}`
       : `<span class="muted dg-unknown">page ${esc(clip(p.id, 12))}</span>`;
     return `
       <li class="dg-page">
@@ -2925,7 +2971,7 @@ function citationsHTML(citations, disputed = new Set()) {
       <span class="citation-main">
         <span class="citation-title-row">
           <span class="citation-title">${esc(c.title)}</span>
-          ${badge(c.status ?? 'canonical', 'sm')}
+          ${citationBadge(c)}
           ${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}
           ${disputed.has(c.pageId)
             ? '<span class="citation-disputed" title="This page is one of the two the record answers differently from. Both are cited; neither has been chosen.">in disagreement</span>'
@@ -2954,12 +3000,23 @@ function citationsHTML(citations, disputed = new Set()) {
 function answerHTML(answer, citations, disagreement = null) {
   const n = citations.length;
   const disputed = new Set((disagreement?.pages ?? []).map((p) => p.id));
+  // The grounding line is a claim about the sources, so it counts them rather
+  // than describing them from memory. A Needs Update page is still Canonical —
+  // it is Canonical AND overdue — but a line reading "drawn from 2 Canonical
+  // pages" above a card badged NEEDS UPDATE reads as a contradiction, and the
+  // reader is right to trust the badge over the summary.
+  const stale = citations.filter((c) => c.status === 'needs_update').length;
+  const staleNote = !stale
+    ? ''
+    : stale === n
+      ? n === 1 ? ', past its review date' : ', all past their review date'
+      : `, ${stale} of them past review`;
   return `
     ${disagreement ? disagreementHTML(disagreement) : ''}
     <article class="answer ${disagreement ? 'is-contested' : ''}">
       <div class="answer-head">
         <h2 class="h-small">Answer</h2>
-        <span class="answer-grounding">drawn from ${n} Canonical page${n === 1 ? '' : 's'}${
+        <span class="answer-grounding">drawn from ${n} Canonical page${n === 1 ? '' : 's'}${staleNote}${
           disagreement ? ', which do not agree' : ''
         }</span>
       </div>
@@ -3038,8 +3095,9 @@ async function viewAsk(collectionId = null) {
           aria-label="Your question"
           placeholder="${esc(ASK_EXAMPLES[0])}">${esc(cached?.question ?? '')}</textarea>
         <div class="ask-form-foot">
-          <p class="ask-grounding">Grounded in ${badge('canonical', 'sm')} pages only${collection ? `, within <strong>${esc(collection.name)}</strong>` : ''}.
-            Drafts, Notes, and pages in review are never used.</p>
+          <p class="ask-grounding">Grounded in ${badge('canonical', 'sm')} pages only${collection ? `, within <strong>${esc(collection.name)}</strong>` : ''} —
+            including any now ${badge('needs_update', 'sm')}, which are still the record's own answer and are
+            marked as such wherever they are cited. Drafts, Notes, and pages in review are never used.</p>
           <button class="btn primary" type="submit" id="ask-submit">Ask</button>
         </div>
       </form>
