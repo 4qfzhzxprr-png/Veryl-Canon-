@@ -43,6 +43,7 @@ import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './im
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
+import { Divergence, DivergenceFilter, DivergenceService, DivergenceState } from './divergence.js';
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
@@ -85,6 +86,10 @@ export class CanonStore {
   readonly connectors: ConnectorRegistry;
   private readonly sources: SourceService;
   private readonly references: ReferenceService;
+  // Contradiction between an authority and a corroborating source
+  // (DATA-BACKBONE.md §7) lives in divergence.ts. It is constructed before the
+  // reference layer because the reference layer hands it every resolution.
+  private readonly divergences: DivergenceService;
   // Agent proposals (FEATURES.md §5, Next tier) live in proposals.ts. A
   // proposal is held apart from the draft on purpose, so it never takes the
   // page lock; see the model note at the top of that file.
@@ -108,7 +113,8 @@ export class CanonStore {
     this.answers = new AnswerService(db, this, this.retrieval);
     this.connectors = connectors;
     this.sources = new SourceService(db, this);
-    this.references = new ReferenceService(db, this, this.sources, this.connectors);
+    this.divergences = new DivergenceService(db, this, this.notifier);
+    this.references = new ReferenceService(db, this, this.sources, this.connectors, this.divergences);
     this.proposals = new ProposalService(db, this, this.notifier);
     this.freshness = new FreshnessService(db, this, this.notifier);
     this.queries = new QueryService(db, this);
@@ -1150,6 +1156,29 @@ export class CanonStore {
 
   resolveReferences(actorId: string, pageId: string): Promise<ResolvedReference[]> {
     return this.references.resolveReferences(actorId, pageId);
+  }
+
+  // ---- divergence (DATA-BACKBONE.md §7) --------------------------------
+  // Thin delegates; the logic and the argument live in divergence.ts. Opening
+  // one has no delegate at all: a divergence is only ever OBSERVED, by the
+  // reference layer, when a corroborating source disagrees with its authority.
+  // There is no way to assert one by hand, because a contradiction Canon did
+  // not see is not something it may claim to have seen.
+
+  listPageDivergences(actorId: string, pageId: string, filter: { state?: DivergenceState } = {}): Divergence[] {
+    return this.divergences.listForPage(actorId, pageId, filter);
+  }
+
+  listDivergences(actorId: string, filter: DivergenceFilter = {}): Divergence[] {
+    return this.divergences.list(actorId, filter);
+  }
+
+  getDivergence(actorId: string, id: string): Divergence {
+    return this.divergences.get(actorId, id);
+  }
+
+  closeDivergence(actorId: string, id: string, input: { reason?: string } = {}): Divergence {
+    return this.divergences.close(actorId, id, input);
   }
 
   // ---- agent proposals (FEATURES.md §5; the Next tier) ------------------

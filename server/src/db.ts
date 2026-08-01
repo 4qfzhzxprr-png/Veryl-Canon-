@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { ensureAuditChain, registerAuditChainFunction } from './auditchain.js';
 import { COMMENTS_SCHEMA } from './comments.js';
+import { DIVERGENCE_SCHEMA } from './divergence.js';
 import { EMBEDDINGS_SCHEMA } from './embeddings.js';
 import { ensurePageFreshnessSchema } from './freshness.js';
 import { IMPORTS_SCHEMA } from './import.js';
@@ -146,6 +147,7 @@ export function applyBaselineSchema(db: DatabaseSync): void {
   db.exec(IMPORTS_SCHEMA); // import runs and their per-file outcomes (Epic E, M4); DDL in import.ts
   db.exec(SOURCES_SCHEMA); // federated sources (DATA-BACKBONE.md §6); DDL in sources.ts
   db.exec(REFERENCES_SCHEMA); // reference fields and their labelled cache; DDL in references.ts
+  db.exec(DIVERGENCE_SCHEMA); // divergences between an authority and a corroborating source (§7); DDL in divergence.ts
   db.exec(PROPOSALS_SCHEMA); // agent proposals (FEATURES.md §5, Next tier); DDL in proposals.ts
   db.exec(QUERIES_SCHEMA); // saved structured queries (Next tier); DDL in queries.ts
   db.exec(ORG_SCHEMA); // org roles, and hand-granted vs group-granted membership; DDL in orgrole.ts
@@ -170,6 +172,34 @@ export const MIGRATIONS: readonly Migration[] = [
     ownTransaction: true,
     always: true,
     up: applyBaselineSchema,
+  },
+  {
+    version: 2,
+    name: 'reference_role',
+    // Authority and corroboration (DATA-BACKBONE.md §7). A COLUMN on an
+    // existing table, so it cannot ride the baseline however idempotent the
+    // rest of references.ts's DDL is: `CREATE TABLE IF NOT EXISTS` sees a
+    // table and does nothing, and a partner's record would be one version
+    // behind the binary reading it. OPERATIONS.md, "Adding a table", rule 3.
+    //
+    // The default is what makes it safe: every reference already in a
+    // partner's record becomes an `authority`, which is exactly what it always
+    // meant. Nothing is demoted, nothing is guessed, and no page changes what
+    // it displays. The migration is the ADD COLUMN and nothing else — no
+    // backfill, because the DEFAULT is the backfill, and no index, because a
+    // record written before §7 may legitimately already carry two sources for
+    // one fact and Canon does not get to pick which of them owns it (see the
+    // note in REFERENCES_SCHEMA).
+    up(db) {
+      const present = (db.prepare('PRAGMA table_info(page_references)').all() as { name: string }[]).some(
+        (c) => c.name === 'role',
+      );
+      if (present) return;
+      db.exec(
+        "ALTER TABLE page_references ADD COLUMN role TEXT NOT NULL DEFAULT 'authority' " +
+          "CHECK (role IN ('authority', 'corroborating'))",
+      );
+    },
   },
 ];
 

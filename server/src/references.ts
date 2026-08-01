@@ -4,6 +4,7 @@ import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
 import { Asker, ConnectorRegistry, ResolveRequest } from './connectors.js';
 import { Source, SourceAuthMode, SourceService } from './sources.js';
 import { refuseUnpermittedSource } from './agentauth.js';
+import type { DivergenceService, ReferenceDivergenceMarker } from './divergence.js';
 
 // Federation, part three: reference fields and their resolution
 // (DATA-BACKBONE.md §6). A reference field is a structured field on a page
@@ -47,6 +48,29 @@ import { refuseUnpermittedSource } from './agentauth.js';
 // source or from the cache. That log is what makes federation defensible to a
 // compliance lead; it is load-bearing, not decoration.
 
+// AUTHORITY AND CORROBORATION (DATA-BACKBONE.md §7)
+//
+// A reference declares which system is authoritative for the fact it names.
+// "Authority belongs to a field, not to a source": the same benefits system
+// can be the authority for the deductible on one page and a corroborating
+// copy of the headcount on another, and the reference is where that is said.
+//
+// Two rules, both enforced in `add` below:
+//
+//   1. AT MOST ONE AUTHORITY per (page, selector, key). A second is refused —
+//      two authorities for one fact is a contradiction in the MODEL rather
+//      than in the data, and the model is the one place Canon is allowed to
+//      insist on coherence. What the second source wants to be is
+//      corroborating.
+//   2. A CORROBORATING REFERENCE NEEDS SOMETHING TO CORROBORATE. Adding one
+//      where no authority exists is refused, because §7's whole precedence
+//      rule is "there is an authority and there are copies"; a page holding
+//      only copies has quietly invented the averaging Canon will not do.
+//
+// `role` defaults to `authority`, so every reference written before this
+// existed keeps exactly the meaning it had. The column is the one part of this
+// feature that changes an existing table, so it arrives as numbered migration
+// 2 rather than through the baseline (OPERATIONS.md, "Adding a table").
 export const REFERENCES_SCHEMA = `
 CREATE TABLE IF NOT EXISTS page_references (
   id         TEXT PRIMARY KEY,
@@ -55,6 +79,7 @@ CREATE TABLE IF NOT EXISTS page_references (
   selector   TEXT NOT NULL,
   ref_key    TEXT NOT NULL,
   label      TEXT,
+  role       TEXT NOT NULL DEFAULT 'authority' CHECK (role IN ('authority', 'corroborating')),
   created_by TEXT NOT NULL REFERENCES actors(id),
   created_at TEXT NOT NULL,
   UNIQUE (page_id, source_id, selector, ref_key)
@@ -62,6 +87,16 @@ CREATE TABLE IF NOT EXISTS page_references (
 
 CREATE INDEX IF NOT EXISTS idx_page_references_page ON page_references(page_id);
 CREATE INDEX IF NOT EXISTS idx_page_references_source ON page_references(source_id);
+
+-- Rule 1 is enforced in add() below and NOT by a unique index here, which is a
+-- decision rather than an omission. Before the role column existed every
+-- reference was authoritative by definition, and the table's own UNIQUE clause
+-- happily allowed two sources to answer the same (page, selector, key). A
+-- partial unique index over role = 'authority' would therefore either refuse
+-- to build on such a record -- an upgrade that fails at the storage layer --
+-- or force the migration to demote one of them, which is Canon picking which
+-- system owns a fact behind an operator's back. Section 7 forbids exactly
+-- that. So the invariant is held from the moment a role is first stated.
 
 CREATE TABLE IF NOT EXISTS reference_cache (
   reference_id TEXT NOT NULL REFERENCES page_references(id),
@@ -77,6 +112,14 @@ CREATE TABLE IF NOT EXISTS reference_cache (
 // rather than to a person. An empty string can never collide with an actor id.
 const SERVICE_ASKER = '';
 
+/**
+ * Which system owns this fact, and which merely answers about it
+ * (DATA-BACKBONE.md §7). `authority` is the default so that every reference
+ * written before this existed keeps precisely the meaning it had.
+ */
+export type ReferenceRole = 'authority' | 'corroborating';
+export const REFERENCE_ROLES: readonly ReferenceRole[] = ['authority', 'corroborating'];
+
 /** The unresolved descriptor: what the page carries, and what the UI renders. */
 export interface PageReference {
   id: string;
@@ -88,6 +131,7 @@ export interface PageReference {
   selector: string;
   key: string;
   label: string | null;
+  role: ReferenceRole;
   createdBy: string;
   createdAt: string;
 }
@@ -101,12 +145,28 @@ export interface ResolvedReference {
   selector: string;
   key: string;
   label: string | null;
+  /**
+   * Authority or corroboration (§7). THE AUTHORITY'S VALUE IS WHAT DISPLAYS,
+   * always: nothing in this file lets a corroborating source replace it,
+   * override it when fresher, or blank it when it disagrees. A corroborating
+   * reference simply comes back beside it with its own value and this label on
+   * it, and — where the two differ — the `divergence` marker below.
+   */
+  role: ReferenceRole;
   /** Null only when nothing could be resolved and nothing was ever cached. */
   value: unknown;
   resolvedAt: string | null;
   fromCache: boolean;
   stale: boolean;
   error?: string;
+  /**
+   * Present only when this reference takes part in at least one OPEN
+   * divergence (divergence.ts), so a page can show that its systems disagree
+   * without a second call — the same reason the unresolved descriptors travel
+   * inside the page payload. Absent, exactly as `error` is, when there is
+   * nothing to say.
+   */
+  divergence?: ReferenceDivergenceMarker;
 }
 
 export interface ReferenceInput {
@@ -114,6 +174,8 @@ export interface ReferenceInput {
   selector: string;
   key: string;
   label?: string | null;
+  /** Defaults to `authority`; see REFERENCES_SCHEMA's header for the two rules. */
+  role?: ReferenceRole;
 }
 
 // The minimal slice of CanonStore this service needs; CanonStore satisfies it.
@@ -132,6 +194,13 @@ export class ReferenceService {
     private readonly host: ReferenceHost,
     private readonly sources: SourceService,
     private readonly connectors: ConnectorRegistry,
+    /**
+     * Divergence detection (divergence.ts). Optional so a caller can build a
+     * bare reference layer; when it is absent nothing is compared and no
+     * marker appears, which is exactly how this file behaved before §7 was
+     * built. The store always supplies one.
+     */
+    private readonly divergence: DivergenceService | null = null,
   ) {}
 
   // ---- the reference field on a page ----------------------------------
@@ -155,13 +224,40 @@ export class ReferenceService {
     const id = randomUUID();
     const selector = input.selector.trim();
     const key = input.key.trim();
+    const role = input.role ?? 'authority';
+    if (!REFERENCE_ROLES.includes(role)) {
+      throw new CanonError('invalid', `Unknown reference role: ${String(role)}`, { supported: REFERENCE_ROLES });
+    }
+
+    // §7's two model rules. Both are about (page, selector, key) — one fact on
+    // one page — because that is the unit authority attaches to.
+    const authority = this.authorityFor(pageId, selector, key);
+    if (role === 'authority' && authority) {
+      throw new CanonError(
+        'conflict',
+        `This page already names ${authority.sourceName} as the authority for ${selector}/${key}. ` +
+          'Two authorities for one fact is a contradiction in the model rather than in the data: ' +
+          'add this source as corroborating instead, and Canon will record any disagreement.',
+        { selector, key, authorityReferenceId: authority.id, authoritySourceId: authority.sourceId, role },
+      );
+    }
+    if (role === 'corroborating' && !authority) {
+      throw new CanonError(
+        'workflow',
+        `A corroborating reference requires an authority to corroborate, and this page names none for ` +
+          `${selector}/${key}. Add the system that owns this fact first; a page holding only copies has ` +
+          'no owner to be right by definition.',
+        { selector, key, role },
+      );
+    }
+
     try {
       this.db
         .prepare(
-          `INSERT INTO page_references (id, page_id, source_id, selector, ref_key, label, created_by, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO page_references (id, page_id, source_id, selector, ref_key, label, role, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, pageId, source.id, selector, key, input.label?.trim() || null, actorId, now());
+        .run(id, pageId, source.id, selector, key, input.label?.trim() || null, role, actorId, now());
     } catch (err) {
       if (String((err as Error).message).includes('UNIQUE')) {
         throw new CanonError('conflict', 'This page already carries that reference', {
@@ -176,7 +272,7 @@ export class ReferenceService {
     this.audit(actor, 'reference.add', {
       collectionId: page.collectionId,
       pageId,
-      details: { referenceId: id, sourceId: source.id, sourceName: source.name, selector, key },
+      details: { referenceId: id, sourceId: source.id, sourceName: source.name, selector, key, role },
     });
     return this.reference(id);
   }
@@ -186,6 +282,27 @@ export class ReferenceService {
     const reference = this.reference(referenceId);
     const page = this.page(reference.pageId);
     this.requireRole(actorId, page.collectionId, 'edit');
+    // Removing the authority while copies of it remain would leave the page in
+    // the state rule 2 refuses to create: corroboration with nothing to
+    // corroborate. Refuse visibly, and say which references are in the way,
+    // rather than silently promoting one of them — choosing a new authority is
+    // an act, and it is the operator's.
+    if (reference.role === 'authority') {
+      const dependents = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM page_references
+            WHERE page_id = ? AND selector = ? AND ref_key = ? AND role = 'corroborating'`,
+        )
+        .get(reference.pageId, reference.selector, reference.key) as { n: number };
+      if (dependents.n > 0) {
+        throw new CanonError(
+          'conflict',
+          `${dependents.n} corroborating reference(s) on this page answer ${reference.selector}/${reference.key}; ` +
+            'remove them, or name their authority, before removing this one',
+          { referenceId, selector: reference.selector, key: reference.key, corroborating: dependents.n },
+        );
+      }
+    }
     this.db.prepare('DELETE FROM reference_cache WHERE reference_id = ?').run(referenceId);
     this.db.prepare('DELETE FROM page_references WHERE id = ?').run(referenceId);
     this.audit(actor, 'reference.remove', {
@@ -262,6 +379,7 @@ export class ReferenceService {
           selector: reference.selector,
           key: reference.key,
           label: reference.label,
+          role: reference.role,
           value: null,
           resolvedAt: null,
           fromCache: false,
@@ -272,6 +390,20 @@ export class ReferenceService {
       }
       const result = await this.resolveOne(actor, page.collectionId, reference);
       resolved.push(result);
+    }
+
+    // Only now, with every reference on the page in hand, is the §7 comparison
+    // possible: a corroborating value means nothing without the authority's
+    // beside it. divergence.ts records what disagrees and hands back the
+    // markers; it never touches a value, so what each reference says is
+    // exactly what its own source said — the authority's included, and the
+    // authority's above all.
+    if (this.divergence) {
+      const markers = this.divergence.observe(actor, pageId, resolved);
+      for (const reference of resolved) {
+        const marker = markers.get(reference.referenceId);
+        if (marker) reference.divergence = marker;
+      }
     }
     return resolved;
   }
@@ -292,6 +424,7 @@ export class ReferenceService {
       selector: reference.selector,
       key: reference.key,
       label: reference.label,
+      role: reference.role,
     };
     // A per_asker value belongs to its asker; a service value belongs to the
     // collection. The cache key says which, and that is what keeps one
@@ -395,9 +528,32 @@ export class ReferenceService {
       selector: row.selector as string,
       key: row.ref_key as string,
       label: (row.label as string) ?? null,
+      // A record written before §7 has no role column value for this row only
+      // if the migration has not run, which cannot happen; the fallback is
+      // still the default the whole feature is built on — every pre-existing
+      // reference is an authority.
+      role: ((row.role as ReferenceRole) ?? 'authority') satisfies ReferenceRole,
       createdBy: row.created_by as string,
       createdAt: row.created_at as string,
     };
+  }
+
+  /** The one authoritative reference for a fact on a page, if there is one. */
+  private authorityFor(
+    pageId: string,
+    selector: string,
+    key: string,
+  ): { id: string; sourceId: string; sourceName: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT r.id, r.source_id, s.name AS source_name
+           FROM page_references r JOIN sources s ON s.id = r.source_id
+          WHERE r.page_id = ? AND r.selector = ? AND r.ref_key = ? AND r.role = 'authority'
+          LIMIT 1`,
+      )
+      .get(pageId, selector, key) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return { id: row.id as string, sourceId: row.source_id as string, sourceName: row.source_name as string };
   }
 
   private page(id: string): { id: string; collectionId: string } {

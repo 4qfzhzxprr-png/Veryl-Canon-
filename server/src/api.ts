@@ -249,6 +249,34 @@ const routes: Route[] = [
     return { ok: true };
   }),
 
+  // Divergence (DATA-BACKBONE.md §7). Two reads and one decision.
+  //
+  // There is deliberately no route that OPENS one: a divergence is observed by
+  // the reference layer when a corroborating source disagrees with its
+  // authority, and it appears on `GET /pages/:id/references` as a marker on
+  // the references involved — so a page shows the disagreement without a
+  // second call. These routes are for the list and the settlement.
+  //
+  // `POST /divergences/:id/close` requires a reason and is a PERSON's act,
+  // absent from agentauth.ts's route table exactly as the proposal decisions
+  // are. See the note there and in divergence.ts.
+  route('GET', '/pages/:id/divergences', ({ store, actorId, params, query }) =>
+    store.listPageDivergences(actorId, params.id!, {
+      state: (query.get('state') as 'open' | 'closed' | null) ?? undefined,
+    }),
+  ),
+  route('GET', '/divergences', ({ store, actorId, query }) =>
+    store.listDivergences(actorId, {
+      state: (query.get('state') as 'open' | 'closed' | null) ?? undefined,
+      collectionId: query.get('collection') ?? undefined,
+      limit: query.get('limit') ? Number(query.get('limit')) : undefined,
+    }),
+  ),
+  route('GET', '/divergences/:id', ({ store, actorId, params }) => store.getDivergence(actorId, params.id!)),
+  route('POST', '/divergences/:id/close', ({ store, actorId, params, body }) =>
+    store.closeDivergence(actorId, params.id!, body ?? {}),
+  ),
+
   // Agent proposals (FEATURES.md §5, the Next tier). Proposing is an edit act
   // and available to agents; accepting and rejecting are a person's act and
   // are deliberately absent from agentauth.ts's route table, so an agent

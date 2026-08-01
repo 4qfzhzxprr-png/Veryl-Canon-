@@ -72,7 +72,14 @@ export type NotificationKind =
   | 'proposal_accepted'
   | 'proposal_rejected'
   | 'proposal_superseded'
-  | 'review_due';
+  | 'review_due'
+  // `divergence_opened` is §7's voice (divergence.ts): a corroborating source
+  // has disagreed with the system that owns the fact, and the owner of the
+  // page displaying it is told once, when it is first observed. Following
+  // `review_due` deliberately — same outbox, same straight-to-`send` (the
+  // owner is told even when the owner is the reader whose page view noticed
+  // it), and the same premise: knowledge that has gone wrong announces itself.
+  | 'divergence_opened';
 
 export interface Notification {
   id: string;
