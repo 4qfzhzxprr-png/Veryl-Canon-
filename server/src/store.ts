@@ -1322,7 +1322,28 @@ export class CanonStore {
       ? Math.min(Math.max(Math.trunc(asked), 1), AUDIT_PAGE_MAX)
       : AUDIT_PAGE_DEFAULT;
     const rows = this.db
-      .prepare(`SELECT * FROM audit_events ${where} ORDER BY id DESC LIMIT ?`)
+      // The page's title and the collection's name travel with the event.
+      //
+      // The log's "where" column read the word "page" on every page event,
+      // which tells somebody scanning a thousand rows nothing (USER-TESTING.md
+      // T2.2). The title is not stored ON the event and must not be — an event
+      // is a fact about an instant, and a page renamed next year did not
+      // retroactively have that name when this happened. So it is joined at
+      // READ time and is explicitly the title NOW, which is the right answer
+      // for the question this column is actually asked: "which page is this?"
+      // A reader who needs the title as it stood at that instant is asking a
+      // point-in-time question, and `GET /pages/:id/as-of` answers it properly.
+      //
+      // The join gives away nothing: `where` has already restricted the rows
+      // to events the asker may see, and seeing an event about a page is
+      // already seeing that the page exists.
+      .prepare(
+        `SELECT audit_events.*, pages.title AS page_title, collections.name AS collection_name
+         FROM audit_events
+         LEFT JOIN pages ON pages.id = audit_events.page_id
+         LEFT JOIN collections ON collections.id = audit_events.collection_id
+         ${where} ORDER BY audit_events.id DESC LIMIT ?`,
+      )
       .all(...params, limit) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: r.id as number,
@@ -1332,6 +1353,8 @@ export class CanonStore {
       action: r.action as string,
       collectionId: (r.collection_id as string) ?? null,
       pageId: (r.page_id as string) ?? null,
+      pageTitle: (r.page_title as string) ?? null,
+      collectionName: (r.collection_name as string) ?? null,
       details: JSON.parse(r.details_json as string) as Record<string, unknown>,
     }));
   }
@@ -1427,11 +1450,11 @@ export class CanonStore {
     ];
     const params: (string | number)[] = [actorId, isOrgOperator(this.db, actorId) ? 1 : 0, actorId];
     if (filter.actorId) {
-      clauses.push('actor_id = ?');
+      clauses.push('audit_events.actor_id = ?');
       params.push(filter.actorId);
     }
     if (filter.action) {
-      clauses.push('action = ?');
+      clauses.push('audit_events.action = ?');
       params.push(filter.action);
     }
     // The two filters that were ACCEPTED AND IGNORED (USER-TESTING.md T2.2).
@@ -1441,14 +1464,14 @@ export class CanonStore {
     // because an event that names no collection (an agent session, a refused
     // passport) is not attributable to one and is therefore correctly absent.
     if (filter.collectionId) {
-      clauses.push('collection_id = ?');
+      clauses.push('audit_events.collection_id = ?');
       params.push(filter.collectionId);
     }
     // A page filter does NOT imply its collection: it is the narrower question
     // and the permission clause above already governs whether the asker may
     // see any of it.
     if (filter.pageId) {
-      clauses.push('page_id = ?');
+      clauses.push('audit_events.page_id = ?');
       params.push(filter.pageId);
     }
     // Inclusive at both ends, on the stored ISO-8601 UTC text. The caller is
@@ -1456,17 +1479,17 @@ export class CanonStore {
     // surface that is `instantParam` in input.ts, which is where a bare date
     // becomes the right edge of the day it names.
     if (filter.from) {
-      clauses.push('at >= ?');
+      clauses.push('audit_events.at >= ?');
       params.push(filter.from);
     }
     if (filter.to) {
-      clauses.push('at <= ?');
+      clauses.push('audit_events.at <= ?');
       params.push(filter.to);
     }
     // The cursor. Strictly less-than, so handing back the last id of a page
     // yields the next page with no row repeated and none skipped.
     if (filter.before !== undefined) {
-      clauses.push('id < ?');
+      clauses.push('audit_events.id < ?');
       params.push(filter.before);
     }
     return { where: `WHERE ${clauses.join(' AND ')}`, params };

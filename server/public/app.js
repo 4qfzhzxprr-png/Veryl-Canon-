@@ -49,14 +49,6 @@ const STATUS_LABELS = {
   archived: 'Archived',
 };
 
-const AUDIT_ACTIONS = [
-  'collection.create', 'collection.member_set', 'collection.member_removed',
-  'page.create', 'page.view', 'page.move', 'page.archive',
-  'draft.start', 'draft.discard',
-  'page.publish', 'page.submit', 'page.approve', 'page.send_back', 'page.withdraw', 'page.restore',
-  'page.needs_update',
-];
-
 const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
 
 // ---------------------------------------------------------------------------
@@ -232,6 +224,22 @@ function fmtDateTime(iso) {
   if (Number.isNaN(d.getTime())) return esc(iso);
   return d.toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// The same instant, to the second. The audit log needs it and nothing else
+// does: a seeded record writes 1,100 events inside one minute, and a table of
+// them displayed to the minute shows a column of identical timestamps beside
+// rows whose ORDER is the only thing distinguishing them. An auditor
+// reconstructing a sequence — submitted, then approved, then viewed — cannot
+// do it from a display that has thrown the ordering away.
+function fmtInstant(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return esc(iso);
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
 }
 
@@ -729,9 +737,20 @@ function wireSearch() {
 const app = document.getElementById('app');
 
 function parseHash() {
-  const h = location.hash.replace(/^#/, '');
+  // The query is stripped before the path is split. A view that scopes itself
+  // with filters keeps them in the hash so the scoped view is a LINK — an
+  // auditor pastes "the log for this page, over this fortnight" into a working
+  // paper and it still means that tomorrow. Without this split, `#/audit?x=1`
+  // parses as the single segment "audit?x=1" and matches no route at all.
+  const h = location.hash.replace(/^#/, '').split('?')[0];
   const parts = h.split('/').filter(Boolean).map(decodeURIComponent);
   return parts; // e.g. ['pages', id, 'edit']
+}
+
+function hashQuery() {
+  const at = location.hash.indexOf('?');
+  if (at === -1) return {};
+  return Object.fromEntries(new URLSearchParams(location.hash.slice(at + 1)));
 }
 
 async function route() {
@@ -751,7 +770,7 @@ async function route() {
   try {
     if (parts.length === 0) return await render(viewHome);
     if (parts[0] === 'identity') return await render(viewIdentity);
-    if (parts[0] === 'audit') return await render(viewAudit);
+    if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
@@ -2534,6 +2553,13 @@ async function viewHistory(id) {
       </div>
       <p class="muted">Every published version is kept. Restoring never rewrites history —
       it publishes the old content as a new version. Select two versions to compare.</p>
+      ${/* The audit log scoped to this page. It is here because this is where
+            somebody is already standing when they want it: "what happened to
+            THIS page" was previously answerable only by reading the whole log,
+            since the page filter was accepted by the API and then ignored. */ ''}
+      <p class="muted">Versions are what was published. For everything that happened to this page —
+      views of restricted material, submissions, send-backs, approvals —
+      <a href="#/audit?page=${encodeURIComponent(id)}">see its audit log</a>.</p>
       ${versions.length ? `
         <table class="table">
           <thead><tr><th></th><th>Version</th><th>Published</th><th>Author</th><th>Note</th><th></th></tr></thead>
@@ -2701,76 +2727,200 @@ async function viewCompare(id, a, b) {
 // ---------------------------------------------------------------------------
 // Audit view
 
-async function viewAudit() {
+// USER-TESTING.md T2.2, and the shape of the whole view follows from it. An
+// auditor found this screen showing 200 rows of 1,187 with no count, no
+// paging, no date filter, no export, and an action list hard-coded here that
+// was missing ten of the actions the record writes. Her conclusion was that no
+// sample drawn from it was defensible — not because the rows were wrong, but
+// because nothing on the screen said what the rows were a sample OF.
+//
+// So three things are load-bearing here and should not be quietly dropped:
+// the population count beside the page count, the walk that can actually reach
+// the end of the log, and the export carrying the filter rather than the page.
+async function viewAudit(query = {}) {
   await loadActors().catch(() => null);
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { collections = []; }
+
+  // Filters live in the URL, so a scoped log is a link an auditor can put in a
+  // working paper and come back to — and so "the history of this page" can be
+  // a link from the page itself rather than a filter nobody can find.
+  const filters = {
+    action: query.action ?? '',
+    actor: query.actor ?? '',
+    collection: query.collection ?? '',
+    page: query.page ?? '',
+    from: query.from ?? '',
+    to: query.to ?? '',
+  };
+
   app.innerHTML = `
     <div class="page-wide">
-      <div class="page-head"><h1>Audit log</h1></div>
+      <div class="page-head">
+        <h1>Audit log</h1>
+        <div class="actions"><a class="btn" id="audit-export" href="#">Export CSV</a></div>
+      </div>
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
       material, attributed to its actor.</p>
       <form id="audit-filters" class="inline-form">
-        <label>Action
-          <select name="action">
-            <option value="">All actions</option>
-            ${AUDIT_ACTIONS.map((a) => `<option value="${a}">${a}</option>`).join('')}
-          </select>
-        </label>
+        <label>Action <select name="action"><option value="">All actions</option></select></label>
         <label>Actor
           <select name="actor">
             <option value="">All actors</option>
-            ${(state.actors ?? []).map((a) => `<option value="${esc(a.id)}">${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('')}
+            ${(state.actors ?? []).map((a) => `<option value="${esc(a.id)}"${a.id === filters.actor ? ' selected' : ''}>${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('')}
             <!-- Canon's own actor is not in the directory (it is nobody you can
                  name as an owner), but it IS in the log, and an auditor sampling
                  the log has to be able to isolate the machine's acts from the
                  people's. So it is offered here and only here. -->
-            <option value="${esc(SYSTEM_ACTOR_ID)}">${esc(SYSTEM_ACTOR_NAME)} (system)</option>
+            <option value="${esc(SYSTEM_ACTOR_ID)}"${filters.actor === SYSTEM_ACTOR_ID ? ' selected' : ''}>${esc(SYSTEM_ACTOR_NAME)} (system)</option>
           </select>
         </label>
+        <label>Collection
+          <select name="collection">
+            <option value="">All collections</option>
+            ${collections.map((c) => `<option value="${esc(c.id)}"${c.id === filters.collection ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}
+          </select>
+        </label>
+        <label>From <input type="date" name="from" value="${esc(filters.from)}"></label>
+        <label>To <input type="date" name="to" value="${esc(filters.to)}"></label>
+        ${filters.page ? `<span class="chip">One page <a href="#" id="audit-clear-page" title="Show the whole log again">clear</a></span>` : ''}
       </form>
+      <p id="audit-count" class="muted"></p>
       <div id="audit-table"><div class="loading">Loading…</div></div>
+      <div id="audit-more"></div>
     </div>`;
 
   const form = app.querySelector('#audit-filters');
   const tableHost = app.querySelector('#audit-table');
+  const countHost = app.querySelector('#audit-count');
+  const moreHost = app.querySelector('#audit-more');
 
-  const load = async () => {
-    tableHost.innerHTML = '<div class="loading">Loading…</div>';
-    const params = new URLSearchParams();
-    if (form.action.value) params.set('action', form.action.value);
-    if (form.actor.value) params.set('actor', form.actor.value);
-    try {
-      const events = await api('GET', `/audit${params.toString() ? `?${params}` : ''}`);
-      if (!events.length) {
-        tableHost.innerHTML = `
-          <div class="empty-state"><h2>No matching events</h2>
-          <p>Nothing in the log matches these filters yet.</p></div>`;
-        return;
-      }
+  const current = () => ({
+    action: form.action.value,
+    actor: form.actor.value,
+    collection: form.collection.value,
+    page: filters.page,
+    from: form.from.value,
+    to: form.to.value,
+  });
+
+  const paramsOf = (f) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) if (v) p.set(k, v);
+    return p;
+  };
+
+  // Everything shown so far, across every "Show older" the reader has pressed.
+  // Kept here rather than re-fetched, because re-fetching page one to append
+  // page two is how a walk starts disagreeing with itself.
+  let shown = [];
+
+  const rowHtml = (e) => {
+    const details = Object.entries(e.details ?? {})
+      .map(([k, v]) => `<span class="detail-kv"><span class="muted">${esc(k)}:</span> ${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</span>`)
+      .join(' ');
+    // "Where" read the word "page" for every page event, which told an auditor
+    // scanning a thousand rows nothing at all. It names the thing now, and the
+    // link scopes the log to it rather than leaving the log.
+    // The server joins the page's title and the collection's name onto the
+    // event; it is the name NOW, not at the instant (see queryAudit). A row
+    // whose page has since been deleted falls back to the bare word rather
+    // than inventing one.
+    const where = e.pageId
+      ? `<a href="#/pages/${esc(e.pageId)}">${esc(e.pageTitle ?? 'page')}</a>`
+      : e.collectionId
+        ? `<a href="#/collections/${esc(e.collectionId)}">${esc(e.collectionName ?? 'collection')}</a>`
+        : '<span class="muted">—</span>';
+    return `<tr>
+      <td class="nowrap">${fmtInstant(e.at)}</td>
+      <td>${esc(actorName(e.actorId))} ${e.actorKind === 'person' ? '' : kindTag(e.actorKind)}</td>
+      <td><code class="action-code">${esc(e.action)}</code></td>
+      <td>${where}</td>
+      <td class="audit-details">${details || '<span class="muted">—</span>'}</td>
+    </tr>`;
+  };
+
+  const render = (matching) => {
+    if (!shown.length) {
       tableHost.innerHTML = `
-        <table class="table audit">
-          <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Where</th><th>Details</th></tr></thead>
-          <tbody>
-            ${events.map((e) => {
-              const details = Object.entries(e.details ?? {})
-                .map(([k, v]) => `<span class="detail-kv"><span class="muted">${esc(k)}:</span> ${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</span>`)
-                .join(' ');
-              return `<tr>
-                <td class="nowrap">${fmtDateTime(e.at)}</td>
-                <td>${esc(actorName(e.actorId))} ${e.actorKind === 'person' ? '' : kindTag(e.actorKind)}</td>
-                <td><code class="action-code">${esc(e.action)}</code></td>
-                <td>${e.pageId ? `<a href="#/pages/${esc(e.pageId)}">page</a>` : e.collectionId ? `<a href="#/collections/${esc(e.collectionId)}">collection</a>` : '<span class="muted">—</span>'}</td>
-                <td class="audit-details">${details || '<span class="muted">—</span>'}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>`;
+        <div class="empty-state"><h2>No matching events</h2>
+        <p>Nothing in the log matches these filters.</p></div>`;
+      moreHost.innerHTML = '';
+      return;
+    }
+    tableHost.innerHTML = `
+      <table class="table audit">
+        <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Where</th><th>Details</th></tr></thead>
+        <tbody>${shown.map(rowHtml).join('')}</tbody>
+      </table>`;
+    // The sentence that was missing. A screen showing a page and saying
+    // nothing about the rest asserts a completeness it does not have.
+    const all = shown.length >= matching;
+    countHost.textContent = all
+      ? `${matching.toLocaleString()} event${matching === 1 ? '' : 's'} match these filters. All of them are shown.`
+      : `Showing the ${shown.length.toLocaleString()} most recent of ${matching.toLocaleString()} matching events.`;
+    moreHost.innerHTML = all
+      ? ''
+      : `<button class="btn" id="audit-older">Show older (${(matching - shown.length).toLocaleString()} more)</button>`;
+    const older = moreHost.querySelector('#audit-older');
+    if (older) older.addEventListener('click', () => load({ append: true }));
+  };
+
+  const load = async ({ append = false } = {}) => {
+    const f = current();
+    if (!append) {
+      shown = [];
+      tableHost.innerHTML = '<div class="loading">Loading…</div>';
+      moreHost.innerHTML = '';
+      // The link an auditor can keep. Replaced rather than pushed, so paging
+      // does not fill the back button with filter states.
+      const q = paramsOf(f).toString();
+      history.replaceState(null, '', `#/audit${q ? `?${q}` : ''}`);
+    }
+    const params = paramsOf(f);
+    // The cursor is the id of the oldest row already shown; see queryAudit.
+    if (append && shown.length) params.set('before', String(shown[shown.length - 1].id));
+    try {
+      const [events, summary] = await Promise.all([
+        api('GET', `/audit${params.toString() ? `?${params}` : ''}`),
+        api('GET', `/audit/summary${paramsOf(f).toString() ? `?${paramsOf(f)}` : ''}`),
+      ]);
+      shown = append ? shown.concat(events) : events;
+      fillActions(summary.actions, f.action);
+      render(summary.matching);
+      const exportLink = app.querySelector('#audit-export');
+      exportLink.setAttribute('href', `/audit.csv${paramsOf(f).toString() ? `?${paramsOf(f)}` : ''}`);
+      // The export carries the FILTERS, never the page — so what downloads is
+      // the population the count above describes, not the rows on screen.
+      exportLink.title = `Downloads all ${summary.matching.toLocaleString()} matching events, not just the ones shown.`;
     } catch (err) {
       tableHost.innerHTML = `<div class="empty-state"><h2>Could not load the log</h2><p>${esc(err.message)}</p></div>`;
     }
   };
 
-  form.action.addEventListener('change', load);
-  form.actor.addEventListener('change', load);
+  // The action list comes from the record, with counts. It used to be a
+  // hard-coded array here that had drifted: ten action types the record writes
+  // were absent from it, and four it offered have never been written.
+  const fillActions = (actions, selected) => {
+    const total = actions.reduce((n, a) => n + a.count, 0);
+    form.action.innerHTML =
+      `<option value="">All actions (${total.toLocaleString()})</option>` +
+      actions
+        .map((a) => `<option value="${esc(a.action)}"${a.action === selected ? ' selected' : ''}>${esc(a.action)} (${a.count.toLocaleString()})</option>`)
+        .join('');
+  };
+
+  for (const name of ['action', 'actor', 'collection', 'from', 'to']) {
+    form[name].addEventListener('change', () => load());
+  }
+  const clearPage = app.querySelector('#audit-clear-page');
+  if (clearPage) {
+    clearPage.addEventListener('click', (e) => {
+      e.preventDefault();
+      filters.page = '';
+      location.hash = '#/audit';
+    });
+  }
   await load();
 }
 

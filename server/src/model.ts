@@ -246,6 +246,20 @@ export interface AuditEvent {
   action: string;
   collectionId: string | null;
   pageId: string | null;
+  /**
+   * What the page and collection are called NOW, joined at read time rather
+   * than stored on the event — a page renamed next year did not retroactively
+   * carry that name when this happened, so this can never become part of the
+   * immutable record. It is here because "where" reading the bare word "page"
+   * on every row tells a reader scanning a thousand of them nothing.
+   *
+   * Absent on an event constructed by hand rather than read from the record,
+   * and null where the event names no page or the page has since been deleted.
+   * A reader who needs the title as it stood at that instant is asking a
+   * point-in-time question; `GET /pages/:id/as-of` is where that is answered.
+   */
+  pageTitle?: string | null;
+  collectionName?: string | null;
   details: Record<string, unknown>;
 }
 
