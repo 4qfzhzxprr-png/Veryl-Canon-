@@ -713,7 +713,18 @@ test('a read-certified agent may ask, and the answer respects both sides', async
         'PUT',
         `/pages/${page.id}/draft`,
         { actor: dana.id },
-        { body, fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' } },
+        {
+          body,
+          // A Policy states an effective date before it publishes (T1.5).
+          // Today's: written and published in the same breath, so it claims
+          // nothing about a time the record cannot see.
+          fields: {
+            ownerId: dana.id,
+            approverId: iris.id,
+            reviewDate: '2099-01-01',
+            effectiveDate: new Date().toISOString().slice(0, 10),
+          },
+        },
       );
       await r.call('POST', `/pages/${page.id}/submit`, { actor: dana.id }, {});
       await r.call('POST', `/pages/${page.id}/approve`, { actor: iris.id }, {});

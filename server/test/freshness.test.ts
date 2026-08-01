@@ -18,6 +18,12 @@ import { setHandOrgRole } from '../src/orgrole.js';
 import { CanonStore } from '../src/store.js';
 import { SYSTEM_ACTOR_ID, SYSTEM_ACTOR_NAME } from '../src/system.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 // Verification and freshness (FEATURES.md §3): a Canonical page carries a
 // review date; when it passes, the page flips to Needs Update and the owner is
 // notified. These tests hold that promise to its exact wording — only
@@ -64,7 +70,7 @@ function canonicalPolicy(
   ownerId = editorId,
 ) {
   const page = store.createPage(editorId, { collectionId, type: 'policy', title });
-  store.editDraft(editorId, page.id, { body, fields: { ownerId, approverId, reviewDate } });
+  store.editDraft(editorId, page.id, { body, fields: { ownerId, approverId, reviewDate, effectiveDate: TODAY } });
   store.submitForReview(editorId, page.id);
   return store.approve(approverId, page.id);
 }
@@ -85,8 +91,15 @@ test('review date: required where the type demands it, refused where it makes no
   expectCode(() => store.submitForReview(marc.id, policy.id), 'workflow');
 
   store.editDraft(marc.id, policy.id, { fields: { reviewDate: '2027-03-01' } });
+  // And an effective date, for the same reason and by the same mechanism
+  // (USER-TESTING.md T1.5): the review date is satisfied, so the next refusal
+  // names the field that is still missing rather than repeating the first.
+  const stillRefused = expectCode(() => store.publish(marc.id, policy.id), 'workflow');
+  assert.match(stillRefused!.message, /effective date/);
+  store.editDraft(marc.id, policy.id, { fields: { effectiveDate: TODAY } });
   const published = store.publish(marc.id, policy.id);
   assert.equal(published.reviewDate, '2027-03-01'); // structured field, on the page
+  assert.equal(published.effectiveDate, TODAY);
 
   // Spec and Plan may carry one; neither is made to.
   const spec = store.createPage(marc.id, { collectionId: collection.id, type: 'spec', title: 'API spec' });

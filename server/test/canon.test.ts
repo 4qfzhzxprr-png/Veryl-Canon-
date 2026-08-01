@@ -4,6 +4,12 @@ import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 function setup() {
   const store = new CanonStore(openDb(':memory:'));
   const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
@@ -98,12 +104,12 @@ test('type rules: a policy cannot publish without owner and approver', () => {
   expectCode(() => store.publish(marc.id, page.id), 'workflow');
 
   store.editDraft(marc.id, page.id, {
-    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-09-01', reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   const published = store.publish(marc.id, page.id);
   assert.equal(published.currentVersion, 1);
   assert.equal(published.ownerId, marc.id);
-  assert.equal(published.effectiveDate, '2026-09-01');
+  assert.equal(published.effectiveDate, TODAY);
 });
 
 test('type rules: effective date is Policy-only', () => {
@@ -117,7 +123,7 @@ test('review workflow: draft -> in review -> canonical, by the named approver on
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
 
   const submitted = store.submitForReview(marc.id, page.id);
@@ -164,7 +170,7 @@ test('review: the approver the record NAMES is the approver the record ACCEPTS',
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
   store.approve(iris.id, page.id);
@@ -202,7 +208,7 @@ test('review: a brand-new page names its owner, approver and dates the moment it
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Expenses' });
   store.editDraft(marc.id, page.id, {
     body: 'Receipts within 30 days.',
-    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-01-01', reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
 
@@ -218,7 +224,7 @@ test('review: a brand-new page names its owner, approver and dates the moment it
   const review = store.reviewState(marc.id, page.id)!;
   assert.equal(review.approverId, iris.id);
   assert.equal(review.fields.ownerId, marc.id);
-  assert.equal(review.fields.effectiveDate, '2026-01-01');
+  assert.equal(review.fields.effectiveDate, TODAY);
   assert.equal(review.fields.reviewDate, '2099-01-01');
 
   // Readable by somebody holding only `view`: who is waiting on a page must
@@ -248,7 +254,7 @@ test('review: an author withdraws their own submission, and only their own', () 
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Expenses' });
   store.editDraft(marc.id, page.id, {
     body: 'Receipts within 30 d',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
   assert.equal(store.reviewState(marc.id, page.id)!.canWithdraw, true);
@@ -283,7 +289,7 @@ test('review: withdrawal loosens neither half of separation of duties', () => {
   const hers = store.createPage(iris.id, { collectionId: collection.id, type: 'policy', title: 'Her own policy' });
   store.editDraft(iris.id, hers.id, {
     body: 'Mine.',
-    fields: { ownerId: iris.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: iris.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   expectCode(() => store.submitForReview(iris.id, hers.id), 'workflow');
 
@@ -293,7 +299,7 @@ test('review: withdrawal loosens neither half of separation of duties', () => {
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   store.submitForReview(marc.id, page.id);
   expectCode(() => store.approve(marc.id, page.id), 'forbidden');

@@ -24,6 +24,12 @@ import type { Notification, NotificationTransport } from '../src/notify.js';
 import { RegistryClient } from '../src/registry.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 const quiet: NotificationTransport = { deliver() {} };
 
 function setup(transport: NotificationTransport = quiet) {
@@ -289,7 +295,7 @@ test('proposals: a reviewed type keeps its rules — Canonical only through its 
   const complete = store.createProposal(bot.id, page.id, {
     rationale: 'The retention period in the source system is now 7 years.',
     body: 'Records are kept 7 years.',
-    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: '2026-09-01', reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
   });
   const decision = store.acceptProposal(marc.id, complete.id, {});
 

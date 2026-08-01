@@ -15,6 +15,12 @@ import { parseSmtpUrl, sendMail } from '../src/smtp.js';
 import { CanonStore } from '../src/store.js';
 import { parseMail, startFakeSmtp, type FakeSmtp, type FakeSmtpOptions } from './fake-smtp.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 // Delivery tests run against an in-process fake SMTP server (test/fake-smtp.ts).
 // Nothing here opens a connection to any host outside this process.
 
@@ -49,7 +55,7 @@ function submitForReview(env: ReturnType<typeof setup>, title = 'Access policy')
   const page = env.store.createPage(env.marc.id, { collectionId: env.collection.id, type: 'policy', title });
   env.store.editDraft(env.marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
   env.store.submitForReview(env.marc.id, page.id);
   return page;

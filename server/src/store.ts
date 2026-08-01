@@ -48,6 +48,12 @@ import { Divergence, DivergenceFilter, DivergenceService, DivergenceState } from
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
 import { PageRelationView, RelationInput, RelationService } from './relations.js';
 import { FreshnessService, FreshnessSweepOptions, FreshnessSweepResult, isIsoDate } from './freshness.js';
+import {
+  normalizeBasis,
+  recordAnchorDate,
+  requireBasisForBackdating,
+  validateEffectiveDateShape,
+} from './effectivedate.js';
 import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
 import { AuditChainVerification, verifyAuditChain } from './auditchain.js';
@@ -528,6 +534,7 @@ export class CanonStore {
       ownerId: (row.owner_id as string) ?? null,
       approverId: (row.approver_id as string) ?? null,
       effectiveDate: (row.effective_date as string) ?? null,
+      effectiveDateBasis: (row.effective_date_basis as string) ?? null,
       reviewDate: (row.review_date as string) ?? null,
       currentVersion: (row.current_version as number) ?? null,
       createdBy: row.created_by as string,
@@ -618,10 +625,13 @@ export class CanonStore {
       });
     }
 
-    if (input.fields) this.validateFieldShape(page.type, input.fields);
-
+    // The patch is validated against what the draft already carries, not on its
+    // own: "is this effective date backdated" is a question about the page, and
+    // "is this a CHANGE to the effective date" is a question about the patch.
     const base = existing ?? this.draftSeed(page);
-    const fields: PageFields = { ...(JSON.parse(base.fields_json as string) as PageFields), ...(input.fields ?? {}) };
+    const inherited = JSON.parse(base.fields_json as string) as PageFields;
+    const patch = input.fields ? this.validateFieldShape(page, input.fields, inherited) : null;
+    const fields: PageFields = { ...inherited, ...(patch ?? {}) };
     const title = input.title?.trim() || (base.title as string);
     const body = input.body ?? (base.body as string);
     const at = now();
@@ -663,6 +673,7 @@ export class CanonStore {
           ownerId: page.ownerId,
           approverId: page.approverId,
           effectiveDate: page.effectiveDate,
+          effectiveDateBasis: page.effectiveDateBasis,
           reviewDate: page.reviewDate,
         } satisfies PageFields),
     };
@@ -699,25 +710,88 @@ export class CanonStore {
     this.audit(actorId, 'draft.discard', { collectionId: row.collection_id as string, pageId });
   }
 
-  private validateFieldShape(type: DocType, fields: PageFields): void {
-    if (fields.effectiveDate && !TYPE_RULES[type].allowsEffectiveDate) {
-      throw new CanonError('invalid', `Effective date applies only to Policy pages, not ${type}`);
+  /**
+   * The shape rules for one patch of structured fields, returned normalised.
+   *
+   * `patch` is what this edit is setting; `inherited` is what the draft already
+   * carried. The distinction is load-bearing for the effective date: the shape
+   * of a value is checked whenever it arrives, but the DECLARATION a backdated
+   * date requires is asked only of the person who sets one. A page that already
+   * carries a backdated date from before the rule existed goes on publishing —
+   * see effectivedate.ts, and `canonicalWithoutEffectiveDate` /
+   * `backdatedWithoutBasis` in queries.ts, which is where those pages surface
+   * instead of being silently blessed.
+   */
+  private validateFieldShape(page: Page, patch: PageFields, inherited: PageFields): PageFields {
+    const type = page.type;
+    const rules = TYPE_RULES[type];
+    const out: PageFields = { ...patch };
+
+    if (patch.effectiveDate) {
+      if (!rules.allowsEffectiveDate) {
+        throw new CanonError('invalid', `Effective date applies only to Policy pages, not ${type}`);
+      }
+      // USER-TESTING.md T1.5: this field was never checked at all. `isIsoDate`
+      // had existed since freshness shipped and was called on the review date
+      // beside it and never on this one.
+      validateEffectiveDateShape(patch.effectiveDate);
     }
+    if (patch.effectiveDateBasis !== undefined) {
+      // Normalised BEFORE the type is consulted: a client that sends the whole
+      // field set — the UI does, and so does an accepted proposal — sends
+      // `effectiveDateBasis: null` on a Note, and refusing that would be
+      // refusing the absence of a value. Only a basis with something in it is a
+      // claim a Note has no standing to make.
+      const basis = normalizeBasis(patch.effectiveDateBasis);
+      if (basis && !rules.allowsEffectiveDate) {
+        throw new CanonError('invalid', `A ${type} carries no effective date, so there is no basis for one to state`);
+      }
+      out.effectiveDateBasis = basis;
+    }
+
+    const nextDate = 'effectiveDate' in patch ? (patch.effectiveDate ?? null) : (inherited.effectiveDate ?? null);
+    const nextBasis =
+      out.effectiveDateBasis !== undefined ? (out.effectiveDateBasis ?? null) : (inherited.effectiveDateBasis ?? null);
+    if (!nextDate && nextBasis) {
+      // A basis explains a date. If this patch supplies one with no date to
+      // explain, that is a mistake worth naming; if the patch CLEARS the date,
+      // the basis it explained goes with it rather than being left dangling.
+      if (out.effectiveDateBasis) {
+        throw new CanonError('invalid', 'effectiveDateBasis explains an effective date; this page states none');
+      }
+      out.effectiveDateBasis = null;
+    }
+    requireBasisForBackdating({
+      next: nextDate,
+      previous: inherited.effectiveDate ?? null,
+      basis: nextBasis,
+      anchor: recordAnchorDate(page.createdAt, this.firstPublishedAt(page.id)),
+    });
+
     // Freshness: the review date is a typed field, so its shape is checked the
     // same way the effective date's is, and which types may carry one is
     // TYPE_RULES' answer rather than a test written at this call site.
-    if (fields.reviewDate) {
-      if (!TYPE_RULES[type].allowsReviewDate) {
+    if (patch.reviewDate) {
+      if (!rules.allowsReviewDate) {
         throw new CanonError('invalid', `A ${type} carries no review date; it never holds the Canonical mark`);
       }
-      if (!isIsoDate(fields.reviewDate)) {
-        throw new CanonError('invalid', `A review date is an ISO date (YYYY-MM-DD), not '${fields.reviewDate}'`);
+      if (!isIsoDate(patch.reviewDate)) {
+        throw new CanonError('invalid', `A review date is an ISO date (YYYY-MM-DD), not '${patch.reviewDate}'`);
       }
     }
     for (const key of ['ownerId', 'approverId'] as const) {
-      const value = fields[key];
+      const value = patch[key];
       if (value) this.getActor(value);
     }
+    return out;
+  }
+
+  /** When this page's first version was published, or null if none ever was. */
+  private firstPublishedAt(pageId: string): string | null {
+    const row = this.db
+      .prepare('SELECT created_at FROM page_versions WHERE page_id = ? ORDER BY number LIMIT 1')
+      .get(pageId) as { created_at: string } | undefined;
+    return row?.created_at ?? null;
   }
 
   private validateReadyToPublish(type: DocType, fields: PageFields): void {
@@ -730,6 +804,17 @@ export class CanonStore {
     }
     if (rules.requiresReviewDate && !fields.reviewDate) {
       throw new CanonError('workflow', `A ${type} requires a review date before it can publish`);
+    }
+    // USER-TESTING.md T1.5. The field a regulator asks about first, required of
+    // the type a regulator asks it about — see the note in TYPE_RULES for why
+    // Policy and nothing else, and why this is a rule about the act of
+    // publishing rather than about rows already in the record.
+    if (rules.requiresEffectiveDate && !fields.effectiveDate) {
+      throw new CanonError(
+        'workflow',
+        `A ${type} requires an effective date before it can publish: the day what it says began to apply. ` +
+          'If it predates this record, say where the date comes from in `effectiveDateBasis`.',
+      );
     }
   }
 
@@ -797,7 +882,8 @@ export class CanonStore {
       );
     this.db
       .prepare(
-        `UPDATE pages SET title = ?, owner_id = ?, approver_id = ?, effective_date = ?, review_date = ?,
+        `UPDATE pages SET title = ?, owner_id = ?, approver_id = ?, effective_date = ?,
+         effective_date_basis = ?, review_date = ?,
          current_version = ?, status = ? WHERE id = ?`,
       )
       .run(
@@ -805,6 +891,9 @@ export class CanonStore {
         content.fields.ownerId ?? null,
         content.fields.approverId ?? null,
         content.fields.effectiveDate ?? null,
+        // The basis follows the date it explains: clearing one clears the other,
+        // so the record never carries an explanation of nothing.
+        content.fields.effectiveDate ? (content.fields.effectiveDateBasis ?? null) : null,
         content.fields.reviewDate ?? null,
         next,
         opts.toStatus ?? 'draft',

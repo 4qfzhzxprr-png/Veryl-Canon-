@@ -21,6 +21,12 @@ import type { NotificationTransport } from '../src/notify.js';
 import { CanonStore } from '../src/store.js';
 import { authRig } from './authrig.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 const quiet: NotificationTransport = { deliver() {} };
 
 function expectCode(fn: () => unknown, code: string): CanonError {
@@ -280,7 +286,7 @@ test('mapping: it grants collection roles and nothing more', async () => {
     });
     r.store.editDraft(dana.id, page.id, {
       body: 'Seven years.',
-      fields: { ownerId: dana.id, approverId: r.seeded.ownerId!, reviewDate: '2027-01-01' },
+      fields: { ownerId: dana.id, approverId: r.seeded.ownerId!, reviewDate: '2027-01-01', effectiveDate: TODAY },
     });
     r.store.submitForReview(dana.id, page.id);
     expectCode(() => r.store.approve(dana.id, page.id), 'forbidden');

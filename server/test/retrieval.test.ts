@@ -13,6 +13,12 @@ import {
 } from '../src/embeddings.js';
 import { contentTerms, parsePageLinks } from '../src/retrieval.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 function setup(provider?: EmbeddingProvider) {
   const db = openDb(':memory:');
   const store = new CanonStore(db, { deliver() {} }, provider);
@@ -63,7 +69,7 @@ function publishCanonical(
   parentId?: string,
 ) {
   const page = store.createPage(editorId, { collectionId, type: 'policy', title, ...(parentId ? { parentId } : {}) });
-  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate: '2099-01-01' } });
+  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate: '2099-01-01', effectiveDate: TODAY } });
   store.submitForReview(editorId, page.id);
   return store.approve(approverId, page.id);
 }

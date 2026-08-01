@@ -220,6 +220,36 @@ export const MIGRATIONS: readonly Migration[] = [
     ownTransaction: true,
     up: ensureSystemActorKind,
   },
+  {
+    version: 4,
+    name: 'effective_date_basis',
+    // USER-TESTING.md T1.5. Where a page's effective date precedes its own
+    // first publication, the person asserting it must say where the date comes
+    // from; this is the column that holds what they said. A COLUMN on `pages`,
+    // so — like migration 2, and for the same reason — it cannot ride the
+    // baseline: `CREATE TABLE IF NOT EXISTS` sees a table and does nothing.
+    //
+    // NULLABLE, WITH NO DEFAULT AND NO BACKFILL, and that is the whole of its
+    // migration safety. A partner's record already holds Canonical policies
+    // with backdated effective dates and nothing said about them; inventing a
+    // basis for those rows would be Canon asserting on their behalf exactly the
+    // thing this work exists to stop. They stay NULL, they stay Canonical, and
+    // they are surfaced honestly instead: `collectionHealth` counts them as
+    // `backdatedWithoutBasis` and the attestation says, in words, that no basis
+    // was recorded. The requirement bites the next time somebody sets such a
+    // date, not retroactively on rows nobody can go back and ask about.
+    //
+    // The value also lives in each version's `fields_json`, exactly as
+    // `effective_date` does — the column is the current value the record
+    // queries, the versions are the history of it.
+    up(db) {
+      const present = (db.prepare('PRAGMA table_info(pages)').all() as { name: string }[]).some(
+        (c) => c.name === 'effective_date_basis',
+      );
+      if (present) return;
+      db.exec('ALTER TABLE pages ADD COLUMN effective_date_basis TEXT');
+    },
+  },
 ];
 
 export function openDb(path: string): DatabaseSync {

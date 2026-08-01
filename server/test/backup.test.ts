@@ -8,6 +8,12 @@ import { backupTo, describeVerification, restoreFrom, verifyDatabase } from '../
 import { openDb } from '../src/db.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 // Backup and restore (backup.ts). The audit log is a compliance artefact with
 // no second copy anywhere, so the promises under test are narrow and absolute:
 // a backup taken while the server is writing holds a consistent record; an
@@ -30,7 +36,7 @@ function seed(path: string) {
   const page = store.createPage(dana.id, { collectionId: collection.id, type: 'policy', title: 'Appeals' });
   store.editDraft(dana.id, page.id, {
     body: 'An appeal is acknowledged within five business days.',
-    fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2027-01-01' },
+    fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2027-01-01', effectiveDate: TODAY },
   });
   store.submitForReview(dana.id, page.id);
   store.approve(iris.id, page.id);

@@ -54,12 +54,33 @@ function canonicalPolicy(
   approverId: string,
   collectionId: string,
   title: string,
-  opts: { ownerId: string; reviewDate: string; body?: string; type?: 'policy' | 'spec' | 'plan' },
+  opts: {
+    ownerId: string;
+    reviewDate: string;
+    body?: string;
+    type?: 'policy' | 'spec' | 'plan';
+    effectiveDate?: string;
+    effectiveDateBasis?: string;
+  },
 ) {
-  const page = store.createPage(editorId, { collectionId, type: opts.type ?? 'policy', title });
+  const type = opts.type ?? 'policy';
+  const page = store.createPage(editorId, { collectionId, type, title });
   store.editDraft(editorId, page.id, {
     body: opts.body ?? `${title} body.`,
-    fields: { ownerId: opts.ownerId, approverId, reviewDate: opts.reviewDate },
+    fields: {
+      ownerId: opts.ownerId,
+      approverId,
+      reviewDate: opts.reviewDate,
+      // A Policy states an effective date before it can publish (T1.5). These
+      // pages are created and published in the same breath, so the default is
+      // today: a date that claims nothing about a time the record cannot see.
+      ...(type === 'policy'
+        ? {
+            effectiveDate: opts.effectiveDate ?? daysFromToday(0),
+            ...(opts.effectiveDateBasis ? { effectiveDateBasis: opts.effectiveDateBasis } : {}),
+          }
+        : {}),
+    },
   });
   store.submitForReview(editorId, page.id);
   return store.approve(approverId, page.id);
@@ -98,7 +119,12 @@ test('queries: the FEATURES.md example — Canonical policies owned by Complianc
   const draft = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Draft policy' });
   store.editDraft(marc.id, draft.id, {
     body: 'Not yet.',
-    fields: { ownerId: compliance.id, approverId: iris.id, reviewDate: daysFromToday(5) },
+    fields: {
+      ownerId: compliance.id,
+      approverId: iris.id,
+      reviewDate: daysFromToday(5),
+      effectiveDate: daysFromToday(0),
+    },
   });
   store.publish(marc.id, draft.id);
 

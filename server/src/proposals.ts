@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, ActorKind, CanonError, DocType, Page, PageFields, Role, ROLE_RANK, TYPE_RULES } from './model.js';
 import type { Notifier } from './notify.js';
+import {
+  normalizeBasis,
+  recordAnchorDate,
+  requireBasisForBackdating,
+  validateEffectiveDateShape,
+} from './effectivedate.js';
 
 // Agent proposals (FEATURES.md §5, "Agent proposals"; the Next tier). This is
 // the feature that completes the product's central claim: people and agents
@@ -205,6 +211,8 @@ interface PageRow {
   ownerId: string | null;
   approverId: string | null;
   effectiveDate: string | null;
+  effectiveDateBasis: string | null;
+  createdAt: string;
   currentVersion: number | null;
 }
 
@@ -240,8 +248,7 @@ export class ProposalService {
     // check. A proposal is orthogonal to whoever is editing the page.
     const author = this.host.getActor(actorId);
     const seed = this.seed(page);
-    const fields: PageFields = { ...seed.fields, ...(input.fields ?? {}) };
-    this.validateFields(page.type, fields);
+    const fields = this.validateFields(page, { ...seed.fields, ...(input.fields ?? {}) }, seed.fields);
     const title = input.title?.trim() || seed.title;
     const body = input.body ?? seed.body;
 
@@ -524,7 +531,12 @@ export class ProposalService {
       return {
         title: page.title,
         body: '',
-        fields: { ownerId: page.ownerId, approverId: page.approverId, effectiveDate: page.effectiveDate },
+        fields: {
+          ownerId: page.ownerId,
+          approverId: page.approverId,
+          effectiveDate: page.effectiveDate,
+          effectiveDateBasis: page.effectiveDateBasis,
+        },
       };
     }
     return {
@@ -537,14 +549,55 @@ export class ProposalService {
   // The same field-shape rules the draft path applies, applied at proposal
   // time so an agent hears about a bad field now rather than at acceptance,
   // when a person is waiting on it.
-  private validateFields(type: DocType, fields: PageFields): void {
-    if (fields.effectiveDate && !TYPE_RULES[type].allowsEffectiveDate) {
-      throw new CanonError('invalid', `Effective date applies only to Policy pages, not ${type}`);
+  //
+  // `fields` here is already the merge of the proposal over the published
+  // record, so `seeded` is passed alongside it to answer the one question the
+  // merge has destroyed: is the effective date something this PROPOSAL is
+  // changing? An agent that backdates a policy is the forgery of USER-TESTING.md
+  // T1.5 with a passport, and is asked for a basis exactly as a person is; an
+  // agent that leaves an inherited backdated date alone is proposing nothing
+  // about it and is not made to answer for somebody else's record.
+  private validateFields(page: PageRow, fields: PageFields, seeded: PageFields): PageFields {
+    const type = page.type;
+    const out: PageFields = { ...fields };
+    if (fields.effectiveDate) {
+      if (!TYPE_RULES[type].allowsEffectiveDate) {
+        throw new CanonError('invalid', `Effective date applies only to Policy pages, not ${type}`);
+      }
+      validateEffectiveDateShape(fields.effectiveDate);
     }
+    if (fields.effectiveDateBasis !== undefined) {
+      // Normalised before the type is consulted, exactly as the draft path does
+      // it: the seed carries `effectiveDateBasis: null` on every type, and the
+      // absence of a value is not a claim.
+      const basis = normalizeBasis(fields.effectiveDateBasis);
+      if (basis && !TYPE_RULES[type].allowsEffectiveDate) {
+        throw new CanonError('invalid', `A ${type} carries no effective date, so there is no basis for one to state`);
+      }
+      out.effectiveDateBasis = basis;
+    }
+    if (!out.effectiveDate && out.effectiveDateBasis) {
+      throw new CanonError('invalid', 'effectiveDateBasis explains an effective date; this proposal states none');
+    }
+    requireBasisForBackdating({
+      next: out.effectiveDate ?? null,
+      previous: seeded.effectiveDate ?? null,
+      basis: out.effectiveDateBasis ?? null,
+      anchor: recordAnchorDate(page.createdAt, this.firstPublishedAt(page.id)),
+    });
     for (const key of ['ownerId', 'approverId'] as const) {
       const value = fields[key];
       if (value) this.host.getActor(value);
     }
+    return out;
+  }
+
+  /** When this page's first version was published, or null if none ever was. */
+  private firstPublishedAt(pageId: string): string | null {
+    const row = this.db
+      .prepare('SELECT created_at FROM page_versions WHERE page_id = ? ORDER BY number LIMIT 1')
+      .get(pageId) as { created_at: string } | undefined;
+    return row?.created_at ?? null;
   }
 
   // Accepting and rejecting are a person's act. agentauth.ts refuses an
@@ -597,7 +650,8 @@ export class ProposalService {
   private page(id: string): PageRow {
     const row = this.db
       .prepare(
-        `SELECT id, collection_id, type, title, status, owner_id, approver_id, effective_date, current_version
+        `SELECT id, collection_id, type, title, status, owner_id, approver_id, effective_date,
+                effective_date_basis, created_at, current_version
            FROM pages WHERE id = ?`,
       )
       .get(id) as Record<string, unknown> | undefined;
@@ -611,6 +665,8 @@ export class ProposalService {
       ownerId: (row.owner_id as string) ?? null,
       approverId: (row.approver_id as string) ?? null,
       effectiveDate: (row.effective_date as string) ?? null,
+      effectiveDateBasis: (row.effective_date_basis as string) ?? null,
+      createdAt: row.created_at as string,
       currentVersion: (row.current_version as number) ?? null,
     };
   }

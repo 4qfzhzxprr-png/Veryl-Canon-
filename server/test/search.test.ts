@@ -6,6 +6,12 @@ import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 function setup() {
   const db = openDb(':memory:');
   const store = new CanonStore(db);
@@ -53,7 +59,7 @@ function publishCanonicalPolicy(
   body: string,
 ) {
   const page = store.createPage(editorId, { collectionId, type: 'policy', title });
-  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate: '2099-01-01' } });
+  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate: '2099-01-01', effectiveDate: TODAY } });
   store.submitForReview(editorId, page.id);
   return store.approve(approverId, page.id);
 }

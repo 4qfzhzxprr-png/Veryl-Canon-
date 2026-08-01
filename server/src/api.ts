@@ -354,8 +354,12 @@ const routes: Route[] = [
 
   // Structured queries (FEATURES.md §6). A typed filter object, not a query
   // language: `{ collectionIds, types, statuses, ownerIds, approverIds,
-  // hasOwner, hasReviewDate, reviewDateBefore/After, updatedBefore/After,
-  // createdBefore/After, sort, direction, limit }`. Naming `savedQueryId` runs
+  // hasOwner, hasReviewDate, hasEffectiveDate, hasEffectiveDateBasis,
+  // backdated, reviewDateBefore/After, updatedBefore/After,
+  // createdBefore/After, sort, direction, limit }`. `backdated: true` with
+  // `hasEffectiveDateBasis: false` is the sample behind record health's
+  // `backdatedWithoutBasis` count (USER-TESTING.md T1.5): the pages claiming to
+  // pre-date this record with nothing recorded about why. Naming `savedQueryId` runs
   // a stored filter instead; anything else in the body still overrides it, so a
   // dashboard can pin a query and page through it.
   route('POST', '/queries/run', ({ store, actorId, body }) => {

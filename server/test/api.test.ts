@@ -5,6 +5,11 @@ import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonStore } from '../src/store.js';
 
+// A policy needs an effective date to publish, and one earlier than the page's
+// own first publication needs a stated basis (USER-TESTING.md T1.5). Neither
+// is what these tests are about, so they date their fixtures today.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 test('API smoke: a policy travels draft -> in review -> canonical over HTTP', async () => {
   const store = new CanonStore(openDb(':memory:'));
   const server = createApi(store);
@@ -41,7 +46,14 @@ test('API smoke: a policy travels draft -> in review -> canonical over HTTP', as
     ).json;
     await call('PUT', `/pages/${page.id}/draft`, dana.id, {
       body: 'All access is logged.',
-      fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' },
+      // A Policy states an effective date before it can publish (T1.5); today's,
+      // because this page is written and published in the same breath.
+      fields: {
+        ownerId: dana.id,
+        approverId: iris.id,
+        reviewDate: '2099-01-01',
+        effectiveDate: new Date().toISOString().slice(0, 10),
+      },
     });
 
     const submitted = (await call('POST', `/pages/${page.id}/submit`, dana.id)).json;
@@ -97,7 +109,7 @@ test('API: the approver a page in review reports is the approver the API accepts
     ).json;
     await call('PUT', `/pages/${page.id}/draft`, dana.id, {
       body: 'All access is logged.',
-      fields: { ownerId: dana.id, approverId: grace.id, effectiveDate: '2026-01-01', reviewDate: '2099-01-01' },
+      fields: { ownerId: dana.id, approverId: grace.id, effectiveDate: TODAY, reviewDate: '2099-01-01' },
     });
     await call('POST', `/pages/${page.id}/submit`, dana.id);
 
@@ -109,7 +121,7 @@ test('API: the approver a page in review reports is the approver the API accepts
     assert.equal(first.approverId, null);
     assert.equal(first.review.approverId, grace.id);
     assert.equal(first.review.fields.ownerId, dana.id);
-    assert.equal(first.review.fields.effectiveDate, '2026-01-01');
+    assert.equal(first.review.fields.effectiveDate, TODAY);
     assert.equal(first.review.fields.reviewDate, '2099-01-01');
     assert.equal(first.review.submittedById, dana.id);
     // The author submitted it, so the author can take it back; the approver

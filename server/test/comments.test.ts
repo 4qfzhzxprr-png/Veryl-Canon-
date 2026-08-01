@@ -8,6 +8,12 @@ import { parseMentions } from '../src/comments.js';
 import type { Notification, NotificationTransport } from '../src/notify.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 // A quiet transport keeps test output clean while still marking sent,
 // exactly like the dev transport does.
 const quiet: NotificationTransport = { deliver() {} };
@@ -168,7 +174,7 @@ test('notifications: submitting a policy notifies its named approver', () => {
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, page.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
   store.submitForReview(marc.id, page.id);
 
@@ -199,7 +205,7 @@ test('notifications: approval notifies the draft editor and page owner, deduplic
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Retention' });
   store.editDraft(marc.id, page.id, {
     body: 'Keep 7 years.',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
   store.submitForReview(marc.id, page.id);
   store.approve(iris.id, page.id);
@@ -217,7 +223,7 @@ test('notifications: send-back notifies the editor and owner, carrying the comme
   // Dana owns the page; Marc edits the draft. Both should hear about a send-back.
   store.editDraft(marc.id, page.id, {
     body: 'Vague.',
-    fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
   store.submitForReview(marc.id, page.id);
   store.sendBack(iris.id, page.id, { comment: 'Name the systems in scope.' });

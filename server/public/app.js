@@ -2302,7 +2302,16 @@ async function viewEditor(id) {
             <h2 class="h-small">Fields</h2>
             ${rules.owner ? `<label>Owner <select name="ownerId">${actorOptions(draft.fields.ownerId)}</select></label>` : ''}
             ${rules.approver ? `<label>Approver <select name="approverId">${actorOptions(draft.fields.approverId)}</select></label>` : ''}
-            ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>` : ''}
+            ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>
+            ${/* A date earlier than the page's own first publication is usually
+                  legitimate — a policy adopted before Canon existed — but the
+                  record cannot corroborate it, so the person asserting it says
+                  where it comes from (USER-TESTING.md T1.5). The server refuses
+                  the save without this; the field is here so that refusal is
+                  something a policy owner can act on rather than a dead end. */ ''}
+            <label>Where the effective date comes from <span class="muted">(required if it pre-dates this record)</span>
+              <input type="text" name="effectiveDateBasis" value="${esc(draft.fields.effectiveDateBasis ?? '')}"
+                placeholder="e.g. Adopted by the Clinical Governance Committee, minute CGC-2018-11-14"></label>` : ''}
             ${rules.reviewDate ? `<label>Review date${rules.reviewDateRequired ? ' <span class="muted">(required)</span>' : ''} <input type="date" name="reviewDate" value="${esc(draft.fields.reviewDate ?? '')}"></label>
             <p class="${state.features.freshness && !state.features.freshness.scheduled ? 'notice notice-stale' : 'muted'}">${freshnessPromise()}</p>` : ''}
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
@@ -2325,7 +2334,10 @@ async function viewEditor(id) {
     const fields = {};
     if (rules.owner) fields.ownerId = form.ownerId.value || null;
     if (rules.approver) fields.approverId = form.approverId.value || null;
-    if (rules.effectiveDate) fields.effectiveDate = form.effectiveDate.value || null;
+    if (rules.effectiveDate) {
+      fields.effectiveDate = form.effectiveDate.value || null;
+      fields.effectiveDateBasis = form.effectiveDateBasis.value.trim() || null;
+    }
     if (rules.reviewDate) fields.reviewDate = form.reviewDate.value || null;
     return { title: form.title.value.trim(), body: form.body.value, fields };
   };

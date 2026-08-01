@@ -15,6 +15,11 @@ import {
 } from './auditchain.js';
 import { RawResponse } from './csv.js';
 import {
+  EFFECTIVE_DATE_LIMITS,
+  EffectiveDateStanding,
+  effectiveDateStanding,
+} from './effectivedate.js';
+import {
   Actor,
   ActorKind,
   CanonError,
@@ -222,11 +227,23 @@ export interface PageAttestation {
     ownerId: string | null;
     approverId: string | null;
     effectiveDate: string | null;
+    effectiveDateBasis: string | null;
     reviewDate: string | null;
     currentVersion: number | null;
     createdById: string;
     createdAt: string;
   };
+  /**
+   * The effective date set against the record's own history of this page
+   * (USER-TESTING.md T1.5). It sits in the bundle as its own section — and
+   * inside the content digest — because the auditor's complaint was not that
+   * the date was absent but that it was printed beside a creation date it
+   * contradicted, with the contradiction reconciled nowhere. This is the
+   * reconciliation: both dates, the comparison between them, whatever the
+   * person who set the date said it rested on, and a sentence saying plainly
+   * what Canon can and cannot support.
+   */
+  effectiveDateStanding: EffectiveDateStanding;
   versions: AttestedVersion[];
   fieldHistory: FieldChange[];
   statusHistory: StatusChange[];
@@ -250,6 +267,14 @@ export interface RegisterEntry {
   approverName: string | null;
   approvedAt: string | null;
   effectiveDate: string | null;
+  /** What the author said a backdated effective date rests on, as at `at`. */
+  effectiveDateBasis: string | null;
+  /** When this page's first version was published, whenever that was. */
+  firstPublishedAt: string | null;
+  /** The effective date precedes this page's own first publication. */
+  backdated: boolean;
+  /** Backdated with no basis recorded — the register's named exception. */
+  backdatedWithoutBasis: boolean;
   reviewDate: string | null;
   pastReview: boolean;
 }
@@ -510,6 +535,14 @@ export class AttestationService {
       | { name: string }
       | undefined;
 
+    const standing = effectiveDateStanding({
+      effectiveDate: (page.effective_date as string) ?? null,
+      basis: (page.effective_date_basis as string) ?? null,
+      createdAt: page.created_at as string,
+      firstPublishedAt: versions[0]?.createdAt ?? null,
+      on: (instant ?? new Date().toISOString()).slice(0, 10),
+    });
+
     const content = {
       page: {
         id: pageId,
@@ -521,11 +554,13 @@ export class AttestationService {
         ownerId: (page.owner_id as string) ?? null,
         approverId: (page.approver_id as string) ?? null,
         effectiveDate: (page.effective_date as string) ?? null,
+        effectiveDateBasis: (page.effective_date_basis as string) ?? null,
         reviewDate: (page.review_date as string) ?? null,
         currentVersion: (page.current_version as number) ?? null,
         createdById: page.created_by as string,
         createdAt: page.created_at as string,
       },
+      effectiveDateStanding: standing,
       versions,
       fieldHistory,
       statusHistory,
@@ -553,6 +588,16 @@ export class AttestationService {
         asserts: [
           `Every published version of this page held by Veryl Canon at generation time (${versions.length}).`,
           'The author, timestamp and note of each version, and the structured fields as that version carried them.',
+          standing.effectiveDate === null
+            ? 'That this page states no effective date. Canon does not supply one.'
+            : standing.backdated
+              ? `That this page's stated effective date (${standing.effectiveDate}) PRECEDES the record's own ` +
+                `history of it, which begins ${standing.recordStarts}` +
+                (standing.basis
+                  ? '; and the basis the person who set that date gave for it, which Canon records and cannot verify.'
+                  : '; and that NO basis for the earlier date was recorded. Canon does not assert the date.')
+              : `That this page's stated effective date (${standing.effectiveDate}) is consistent with the ` +
+                "record's own history of it, which begins " + standing.recordStarts + '.',
           'Every status change, with the actor who made it and when.',
           'Every approval, naming the approver and the version approved.',
           `Every audit event Canon holds that names this page (${auditEvents.length}), each with its hash-chain link.`,
@@ -606,12 +651,27 @@ export class AttestationService {
     const register: RegisterEntry[] = [];
     const notCanonical: RegisterEntry[] = [];
     const actorIds: (string | null)[] = [actorId];
+    let backdatedEntries = 0;
+    let unexplainedEntries = 0;
     for (const row of rows) {
       const asOf = this.reconstruct(row, instant);
       if (!asOf.existed) continue; // created after the date asked about
       const owner = asOf.fields?.ownerId ?? null;
       const approver = asOf.fields?.approverId ?? null;
       actorIds.push(owner, approver, asOf.approval?.approverId ?? null);
+      // Judged against the page's own first publication, whenever that was —
+      // not against the instant the register is drawn for. "Does this date
+      // pre-date the record" is a fact about the page, and it does not change
+      // depending on which day somebody asks the register about.
+      const standing = effectiveDateStanding({
+        effectiveDate: asOf.fields?.effectiveDate ?? null,
+        basis: asOf.fields?.effectiveDateBasis ?? null,
+        createdAt: asOf.createdAt,
+        firstPublishedAt: this.firstPublishedAt(asOf.pageId),
+        on: instant.slice(0, 10),
+      });
+      if (standing.backdated) backdatedEntries += 1;
+      if (standing.unexplained) unexplainedEntries += 1;
       const entry: RegisterEntry = {
         pageId: asOf.pageId,
         title: asOf.title ?? '(untitled)',
@@ -625,7 +685,11 @@ export class AttestationService {
         approverId: approver,
         approverName: approver ? this.actorName(approver) : null,
         approvedAt: asOf.approval?.at ?? null,
-        effectiveDate: asOf.fields?.effectiveDate ?? null,
+        effectiveDate: standing.effectiveDate,
+        effectiveDateBasis: standing.basis,
+        firstPublishedAt: standing.firstPublishedAt,
+        backdated: standing.backdated,
+        backdatedWithoutBasis: standing.unexplained,
         reviewDate: asOf.fields?.reviewDate ?? null,
         pastReview: Boolean(asOf.fields?.reviewDate && asOf.fields.reviewDate < instant.slice(0, 10)),
       };
@@ -657,6 +721,9 @@ export class AttestationService {
           `The pages that did not (${notCanonical.length}), named rather than omitted.`,
           'For each: the version standing at that instant, its owner and named approver, the approval that ' +
             'granted the mark, its effective date and its review date — all as they were then, not as they are now.',
+          `That ${backdatedEntries} of these page(s) state an effective date preceding their own first publication, ` +
+            `of which ${unexplainedEntries} record no basis for it. Both are named per row rather than left for a ` +
+            'reader to spot by comparing columns, which is how USER-TESTING.md T1.5 was missed.',
         ],
       }),
       ...content,
@@ -711,6 +778,17 @@ export class AttestationService {
     const row = this.db.prepare('SELECT * FROM pages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     if (!row) throw new CanonError('not_found', `No such page: ${id}`);
     return row;
+  }
+
+  /**
+   * When this page's first version was published, or null if none ever was.
+   * The anchor the backdating test is made against — see effectivedate.ts.
+   */
+  private firstPublishedAt(pageId: string): string | null {
+    const row = this.db
+      .prepare('SELECT created_at FROM page_versions WHERE page_id = ? ORDER BY number LIMIT 1')
+      .get(pageId) as { created_at: string } | undefined;
+    return row?.created_at ?? null;
   }
 
   private lastEventId(): number | null {
@@ -823,7 +901,17 @@ export class AttestationService {
    * more often than "what did paragraph three say".
    */
   private fieldHistory(versions: AttestedVersion[]): FieldChange[] {
-    const keys: (keyof PageFields)[] = ['ownerId', 'approverId', 'effectiveDate', 'reviewDate'];
+    // `effectiveDateBasis` is in this list deliberately. "Who changed the
+    // effective date, when, and what they said it rested on" is one question,
+    // and answering the first half without the second is what let a date
+    // asserted about 2019 sit in a bundle looking like every other field.
+    const keys: (keyof PageFields)[] = [
+      'ownerId',
+      'approverId',
+      'effectiveDate',
+      'effectiveDateBasis',
+      'reviewDate',
+    ];
     const out: FieldChange[] = [];
     let previous: PageFields = {};
     for (const version of versions) {
@@ -960,6 +1048,7 @@ export const BUNDLE_LIMITS: string[] = [
     'attested to by the chain. Their content is still in the log; it simply is not proven unchanged.',
   'Timestamps are UTC, as recorded by the server that wrote them. A bare date in `at` means the start of that ' +
     'day (00:00:00Z).',
+  EFFECTIVE_DATE_LIMITS,
 ];
 
 /**
@@ -1077,9 +1166,41 @@ function fieldsTable(fields: PageFields | null, names: Map<string, string>): str
     ['Owner', actorCell(fields.ownerId, names)],
     ['Approver', actorCell(fields.approverId, names)],
     ['Effective date', esc(fields.effectiveDate ?? '—')],
+    ['Effective date basis', esc(fields.effectiveDateBasis ?? '—')],
     ['Review date', esc(fields.reviewDate ?? '—')],
   ];
   return `<dl class="fields">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+}
+
+/**
+ * The effective date, reconciled against the record's own history, rendered
+ * where the auditor of USER-TESTING.md T1.5 found the contradiction: beside the
+ * creation date. A page whose date pre-dates its own record gets a marked box,
+ * not a row in a table somebody has to notice.
+ */
+function effectiveDateSection(s: EffectiveDateStanding): string {
+  const tone = s.unexplained ? 'note bad' : s.backdated ? 'note warn' : 'note';
+  const heading = !s.effectiveDate
+    ? 'No effective date is stated'
+    : s.unexplained
+      ? 'This effective date pre-dates the record, and no basis was recorded'
+      : s.backdated
+        ? 'This effective date pre-dates the record; a basis was recorded'
+        : s.notYetInForce
+          ? 'This page is not yet in force'
+          : 'Effective date';
+  return `
+  <h2>Effective date</h2>
+  <div class="${tone}"><h3>${esc(heading)}</h3><p>${esc(s.note)}</p></div>
+  <dl class="fields">
+    <dt>Effective date</dt><dd>${esc(s.effectiveDate ?? '—')}</dd>
+    <dt>Basis given</dt><dd>${esc(s.basis ?? 'none recorded')}</dd>
+    <dt>Page created</dt><dd>${esc(s.createdAt)}</dd>
+    <dt>First published</dt><dd>${esc(s.firstPublishedAt ?? 'never published')}</dd>
+    <dt>Record starts</dt><dd>${esc(s.recordStarts)}</dd>
+    <dt>Precedes the record</dt><dd>${s.backdated ? 'yes' : 'no'}</dd>
+  </dl>
+  <p class="small muted">${esc(EFFECTIVE_DATE_LIMITS)}</p>`;
 }
 
 function nameIndex(actors: NamedActor[]): Map<string, string> {
@@ -1253,10 +1374,16 @@ export function renderPageAttestationHtml(bundle: PageAttestation): string {
       <dt>Status</dt><dd>${badge(p.status)}</dd>
       <dt>Owner</dt><dd>${actorCell(p.ownerId, names)}</dd>
       <dt>Named approver</dt><dd>${actorCell(p.approverId, names)}</dd>
-      <dt>Effective date</dt><dd>${esc(p.effectiveDate ?? '—')}</dd>
+      <dt>Effective date</dt><dd>${esc(p.effectiveDate ?? '—')}${
+        bundle.effectiveDateStanding.backdated
+          ? ` <span class="badge needs_update">pre-dates the record</span>`
+          : ''
+      }</dd>
+      <dt>Effective date basis</dt><dd>${esc(p.effectiveDateBasis ?? '—')}</dd>
       <dt>Review date</dt><dd>${esc(p.reviewDate ?? '—')}</dd>
       <dt>Current version</dt><dd>${p.currentVersion === null ? 'never published' : `v${esc(p.currentVersion)}`}</dd>
     </dl>
+    ${effectiveDateSection(bundle.effectiveDateStanding)}
     <h2>Published versions</h2>${versions}
     <h2>Approvals</h2>${approvals}
     <h2>Status history</h2>${statusHistory}
@@ -1277,10 +1404,16 @@ export function renderPageAttestationHtml(bundle: PageAttestation): string {
 
 /** The collection register as a self-contained HTML document. */
 export function renderCollectionAttestationHtml(bundle: CollectionAttestation): string {
+  // The effective date is a COLUMN here, and it was not before. A register that
+  // omits it is a register that answers every question a regulator asks except
+  // the first one (USER-TESTING.md T1.5). Where it pre-dates the page's own
+  // first publication the row says so, and says whether anybody wrote down why
+  // — the two facts a reader would otherwise have to derive by comparing this
+  // register against a per-page bundle.
   const rows = (entries: RegisterEntry[]) =>
     entries.length
       ? `<table><thead><tr><th>Page</th><th>Type</th><th>Status</th><th class="num">Version</th><th>Owner</th>
-         <th>Approver</th><th>Approved</th><th>Review due</th></tr></thead>
+         <th>Approver</th><th>Approved</th><th>Effective</th><th>Review due</th></tr></thead>
          <tbody>${entries
            .map(
              (e) =>
@@ -1288,10 +1421,33 @@ export function renderCollectionAttestationHtml(bundle: CollectionAttestation): 
                `<td>${badge(e.status)}</td><td class="num">${e.version === null ? '—' : `v${esc(e.version)}`}</td>` +
                `<td>${esc(e.ownerName ?? '—')}</td><td>${esc(e.approverName ?? '—')}</td>` +
                `<td>${esc(e.approvedAt ?? '—')}</td>` +
+               `<td>${esc(e.effectiveDate ?? '—')}${
+                 e.backdated
+                   ? e.backdatedWithoutBasis
+                     ? '<div class="badge needs_update">pre-dates the record · no basis</div>'
+                     : `<div class="badge">pre-dates the record</div><div class="muted small">${esc(
+                         e.effectiveDateBasis,
+                       )}</div>`
+                   : ''
+               }</td>` +
                `<td>${esc(e.reviewDate ?? '—')}${e.pastReview ? ' <span class="badge needs_update">past</span>' : ''}</td></tr>`,
            )
            .join('')}</tbody></table>`
       : '<p class="muted">None.</p>';
+
+  const backdated = [...bundle.register, ...bundle.notCanonical].filter((e) => e.backdated);
+  const unexplained = backdated.filter((e) => e.backdatedWithoutBasis);
+  const effectiveDateNote = backdated.length
+    ? `<div class="note ${unexplained.length ? 'warn' : ''}"><h3>Effective dates preceding the record</h3>
+       <p>${esc(backdated.length)} page(s) in this register state an effective date earlier than their own first
+       publication in Canon. That is the ordinary shape of material migrated from a previous system and is not by
+       itself a finding. ${
+         unexplained.length
+           ? `${esc(unexplained.length)} of them record NO basis for the earlier date; Canon holds nothing that
+              supports those dates and does not assert them here.`
+           : 'Each records a basis, shown in the Effective column; Canon records a basis and cannot verify one.'
+       }</p><p class="small">${esc(EFFECTIVE_DATE_LIMITS)}</p></div>`
+    : '';
 
   return document_(
     `Attestation — ${bundle.collection.name} register`,
@@ -1311,6 +1467,7 @@ export function renderCollectionAttestationHtml(bundle: CollectionAttestation): 
           short register is a picture of a record with pages missing and no sign that any are.</p></div>`
         : ''
     }
+    ${effectiveDateNote}
     <h2>Canonical at that instant (${esc(bundle.register.length)})</h2>${rows(bundle.register)}
     <h2>Not Canonical at that instant (${esc(bundle.notCanonical.length)})</h2>
     <p class="small muted">Listed rather than omitted: "these are the Canonical pages" is only a useful sentence

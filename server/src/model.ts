@@ -37,6 +37,36 @@ export interface TypeRules {
   requiresOwner: boolean;
   requiresApprover: boolean;
   allowsEffectiveDate: boolean;
+  // Effective date (USER-TESTING.md T1.5). Two flags, for the same reason the
+  // review date has two: "may carry one" and "must carry one" are different
+  // questions, and only Policy answers yes to the second.
+  //
+  // Policy REQUIRES one. It is the field a regulator asks about first — not
+  // "when was this written" but "when did this apply to us" — and a Canonical
+  // policy that cannot answer it is a policy nobody can be held to or excused
+  // by. The reasoning is the same one that makes a review date required here
+  // and optional on a Spec: a Policy is the type whose whole purpose is to bind
+  // behaviour over a period, and a period with no start is not a period. The
+  // auditor found six Canonical policies with no effective date at all, and had
+  // no way to tell them from six where the question had been considered and
+  // genuinely had no answer.
+  //
+  // Spec, Plan and Note do not ALLOW one, so the question does not arise for
+  // them; the flag is false three times over rather than absent, so the table
+  // stays the single place the rules live.
+  //
+  // MIGRATION SAFETY, which is what makes this requirement legitimate rather
+  // than merely strict. The requirement is on the ACT of publishing, checked in
+  // `validateReadyToPublish` at the moment a person publishes or submits — it
+  // is not a constraint on rows already in the record. A Canonical policy
+  // written before this rule existed keeps its mark, keeps being cited, keeps
+  // appearing in every register and answer, and is not retroactively invalid.
+  // It is instead COUNTED: `collectionHealth` reports
+  // `canonicalWithoutEffectiveDate`, so the six are a named exception an
+  // auditor can sample rather than a silence. The next time somebody edits and
+  // republishes one, they are asked the question once, and it is a question
+  // whose answer they have.
+  requiresEffectiveDate: boolean;
   reviewed: boolean;
   // Freshness (FEATURES.md §3). Which types may carry a review date, and which
   // must carry one before they can publish. Two flags rather than one because
@@ -63,6 +93,7 @@ export const TYPE_RULES: Record<DocType, TypeRules> = {
     requiresOwner: true,
     requiresApprover: true,
     allowsEffectiveDate: true,
+    requiresEffectiveDate: true,
     reviewed: true,
     allowsReviewDate: true,
     requiresReviewDate: true,
@@ -71,6 +102,7 @@ export const TYPE_RULES: Record<DocType, TypeRules> = {
     requiresOwner: true,
     requiresApprover: true,
     allowsEffectiveDate: false,
+    requiresEffectiveDate: false,
     reviewed: true,
     allowsReviewDate: true,
     requiresReviewDate: false,
@@ -79,6 +111,7 @@ export const TYPE_RULES: Record<DocType, TypeRules> = {
     requiresOwner: true,
     requiresApprover: false,
     allowsEffectiveDate: false,
+    requiresEffectiveDate: false,
     reviewed: true,
     allowsReviewDate: true,
     requiresReviewDate: false,
@@ -87,6 +120,7 @@ export const TYPE_RULES: Record<DocType, TypeRules> = {
     requiresOwner: false,
     requiresApprover: false,
     allowsEffectiveDate: false,
+    requiresEffectiveDate: false,
     reviewed: false,
     allowsReviewDate: false,
     requiresReviewDate: false,
@@ -98,6 +132,15 @@ export interface PageFields {
   ownerId?: string | null;
   approverId?: string | null;
   effectiveDate?: string | null; // ISO date, Policy only
+  // Where a backdated effective date comes from, in the words of the person who
+  // set it: a committee minute, the system this page was migrated out of, the
+  // import run that brought it in. Required — and only required — when the
+  // effective date precedes the page's own first publication, which is the one
+  // case the record cannot corroborate from anything it holds. See
+  // effectivedate.ts, which owns the rule and explains why it is a declaration
+  // rather than a refusal. A structured field like every other, so it is
+  // versioned, attributed, carried in the field history, and attested.
+  effectiveDateBasis?: string | null;
   // ISO date (YYYY-MM-DD). Data, never parsed from prose: the freshness sweep
   // and every structured query read this field, not a sentence in a body.
   reviewDate?: string | null;
@@ -132,6 +175,7 @@ export interface Page {
   ownerId: string | null;
   approverId: string | null;
   effectiveDate: string | null;
+  effectiveDateBasis: string | null;
   reviewDate: string | null;
   currentVersion: number | null;
   createdBy: string;

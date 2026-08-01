@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, DocType, DOC_TYPES, PageStatus, Role, ROLE_RANK, TYPE_RULES } from './model.js';
 import { isIsoDate, isPastReview, today } from './freshness.js';
+import { isBackdated, isNotYetInForce, recordAnchorDate } from './effectivedate.js';
 
 // Structured queries (FEATURES.md §6): "Query the record by its fields: 'all
 // Canonical policies owned by Compliance with a review date in the next 60
@@ -73,6 +74,18 @@ export interface PageQuery {
   hasOwner?: boolean;
   /** Only pages with a review date at all — the ones freshness can act on. */
   hasReviewDate?: boolean;
+  /** True: only pages that state an effective date. False: only pages that do not. */
+  hasEffectiveDate?: boolean;
+  /**
+   * Pages whose effective date precedes their own first publication
+   * (USER-TESTING.md T1.5). A count is a finding; this is what turns it into a
+   * sample an auditor can actually open. Combined with
+   * `hasEffectiveDateBasis: false` it is exactly her question: "which Canonical
+   * policies claim to pre-date this record and say nothing about why".
+   */
+  backdated?: boolean;
+  /** Only backdated dates whose author stated a basis, or only those who did not. */
+  hasEffectiveDateBasis?: boolean;
   reviewDateBefore?: string; // exclusive, ISO date
   reviewDateAfter?: string; // exclusive, ISO date
   updatedBefore?: string; // exclusive, ISO date or timestamp
@@ -100,12 +113,27 @@ export interface QueryResultPage {
   ownerId: string | null;
   approverId: string | null;
   effectiveDate: string | null;
+  /** What the author said a backdated effective date rests on; null if none was needed or given. */
+  effectiveDateBasis: string | null;
   reviewDate: string | null;
   currentVersion: number | null;
   createdAt: string;
   updatedAt: string;
+  /** When version 1 was published, or null if nothing ever was. */
+  firstPublishedAt: string | null;
   /** Convenience the caller would otherwise recompute: is the review date behind us? */
   pastReview: boolean;
+  /**
+   * The effective date precedes this page's own first publication (falling back
+   * to its creation, before anything is published). Derived on every read from
+   * two dates the record already holds — never stored, so it cannot drift away
+   * from the history it describes.
+   */
+  backdated: boolean;
+  /** Backdated, and nobody recorded where the date came from. */
+  backdatedWithoutBasis: boolean;
+  /** Dated to take effect on a day that has not arrived yet. */
+  notYetInForce: boolean;
 }
 
 export interface SavedQuery {
@@ -141,6 +169,40 @@ export interface CollectionHealth {
   orphaned: number;
   staleDrafts: number;
   staleDraftDays: number;
+  // ---- the effective date (USER-TESTING.md T1.5) -------------------------
+  //
+  // Three counts rather than one, because they are three different findings and
+  // an auditor acts differently on each. All three are SAMPLEABLE: the query
+  // filters `hasEffectiveDate`, `backdated` and `hasEffectiveDateBasis` are
+  // exactly the predicates counted here, so a number on this summary is a list
+  // one call away. A count nobody can open is a rumour.
+  /**
+   * Pages holding the Canonical mark (or flipped to Needs Update from it) whose
+   * type requires an effective date and which state none. Her "six have no
+   * effective date at all". These are not invalid — they were published under a
+   * record that did not ask — and they are not hidden either.
+   */
+  canonicalWithoutEffectiveDate: number;
+  /**
+   * Pages whose effective date precedes their own first publication. This is
+   * NOT a count of suspected forgeries. It is the ordinary shape of migrated
+   * material, and on a record that grew out of another system it may be most of
+   * the corpus. It is here because an auditor asked to be able to see the
+   * population before sampling it.
+   */
+  backdatedEffectiveDate: number;
+  /**
+   * Of those, the ones where nobody recorded where the date came from. THIS is
+   * the exception worth sampling: a date asserted about a time the record
+   * cannot see, with nothing offered to corroborate it. On a record written
+   * entirely under the current rules this is zero, because the declaration is
+   * required at the point the date is set; a number above zero means pages that
+   * predate the rule, and each one is a question for a person who may still
+   * remember the answer.
+   */
+  backdatedWithoutBasis: number;
+  /** Pages dated to take effect on a day that has not arrived. Informational. */
+  notYetInForce: number;
   /** The scan hit HEALTH_SCAN_LIMIT: these counts are a floor, not a total. */
   truncated: boolean;
 }
@@ -204,6 +266,19 @@ export class QueryService {
     if (filter.hasOwner === false) clauses.push('p.owner_id IS NULL');
     if (filter.hasReviewDate === true) clauses.push('p.review_date IS NOT NULL');
     if (filter.hasReviewDate === false) clauses.push('p.review_date IS NULL');
+    if (filter.hasEffectiveDate === true) clauses.push('p.effective_date IS NOT NULL');
+    if (filter.hasEffectiveDate === false) clauses.push('p.effective_date IS NULL');
+    if (filter.hasEffectiveDateBasis === true) clauses.push('p.effective_date_basis IS NOT NULL');
+    if (filter.hasEffectiveDateBasis === false) clauses.push('p.effective_date_basis IS NULL');
+    // Backdating, in SQL, against the same anchor `recordAnchorDate` uses in
+    // TypeScript: the day version 1 was published, or the day the page was
+    // created when nothing has been. Both are already in the join.
+    if (filter.backdated === true) {
+      clauses.push('(p.effective_date IS NOT NULL AND p.effective_date < substr(COALESCE(v1.created_at, p.created_at), 1, 10))');
+    }
+    if (filter.backdated === false) {
+      clauses.push('(p.effective_date IS NULL OR p.effective_date >= substr(COALESCE(v1.created_at, p.created_at), 1, 10))');
+    }
     if (filter.reviewDateBefore) {
       clauses.push('p.review_date IS NOT NULL AND p.review_date < ?');
       params.push(filter.reviewDateBefore);
@@ -236,11 +311,13 @@ export class QueryService {
     const rows = this.db
       .prepare(
         `SELECT p.id, p.collection_id, p.parent_id, p.type, p.title, p.status, p.owner_id, p.approver_id,
-                p.effective_date, p.review_date, p.current_version, p.created_at,
-                COALESCE(v.created_at, p.created_at) AS updated_at
+                p.effective_date, p.effective_date_basis, p.review_date, p.current_version, p.created_at,
+                COALESCE(v.created_at, p.created_at) AS updated_at,
+                v1.created_at AS first_published_at
            FROM pages p
            JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
            LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+           LEFT JOIN page_versions v1 ON v1.page_id = p.id AND v1.number = 1
            ${where}
            ${order}
            LIMIT ${limit}`,
@@ -248,22 +325,33 @@ export class QueryService {
       .all(...params) as Record<string, unknown>[];
 
     const on = today();
-    return rows.map((r) => ({
-      pageId: r.id as string,
-      collectionId: r.collection_id as string,
-      parentId: (r.parent_id as string) ?? null,
-      type: r.type as DocType,
-      title: r.title as string,
-      status: r.status as PageStatus,
-      ownerId: (r.owner_id as string) ?? null,
-      approverId: (r.approver_id as string) ?? null,
-      effectiveDate: (r.effective_date as string) ?? null,
-      reviewDate: (r.review_date as string) ?? null,
-      currentVersion: (r.current_version as number) ?? null,
-      createdAt: r.created_at as string,
-      updatedAt: r.updated_at as string,
-      pastReview: isPastReview((r.review_date as string) ?? null, on),
-    }));
+    return rows.map((r) => {
+      const effectiveDate = (r.effective_date as string) ?? null;
+      const basis = (r.effective_date_basis as string) ?? null;
+      const firstPublishedAt = (r.first_published_at as string) ?? null;
+      const backdated = isBackdated(effectiveDate, recordAnchorDate(r.created_at as string, firstPublishedAt));
+      return {
+        pageId: r.id as string,
+        collectionId: r.collection_id as string,
+        parentId: (r.parent_id as string) ?? null,
+        type: r.type as DocType,
+        title: r.title as string,
+        status: r.status as PageStatus,
+        ownerId: (r.owner_id as string) ?? null,
+        approverId: (r.approver_id as string) ?? null,
+        effectiveDate,
+        effectiveDateBasis: basis,
+        reviewDate: (r.review_date as string) ?? null,
+        currentVersion: (r.current_version as number) ?? null,
+        createdAt: r.created_at as string,
+        updatedAt: r.updated_at as string,
+        firstPublishedAt,
+        pastReview: isPastReview((r.review_date as string) ?? null, on),
+        backdated,
+        backdatedWithoutBasis: backdated && !basis,
+        notYetInForce: isNotYetInForce(effectiveDate, on),
+      };
+    });
   }
 
   // ---- saved queries ---------------------------------------------------
@@ -358,6 +446,10 @@ export class QueryService {
     // hard-coded here: an unowned Note is not a health problem, because a Note
     // was never asked for an owner.
     const owed = new Set(DOC_TYPES.filter((t) => TYPE_RULES[t].requiresOwner));
+    // The same reading for the effective date: which types owe the record one is
+    // TYPE_RULES' answer, not a list written here. A Spec with no effective date
+    // is not a finding, because a Spec was never asked for one.
+    const owedEffective = new Set(DOC_TYPES.filter((t) => TYPE_RULES[t].requiresEffectiveDate));
     const staleBefore = new Date(Date.parse(`${on}T00:00:00.000Z`) - staleDraftDays * 86_400_000).toISOString();
 
     let pastReview = 0;
@@ -365,12 +457,28 @@ export class QueryService {
     let withoutOwner = 0;
     let orphaned = 0;
     let staleDrafts = 0;
+    let canonicalWithoutEffectiveDate = 0;
+    let backdatedEffectiveDate = 0;
+    let backdatedWithoutBasis = 0;
+    let notYetInForce = 0;
     for (const page of pages) {
       if (isPastReview(page.reviewDate, on)) pastReview += 1;
       if (page.status === 'needs_update') needsUpdate += 1;
       if (owed.has(page.type) && !page.ownerId) withoutOwner += 1;
       if (page.parentId === null && page.pageId !== home) orphaned += 1;
       if (page.status === 'draft' && page.updatedAt < staleBefore) staleDrafts += 1;
+      // `needs_update` counts alongside `canonical`: a page the freshness sweep
+      // flipped held the mark and can still be cited (freshness.ts says so in
+      // the notification it sends), so it is still a page a regulator may be
+      // handed. A draft that has never been published is not.
+      const heldTheMark = page.status === 'canonical' || page.status === 'needs_update';
+      if (heldTheMark && owedEffective.has(page.type) && !page.effectiveDate) canonicalWithoutEffectiveDate += 1;
+      if (page.backdated) backdatedEffectiveDate += 1;
+      if (page.backdatedWithoutBasis) backdatedWithoutBasis += 1;
+      // Recomputed against `on` rather than read off the row, exactly as
+      // `pastReview` is: the row judged "in force" against today, and a health
+      // summary asked about another day must answer about that day.
+      if (isNotYetInForce(page.effectiveDate, on)) notYetInForce += 1;
     }
 
     return {
@@ -383,6 +491,10 @@ export class QueryService {
       orphaned,
       staleDrafts,
       staleDraftDays,
+      canonicalWithoutEffectiveDate,
+      backdatedEffectiveDate,
+      backdatedWithoutBasis,
+      notYetInForce,
       truncated: pages.length >= HEALTH_SCAN_LIMIT,
     };
   }
@@ -515,6 +627,12 @@ export function validateQuery(raw: PageQuery): PageQuery {
   if (hasOwner !== undefined) query.hasOwner = hasOwner;
   const hasReviewDate = boolish(raw.hasReviewDate, 'hasReviewDate');
   if (hasReviewDate !== undefined) query.hasReviewDate = hasReviewDate;
+  const hasEffectiveDate = boolish(raw.hasEffectiveDate, 'hasEffectiveDate');
+  if (hasEffectiveDate !== undefined) query.hasEffectiveDate = hasEffectiveDate;
+  const hasEffectiveDateBasis = boolish(raw.hasEffectiveDateBasis, 'hasEffectiveDateBasis');
+  if (hasEffectiveDateBasis !== undefined) query.hasEffectiveDateBasis = hasEffectiveDateBasis;
+  const backdated = boolish(raw.backdated, 'backdated');
+  if (backdated !== undefined) query.backdated = backdated;
 
   for (const field of ['reviewDateBefore', 'reviewDateAfter', 'updatedBefore', 'updatedAfter', 'createdBefore', 'createdAfter'] as const) {
     const value = dateish(raw[field], field);

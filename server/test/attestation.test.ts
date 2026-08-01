@@ -20,6 +20,12 @@ import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 // Attestation and export (FEATURES.md §7), in three parts: the audit hash
 // chain that makes "tamper-evident" a claim rather than a word, the
 // point-in-time reconstruction that answers "what did this say on that date
@@ -73,7 +79,7 @@ function withActivity() {
   });
   env.store.editDraft(env.marc.id, page.id, {
     body: 'Keep records seven years.',
-    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
   env.store.submitForReview(env.marc.id, page.id);
   env.store.approve(env.iris.id, page.id, { note: 'Approved' });
@@ -360,7 +366,7 @@ async function history() {
   });
   env.store.editDraft(env.marc.id, page.id, {
     body: 'Keep records for seven years.',
-    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2030-01-01' },
+    fields: { ownerId: env.marc.id, approverId: env.iris.id, reviewDate: '2030-01-01', effectiveDate: TODAY },
   });
   env.store.submitForReview(env.marc.id, page.id);
   env.store.approve(env.iris.id, page.id, { note: 'Approved as Canonical' });
@@ -608,7 +614,7 @@ test('bundle HTML: a hostile title, body, note and send-back comment cannot esca
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: hostile });
   store.editDraft(marc.id, page.id, {
     body: `Body: ${hostile}\n<style>body{display:none}</style>`,
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
   });
   store.submitForReview(marc.id, page.id);
   store.sendBack(iris.id, page.id, { comment: hostile });
@@ -644,7 +650,7 @@ test('register: the Canonical pages as at a date, with owners, approvers and rev
   const second = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Access policy' });
   store.editDraft(marc.id, second.id, {
     body: 'All access is logged.',
-    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2035-06-01' },
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2035-06-01', effectiveDate: TODAY },
   });
   store.submitForReview(marc.id, second.id);
   store.approve(iris.id, second.id, {});

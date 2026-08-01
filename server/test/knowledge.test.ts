@@ -19,6 +19,12 @@ import { openDb } from '../src/db.js';
 import { RegistryClient } from '../src/registry.js';
 import { CanonStore } from '../src/store.js';
 
+// A Policy states an effective date before it can publish (USER-TESTING.md
+// T1.5). These fixtures are written and published in the same breath, so
+// today's date is the honest one: it claims nothing about a time before the
+// record, and so needs no basis.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 interface Rig {
   registry: RegistryStore;
   registryServer: Server;
@@ -109,7 +115,7 @@ async function seed(r: Rig) {
       'PUT',
       `/pages/${page.id}/draft`,
       { actor: admin.id },
-      { body, fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01' } },
+      { body, fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01', effectiveDate: TODAY } },
     );
     await r.call('POST', `/pages/${page.id}/submit`, { actor: admin.id }, {});
     await r.call('POST', `/pages/${page.id}/approve`, { actor: approver.id }, {});
@@ -681,7 +687,7 @@ test('the write surface lands under Canon’s workflow: no app grants the Canoni
       'PUT',
       `/knowledge/pages/${page.id}/draft`,
       { passport: app.passport, onBehalfOf: jo.id },
-      { body: 'Vision cover renews annually.', fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01' } },
+      { body: 'Vision cover renews annually.', fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01', effectiveDate: TODAY } },
     );
 
     // The app can bring the draft to the door of review...

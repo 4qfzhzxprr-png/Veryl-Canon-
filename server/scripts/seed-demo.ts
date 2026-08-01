@@ -1337,10 +1337,22 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
       continue;
     }
 
+    // Every seeded policy's effective date precedes the day this corpus is
+    // generated, because a demo record is a record of a company that existed
+    // before it bought Canon — which is exactly the shape USER-TESTING.md T1.5
+    // is about. So each one states WHERE the date comes from, and the demo
+    // shows the distinguishable case: a backdated date with a basis attached,
+    // attributed to the person who set it, printed in every attestation. A
+    // record whose backdated dates all carry a basis reports
+    // `backdatedWithoutBasis: 0` in collection health, which is the cured
+    // state; the exception count exists for records that upgrade into this
+    // rule carrying dates nobody can go back and ask about.
+    const effectiveDate = page.type === 'policy' ? isoDate(-rng.int(60, 700)) : null;
     const fields = {
       ownerId: author,
       approverId: page.type === 'note' ? null : approver,
-      effectiveDate: page.type === 'policy' ? isoDate(-rng.int(60, 700)) : null,
+      effectiveDate,
+      effectiveDateBasis: effectiveDate ? rng.pick(EFFECTIVE_DATE_BASES) : null,
       reviewDate:
         page.type === 'note'
           ? null
@@ -1577,6 +1589,19 @@ const DEPTH_FOUR: { suffix: string; type: DocType; purpose: (topic: string) => s
   { suffix: 'appendix', type: 'note', purpose: (t) => `the supporting detail behind ${lowerFirst(t)}` },
   { suffix: 'review record', type: 'note', purpose: (t) => `what the last review of ${lowerFirst(t)} concluded` },
   { suffix: 'implementation notes', type: 'spec', purpose: (t) => `how ${lowerFirst(t)} is implemented in practice` },
+];
+
+/**
+ * Where a seeded policy's effective date comes from. Each names something a
+ * person could go and look at — a minute, a system, a filing — which is the
+ * whole point of the field: Canon cannot check any of them, and a reader can.
+ */
+const EFFECTIVE_DATE_BASES: string[] = [
+  'Adopted at the date shown by the Governance Committee; see the committee minute of the same meeting. Migrated into Canon from the previous Confluence space.',
+  'Effective date carried over from the controlled-document register maintained in SharePoint before this record existed; register entry retained by Compliance.',
+  'Took effect on the date the contract it implements commenced. The countersigned contract is held by Legal.',
+  'Date of the board resolution approving the policy, minuted and filed; the document itself was only migrated into Canon at first publication here.',
+  'Effective from the start of the plan year it governs. Benefits holds the carrier confirmation showing the same date.',
 ];
 
 const REVISION_NOTES: string[] = [

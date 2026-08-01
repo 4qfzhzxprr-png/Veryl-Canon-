@@ -4,7 +4,7 @@ The first running slice of Veryl Canon: the data storage and organization backbo
 
 ## What works today
 
-- **The record.** Collections with role-based membership (view, comment, edit, approve, admin), pages nesting into trees without depth limit, branch moves that carry children, stable page identity through any move, and the four Core document types (Policy, Spec, Plan, Note) with structured fields stored as data: owner, approver, status, effective date (Policy only), and review date (Policy requires one; Spec and Plan may carry one; a Note carries none, because it never holds the Canonical mark).
+- **The record.** Collections with role-based membership (view, comment, edit, approve, admin), pages nesting into trees without depth limit, branch moves that carry children, stable page identity through any move, and the four Core document types (Policy, Spec, Plan, Note) with structured fields stored as data: owner, approver, status, effective date (Policy only, and a Policy requires one), and review date (Policy requires one; Spec and Plan may carry one; a Note carries none, because it never holds the Canonical mark). An effective date earlier than the page's own first publication is allowed — that is what migrating a real corpus looks like — but it must carry an `effectiveDateBasis` saying where the date comes from, and it is surfaced as such in the attestation and counted in record health. Canon records the basis and cannot verify it, and says so.
 - **Writing and publishing.** Drafts held apart from the published record, the Core page lock (one editor at a time, with a visible "being edited by"), one-step publishing, and append-only version history with restore-as-new-version. History immutability is enforced by the storage layer itself (SQLite triggers), not just application code.
 - **Status and review.** Draft → In Review → Canonical → Needs Update, driven by document type: Notes publish directly and never carry the Canonical mark; Policy and Spec require a named approver; publishing after Canonical drops the mark, because the mark applies to reviewed content. A page the freshness sweep flipped to **Needs Update** returns to Canonical through this same workflow and no other — it may be submitted for review directly, so the return path is edit → submit → approve, exactly as the first grant of the mark was.
 - **Freshness.** Canonical pages carry a review date; when it passes, a sweep flips the page to **Needs Update**, writes a notice for its owner to the existing outbox, and writes a `page.needs_update` audit event. **It runs on every deployment, configured or not** — hourly, and once at start-up before the port is bound — which is what makes "stale knowledge announces itself" a claim about the product rather than about deployments that read the start-up log. It runs as **Canon itself** (`system:canon`, `src/system.ts`), not as a borrowed person; `CANON_MAINTENANCE_ACTOR_ID` still names another actor for a deployment that deliberately wants one. `POST /maintenance/freshness` runs the sweep on demand (the org-level **operator** role required, the same question the notification flush asks — see "Who runs this Canon" below) and `GET /maintenance/freshness` says what this deployment actually does, which is what the editor now tells the author instead of promising a flip in general. **Idempotent by construction, not by bookkeeping**: the sweep selects Canonical pages, and a page it has already flipped is no longer Canonical, so a second run notifies nobody twice. There is no "already notified" flag to drift out of step with the record. The sweep is deliberately closed to agents — see "Two ways in" below.
@@ -449,17 +449,24 @@ GET    /maintenance/freshness               -> { scheduled, intervalMs, actor, o
                                             THIS deployment does about review dates. Any authenticated
                                             reader: the person who needs it is the author in the editor.
 POST   /queries/run                         { collectionIds?, types?, statuses?, ownerIds?, approverIds?,
-                                              hasOwner?, hasReviewDate?, reviewDateBefore?, reviewDateAfter?,
+                                              hasOwner?, hasReviewDate?, hasEffectiveDate?,
+                                              hasEffectiveDateBasis?, backdated?,
+                                              reviewDateBefore?, reviewDateAfter?,
                                               updatedBefore?, updatedAfter?, createdBefore?, createdAfter?,
                                               sort?, direction?, limit?, savedQueryId? }
                                             -> [{ pageId, collectionId, parentId, type, title, status, ownerId,
-                                                  approverId, effectiveDate, reviewDate, currentVersion,
-                                                  createdAt, updatedAt, pastReview }]
+                                                  approverId, effectiveDate, effectiveDateBasis, reviewDate,
+                                                  currentVersion, createdAt, updatedAt, firstPublishedAt,
+                                                  pastReview, backdated, backdatedWithoutBasis, notYetInForce }]
+                                            `backdated: true, hasEffectiveDateBasis: false` is the sample
+                                            behind health's backdatedWithoutBasis count.
 POST   /queries                             { name, query } — save a filter; owned by its creator
 GET    /queries | /queries/:id              your own saved queries (the definition; results via /queries/run)
 DELETE /queries/:id                         your own only
 GET    /collections/:id/health?draftDays=   -> { pastReview, needsUpdate, withoutOwner, orphaned, staleDrafts,
-                                                 staleDraftDays, pages, truncated }
+                                                 staleDraftDays, canonicalWithoutEffectiveDate,
+                                                 backdatedEffectiveDate, backdatedWithoutBasis, notYetInForce,
+                                                 pages, truncated }
 GET    /audit/verify?limit=                 walk the audit hash chain; requires admin on a collection
                                             -> { ok, format, algorithm, recipe, events, chainedFromEventId,
                                                  unchained, verified, partial, head: { eventId, hash },

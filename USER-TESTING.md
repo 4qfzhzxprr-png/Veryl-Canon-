@@ -158,7 +158,22 @@ the attestation beside a creation date that contradicts it, unreconciled.
 Across the corpus's 16 canonical clinical policies, 10 have effective dates
 preceding first publication and 6 have none at all — so her forgery is
 indistinguishable from the legitimate ones. This is the field a regulator asks
-about first.
+about first. **Fixed** in `effectivedate.ts`, and deliberately NOT by refusing
+backdating: a policy that took effect in 2019 and was migrated in 2026 is the
+ordinary case, and refusing it would teach people to type today's date. The
+shape is checked (a real ISO date, no slipped century in either direction, and
+"effective from 2099" refused as a commitment nobody can keep); a Policy must
+now state an effective date before it publishes, which is a rule about the act
+of publishing and leaves every page already in the record valid; and a date
+earlier than the page's own first publication must carry an
+`effectiveDateBasis` — a versioned, attributed structured field naming the
+committee minute, prior system or import run it rests on. Backdating is then
+*surfaced*, not silenced: the attestation reconciles it against the creation
+date it contradicts and says whether a basis was recorded, and
+`collectionHealth` counts `canonicalWithoutEffectiveDate`,
+`backdatedEffectiveDate` and `backdatedWithoutBasis`, each openable as a query.
+Canon records a basis and cannot verify one, and every bundle says so. Verified
+against a running server.
 
 **T1.6 · Malformed input crashed the API, and one case answered falsely.**
 *(Sam; reproduced independently.)* `{"question": 42}`, `{"question":{"$ne":
