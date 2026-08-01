@@ -106,11 +106,16 @@ One shape, used by Canon's own question box, by agents, and by Studio apps throu
 
 ```
 POST /ask   { question, collectionId?, limit? }
-    ->      { answer | null, citations: [{ pageId, title, version, snippet }],
-              refused: bool, reason?: "no_canonical_match" | ... }
+    ->      { answer | null,
+              citations: [{ pageId, title, version, snippet, status? }],
+              refused: bool, reason?: "no_canonical_match" | ...,
+              pastReview?: [{ pageId, title }],
+              disagreement?: { pageIds: [...], note } }
 ```
 
 An answer without citations is never returned. `refused: true` with an empty citation list is the honest response to a silent record, and it is the response we would rather ship than a plausible guess.
+
+A citation carries the `status` of the page it quotes — `canonical`, or `needs_update` when that page is past its review date. It is there because a citation is an invitation to act on a quotation, and whether the page behind it is current is part of what the reader is being asked to weigh; a caller that has to fetch each cited page to find out will either guess or not bother. Absent means *this response cannot say*, never *canonical*: a client that defaults a missing status to the mark that means "approved and current" is asserting the most trust-bearing thing in the product on no evidence, and should render nothing instead.
 
 ### When we would revisit this
 

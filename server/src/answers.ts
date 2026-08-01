@@ -31,6 +31,22 @@ export interface Citation {
   title: string;
   version: number;
   snippet: string;
+  /**
+   * The standing of the cited page — `canonical` or `needs_update`, the only
+   * two statuses an answer may draw on. It is carried because a reader deciding
+   * whether to act on a quotation needs to know whether the page behind it is
+   * current, and a caller that has to fetch each cited page to find out will
+   * either guess or not bother. The answer prose says the same thing in words;
+   * this is the machine-readable half.
+   *
+   * Optional because `AnswerPassage.status` is optional — a generator can be
+   * exercised without one — and because the field is an addition to a published
+   * contract (STUDIO-CONTRACT.md §"POST /knowledge/ask"). Absent means "this
+   * response cannot say", NOT "canonical": a caller that defaults a missing
+   * status to the most trust-bearing value it knows is asserting something the
+   * record never told it. Render nothing instead.
+   */
+  status?: PageStatus;
 }
 
 export type RefusalReason = 'no_canonical_match';
@@ -819,6 +835,7 @@ export class AnswerService {
         title: passage.title,
         version: passage.version,
         snippet: passage.text,
+        ...(passage.status ? { status: passage.status } : {}),
       });
     }
 
@@ -860,6 +877,7 @@ export class AnswerService {
           title: passage.title,
           version: passage.version,
           snippet: passage.text,
+          ...(passage.status ? { status: passage.status } : {}),
         });
       }
       if (!answer.includes(disagreement.note)) {

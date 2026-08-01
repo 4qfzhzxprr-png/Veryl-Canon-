@@ -289,11 +289,20 @@ Request:
   "answer": "The record says:\n\n“Generic prescriptions are covered at 100 percent…” — Prescription coverage policy (version 1)",
   "citations": [
     { "pageId": "pg-1", "title": "Prescription coverage policy", "version": 1,
-      "snippet": "Generic prescriptions are covered at 100 percent after the annual deductible is met." }
+      "snippet": "Generic prescriptions are covered at 100 percent after the annual deductible is met.",
+      "status": "canonical" }
   ],
   "refused": false
 }
 ```
+
+Three fields on that response are optional, present only when they have something to say, and were being returned before they were written down here. They are documented now because an integrator who cannot see them in the contract will either ignore them or, worse, invent a default for them:
+
+**`citations[].status`** — the standing of the page the snippet was quoted from: `canonical`, or `needs_update` when that page is past its review date. Those are the only two values an answer can cite (a Draft, a Note and an archived page are never cited at all), and both are official record. Show it. **Absent means this response cannot say, never `canonical`.** An app that fills a missing status in with the mark that means "approved and current" is making the single most trust-bearing claim in the product on no evidence; render nothing and let the reader click through instead. Canon's own Ask view shipped that default for a while and printed CANONICAL over pages its own answer text was calling past review.
+
+**`pastReview`** — `[{ "pageId": "pg-1", "title": "…" }]`, the cited pages that are past their review date, omitted entirely when there are none. It is the same fact as a `needs_update` status, pre-filtered so an app can flag the answer as a whole without walking the citations. The answer prose says it too, in words; this is the machine-readable half, and an app that renders only the prose is still correct.
+
+**`disagreement`** — `{ "pageIds": ["pg-1", "pg-4"], "note": "…" }`, present when the cited passages contradict each other (DATA-BACKBONE.md section 7). `pageIds` names every page whose passage took part, always at least two and always a subset of this answer's citations. `note` is one reader-facing paragraph naming the pages and quoting the parts that differ, and it is **also embedded verbatim in `answer`** — so an app that renders only the prose still shows the warning and an app that renders only this field still shows it too. Canon has not chosen between the pages and an app must not either: showing one side and dropping the other is the smoothing that section forbids, and it does not become acceptable because it reads better.
 
 Response `200`, refused — the honest response to a silent record, and the one we would rather ship than a plausible guess:
 

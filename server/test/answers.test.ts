@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { existsSync, readFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
+import { setHandOrgRole } from '../src/orgrole.js';
 import { CanonStore } from '../src/store.js';
 import {
   AnswerService,
@@ -321,7 +325,10 @@ test('API: POST /ask and GET /pages/:id/related over HTTP', async () => {
     assert.equal(answered.json.refused, false);
     assert.ok(answered.json.answer.includes('logged'));
     assert.ok(answered.json.citations.length >= 1);
-    assert.deepEqual(Object.keys(answered.json.citations[0]).sort(), ['pageId', 'snippet', 'title', 'version']);
+    // The wire shape, over HTTP, key for key: `status` joined it so a caller
+    // never has to assume the standing of a page it is being asked to trust.
+    assert.deepEqual(Object.keys(answered.json.citations[0]).sort(), ['pageId', 'snippet', 'status', 'title', 'version']);
+    assert.equal(answered.json.citations[0].status, 'canonical');
     assert.equal(answered.json.reason, undefined);
 
     const refused = await call('POST', '/ask', dana.id, { question: 'What is the parental leave allowance?' });
@@ -762,4 +769,132 @@ test('extractive: conflicting passages are set against each other, not listed', 
   // Without a disagreement the extractive default is exactly what it was.
   const plain = extractiveGenerator.generate({ question: 'How long are records retained?', passages: [passages[2]!] });
   assert.ok(plain!.answer.startsWith('The record says:'));
+});
+
+// ---------------------------------------------------------------------------
+// The standing of a cited page, carried to whoever renders the citation.
+//
+// USER-TESTING.md T1.1: the Ask view's source cards printed a green CANONICAL
+// pill on every card, because `Citation` carried no status and the client
+// defaulted the missing one to `canonical`. Two testers hit it independently —
+// one watched a card read CANONICAL beside an answer whose own prose said that
+// page was past review. These tests hold both halves shut: the server sends
+// the standing it knows, and the client draws no badge it was not given.
+
+// Canonical, with a review date the caller picks, so the freshness sweep has
+// something to flip.
+function publishCanonicalDue(
+  store: CanonStore,
+  editorId: string,
+  approverId: string,
+  collectionId: string,
+  title: string,
+  body: string,
+  reviewDate: string,
+) {
+  const page = store.createPage(editorId, { collectionId, type: 'policy', title });
+  store.editDraft(editorId, page.id, { body, fields: { ownerId: editorId, approverId, reviewDate } });
+  store.submitForReview(editorId, page.id);
+  return store.approve(approverId, page.id);
+}
+
+test('ask: a citation carries the standing of the page it quotes', async () => {
+  const { db, store, dana, marc, iris, collection } = setup();
+  setHandOrgRole(db, dana.id, 'operator', null); // the sweep is an operator's act
+  const policy = publishCanonicalDue(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records and retention',
+    'Client records are retained for seven years from the end of the engagement.',
+    '2026-01-01',
+  );
+
+  const current = await store.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.equal(current.citations.length, 1);
+  assert.equal(current.citations[0]!.status, 'canonical');
+
+  store.sweepFreshness(dana.id, { on: '2026-06-01' });
+
+  const stale = await store.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.equal(stale.refused, false, "a Needs Update page is still the record's own answer");
+  assert.deepEqual(stale.citations.map((c) => c.pageId), [policy.id]);
+  // The heart of T1.1: the citation says what the page now is. A renderer left
+  // to guess will guess Canonical, and be wrong here.
+  assert.equal(stale.citations[0]!.status, 'needs_update');
+  // The three ways the same fact reaches a caller agree with each other: the
+  // status on the citation, the pastReview list, and the prose.
+  assert.deepEqual(stale.pastReview, [{ pageId: policy.id, title: 'Records and retention' }]);
+  assert.match(stale.answer!, /past review/);
+});
+
+test('ask: a page named only by a disagreement is cited with its standing too', async () => {
+  const { db, store, dana, marc, iris, collection } = setup();
+  setHandOrgRole(db, dana.id, 'operator', null);
+  const seven = publishCanonicalDue(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Records retention policy',
+    'Client records are retained for seven years from the end of the engagement.',
+    '2026-01-01',
+  );
+  const ten = publishCanonicalDue(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client data retention policy',
+    'Client records are retained for ten years after the engagement closes.',
+    '2099-01-01',
+  );
+  store.sweepFreshness(dana.id, { on: '2026-06-01' });
+
+  const result = await store.ask(marc.id, { question: 'How long are client records retained?' });
+  assert.ok(result.disagreement, 'the two policies contradict each other');
+  // Citations added to keep a disagreement whole go through the same door, so
+  // neither side of a contradiction is the one drawn without its standing.
+  const byId = new Map(result.citations.map((c) => [c.pageId, c]));
+  assert.equal(byId.get(seven.id)!.status, 'needs_update');
+  assert.equal(byId.get(ten.id)!.status, 'canonical');
+});
+
+// The compiled test's depth below server/ depends on tsconfig's rootDir, so
+// walk up to the browser code rather than counting '..'.
+function findPublicFile(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let up = 0; up < 8; up += 1) {
+    const candidate = join(dir, 'public', name);
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error(`server/public/${name} not found above the compiled test file`);
+}
+
+test('ask view: a citation badge is drawn only from a status the server sent', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+
+  // The defect itself, in the form it took: any default that turns a missing
+  // status into the mark meaning "approved and current". It is worth pinning
+  // as text because the damage was done at the call site, not in `badge`.
+  assert.doesNotMatch(
+    source,
+    /(\?\?|\|\|)\s*['"]canonical['"]/,
+    'a missing status must render nothing — defaulting it to canonical asserts the most trust-bearing value in the product on no evidence',
+  );
+
+  // And the behaviour, run for real. `citationBadge` is lifted out of the
+  // browser file with a stub `badge` beneath it: no DOM, no bundler, and the
+  // assertion is about the shipped source rather than a copy of it.
+  const lifted = /function citationBadge\(c\) \{[\s\S]*?\n\}/.exec(source);
+  assert.ok(lifted, 'the Ask view draws citation statuses through citationBadge');
+  const citationBadge = new Function('badge', `${lifted[0]}\nreturn citationBadge;`)(
+    (status: string, size: string) => `<badge ${status} ${size}>`,
+  ) as (c: { status: string | null }) => string;
+
+  assert.equal(citationBadge({ status: 'needs_update' }), '<badge needs_update sm>');
+  assert.equal(citationBadge({ status: 'canonical' }), '<badge canonical sm>');
+  assert.equal(citationBadge({ status: null }), '', 'no status, no badge');
 });
