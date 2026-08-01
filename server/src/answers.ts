@@ -23,6 +23,15 @@ import { ANSWERABLE_STATUSES, type RetrievalService } from './retrieval.js';
 //     about to be composed from disagree with each other, the answer says so,
 //     cites all of them, and does not choose (DATA-BACKBONE.md §7). Detection
 //     runs HERE, outside the generator — see `detectDisagreement` below.
+//   * An answer consults what the record already KNOWS about the pages it is
+//     citing, and does not rely on its own reading of their prose. A
+//     contradiction can exist in the record three ways: inferred from two
+//     passages' text (this module), asserted by a person as a `conflicts_with`
+//     relation (relations.ts), or observed between an authority and a
+//     corroborating source (divergence.ts). Only the first is a guess. Reading
+//     prose to find a conflict while ignoring one a person wrote down as data
+//     is DATA-BACKBONE.md §2 principle 2 — structure over prose — run
+//     backwards, so the answer path reads all three. See `AnswerRecord`.
 //
 // Every ask lands in the audit log, refusals included.
 
@@ -52,6 +61,29 @@ export interface Citation {
 export type RefusalReason = 'no_canonical_match';
 
 /**
+ * A `conflicts_with` relation standing between two of the pages this answer is
+ * about to cite: a person wrote down, IN THE RECORD, that these two pages
+ * disagree, and said how (relations.ts). Read, never inferred — nothing in
+ * this module decides that a relation ought to exist.
+ *
+ * This is the strongest contradiction signal Canon holds, and the reason is
+ * not subtle: a human being with `edit` on both collections put their name and
+ * the date to it, and relations.ts made them explain themselves before it
+ * would take the assertion. Text inference is Canon guessing; this is the
+ * record stating.
+ */
+export interface AssertedConflict {
+  fromPageId: string;
+  toPageId: string;
+  /** The asserter's own words. `conflicts_with` requires one, so never empty. */
+  note: string;
+  assertedBy: string;
+  /** The asserter's name, so the answer can attribute the claim to a person. */
+  assertedByName: string;
+  assertedAt: string;
+}
+
+/**
  * The record disagreeing with itself, in the shape DATA-BACKBONE.md §7 fixes:
  * `disagreement?: { pageIds: [...], note }`.
  *
@@ -63,9 +95,127 @@ export type RefusalReason = 'no_canonical_match';
  * shows the warning and a caller that renders only this field still shows it
  * too. Present only when a conflict was detected; absent otherwise, so the
  * shape every existing caller reads is unchanged.
+ *
+ * A disagreement now has TWO possible origins, and the note says which: a
+ * conflict Canon inferred from the two passages' text, and a conflict a person
+ * asserted as a `conflicts_with` relation. They land in one field because they
+ * are one claim about the record — *two pages this answer draws on give
+ * different answers, and nobody has settled which governs* — and a reader who
+ * has to check two fields to learn that is a reader who will miss it. Which
+ * one it was is never blurred: `asserted` carries the relations verbatim when
+ * a person is behind any of it, and the note names that person.
  */
 export interface Disagreement {
   pageIds: string[];
+  note: string;
+  /**
+   * ADDITIVE, and absent unless a person asserted at least one of the
+   * conflicts in this disagreement — so `{ pageIds, note }` is exactly what it
+   * always was for every existing caller. Present, it is the evidence: who
+   * said these pages conflict, when, and in what words. A UI that wants to
+   * show "asserted by Dana Whitfield" rather than "Canon noticed" reads this.
+   */
+  asserted?: AssertedConflict[];
+}
+
+/**
+ * A `supersedes` relation between two pages this answer cites. Directed: a
+ * person recorded that one page replaced the other, and relations.ts stores it
+ * exactly as asserted because which replaced which IS the claim.
+ */
+export interface AssertedSupersession {
+  supersededPageId: string;
+  supersededByPageId: string;
+  /** Optional for `supersedes` — the claim explains itself — so often null. */
+  note: string | null;
+  assertedBy: string;
+  assertedByName: string;
+  assertedAt: string;
+}
+
+/**
+ * Set when this answer quotes a page the record says has been REPLACED, beside
+ * the page that replaced it. A sibling of `disagreement` rather than part of
+ * it, because it is a different problem with a different remedy:
+ *
+ *   * a `conflicts_with` is unsettled — two pages disagree and nobody has said
+ *     which governs, which is why Canon must not choose;
+ *   * a `supersedes` is SETTLED, by a person, in the record. There is nothing
+ *     for the reader to adjudicate; there is something for them to know, which
+ *     is that one of these quotations is the old rule.
+ *
+ * Folding the second into `disagreement` would tell a reader two pages are in
+ * unresolved conflict when the record plainly says they are not, which is its
+ * own confident wrong answer.
+ *
+ * WHY THE SUPERSEDED PAGE IS STILL CITED. §7 is explicit that asserting
+ * `supersedes` "does not archive the superseded page, does not change its
+ * status, and does not stop it being cited", and relations.ts implements
+ * exactly that. Silently dropping the citation would be Canon deciding — worse,
+ * deciding invisibly, removing the evidence rather than the problem, and
+ * leaving the reader unable to see what changed. So both are quoted and the
+ * relation is stated.
+ */
+export interface Supersession {
+  /**
+   * Every cited page taking part, in the order the passages were offered —
+   * both ends of every pair, so always at least two.
+   */
+  pageIds: string[];
+  /** What the record says replaced what, and who recorded it. */
+  asserted: AssertedSupersession[];
+  /** One reader-facing paragraph, also embedded verbatim in the answer text. */
+  note: string;
+}
+
+/**
+ * One open Divergence over a cited page: the page's authoritative source and a
+ * corroborating source answered the same fact differently, and no one has
+ * closed it (divergence.ts). Source names rather than ids, because this is
+ * read by a person.
+ */
+export interface PageDivergence {
+  id: string;
+  pageId: string;
+  authoritySourceName: string;
+  authorityValue: unknown;
+  otherSourceName: string;
+  otherValue: unknown;
+  observedAt: string;
+}
+
+/**
+ * Set when a page this answer cites carries an open divergence.
+ *
+ * WHY THIS IS A SIBLING FIELD AND NOT PART OF `disagreement`. This is the
+ * judgement call the T1.2 finding asked to be written down, so here it is.
+ *
+ * `disagreement` is a claim about TWO PAGES: the record holds two answers to
+ * the reader's question and they differ. Its `pageIds` are always at least two
+ * and they are the two sides; the extractive generator sets them against each
+ * other; §7's remedy is that the pages' owners settle which governs.
+ *
+ * A divergence is none of that. It is ONE page, and the two disagreeing
+ * parties are external systems — an authority and a corroborating source —
+ * arguing about a value the page displays, not about anything the page's prose
+ * says. Its `pageIds` would be a list of one. There is no "other side" to
+ * quote, because the other side is not a passage. Its remedy is different too:
+ * a person closes it with a reason (divergence.ts), and until they do the
+ * authority's value keeps displaying, because "a corroborating source's
+ * disagreement is a signal about the systems, never a vote about the value".
+ *
+ * Putting the two in one field would force a reader to guess which of the two
+ * quite different things they were being warned about, and would break the
+ * "always at least two pages, and they are the sides" invariant that everything
+ * downstream of `disagreement` relies on. So: two fields, each honest about
+ * what it is, and each saying so in its own note.
+ */
+export interface SourceDisagreement {
+  /** The cited pages carrying at least one open divergence, in passage order. */
+  pageIds: string[];
+  /** The open divergences themselves, so a UI can link straight to them. */
+  open: PageDivergence[];
+  /** One reader-facing paragraph, also embedded verbatim in the answer text. */
   note: string;
 }
 
@@ -86,11 +236,25 @@ export interface AnswerResponse {
    */
   pastReview?: { pageId: string; title: string }[];
   /**
-   * Set when the cited passages disagree with each other. Computed by this
-   * module from the passages themselves — never by the generator, and never
-   * removable by it. See `detectDisagreement`.
+   * Set when the cited pages disagree with each other — because their
+   * passages' text says so, or because a person asserted that they do.
+   * Computed by this module from the passages and from the record — never by
+   * the generator, and never removable by it. See `detectDisagreement`.
    */
   disagreement?: Disagreement;
+  /**
+   * Set when this answer quotes a page the record says was replaced, beside
+   * the page that replaced it. Additive and absent otherwise; a caller that
+   * has never heard of it reads exactly the shape it always read. See
+   * `Supersession` on why this is not folded into `disagreement`.
+   */
+  supersession?: Supersession;
+  /**
+   * Set when a cited page carries an open divergence between its authoritative
+   * source and a corroborating one. Additive and absent otherwise. See
+   * `SourceDisagreement` on why this is its own field.
+   */
+  sourceDisagreement?: SourceDisagreement;
 }
 
 export interface AskRequest {
@@ -147,6 +311,14 @@ export interface GeneratedAnswer {
 // whether one exists. The strongest thing a generator can do is state the
 // disagreement in Canon's own words — and if it does not, Canon states it
 // itself, in front of whatever the generator wrote. See `ask` below.
+//
+// The same holds, word for word, for `supersession` and `sourceDisagreement`.
+// They are advisories on the way in and re-asserted by the caller on the way
+// out; there is no field on `GeneratedAnswer` through which a generator could
+// report that a page is not really superseded or that two systems have stopped
+// disagreeing, and there never should be. What a person asserted and what two
+// systems were observed to say are facts the record holds. They are not the
+// generator's to revise.
 export interface AnswerGenerator {
   readonly name: string;
   generate(input: {
@@ -154,6 +326,10 @@ export interface AnswerGenerator {
     passages: AnswerPassage[];
     /** Advisory. Detected outside this seam; ignoring it changes nothing. */
     disagreement?: Disagreement | null;
+    /** Advisory, same rules: what the record says was replaced by what. */
+    supersession?: Supersession | null;
+    /** Advisory, same rules: where a cited page's own sources disagree. */
+    sourceDisagreement?: SourceDisagreement | null;
   }): GeneratedAnswer | null;
 }
 
@@ -287,6 +463,33 @@ export function isOnTopic(question: string, text: string): boolean {
 // ---------------------------------------------------------------------------
 // Contradiction awareness — DATA-BACKBONE.md §7, "Answers must never smooth a
 // contradiction", which that section calls its sharpest rule.
+//
+// THERE ARE THREE WAYS A CONTRADICTION EXISTS IN THE RECORD, AND THIS IS THE
+// WEAKEST OF THEM.
+//
+// What follows is the TEXT INFERENCE half: Canon reading two passages and
+// working out, lexically, that they give different answers. It is a guess. It
+// is a careful, deterministic, deliberately narrow guess, but a guess.
+//
+// The other two are not guesses, and the answer path consults both:
+//
+//   * a `conflicts_with` PAGE RELATION (relations.ts) — a person with `edit` on
+//     both collections wrote down that these two pages disagree, and had to
+//     explain how before the record would take it. That is data, not prose,
+//     and DATA-BACKBONE.md §2 principle 2 is "structure over prose". An
+//     answer that infers a conflict from a sentence while ignoring one a
+//     colleague recorded as a row is the principle exactly inverted, which is
+//     the defect this section was rewritten to fix.
+//   * an open DIVERGENCE (divergence.ts) — an authority and a corroborating
+//     source were OBSERVED to answer the same fact differently, and nobody has
+//     closed it. Also data, also not a guess, and about the page's own facts
+//     rather than about two pages.
+//
+// Those two arrive through the `AnswerRecord` seam below. They never pass
+// through the lexical machinery in this section, are never scored against it,
+// and are never overruled by it: a conflict a person asserted is reported
+// whether or not the passages' text trips a single one of the checks here.
+// Reporting it is the whole point. The record said so.
 //
 // BE HONEST ABOUT WHAT THIS IS. There is no entailment model here, and there
 // must not be a pretend one: a false claim of contradiction is its own kind of
@@ -642,22 +845,77 @@ function subjectsLineUp(a: readonly string[], b: readonly string[], minShared: n
 interface Conflict {
   pageIds: [string, string];
   detail: string;
+  /**
+   * The relation a person asserted, when this conflict is one of those.
+   * Absent when Canon inferred the conflict from the passages' text — and the
+   * two are never blurred, because "somebody wrote this down" and "we read it
+   * off two sentences" are not the same claim and must not read alike.
+   */
+  asserted?: AssertedConflict;
 }
 
 function label(p: AnswerPassage): string {
   return `${p.title} (version ${p.version})`;
 }
 
+/** An ISO timestamp as the day it happened; the time of day is not the point. */
+function day(at: string): string {
+  return at.slice(0, 10);
+}
+
 /**
- * The whole point of this module: given the passages an answer is about to be
- * composed from, does the record give more than one answer?
+ * The conflicts a person ASSERTED over these passages, as `conflicts_with`
+ * relations (relations.ts), turned into the same `Conflict` shape the text
+ * inference produces so both travel through one note builder.
  *
- * Pure, deterministic, and free of any dependency on the generator — it takes
- * passages and returns a `Disagreement` or null, so it can be exercised
- * directly and so nothing downstream can influence it.
+ * BOTH ENDS MUST BE PASSAGES THIS ANSWER HOLDS, and that is a rule with two
+ * separate reasons behind it.
+ *
+ * The first is permission. Passages have already been through retrieval's
+ * per-asker SQL filter, so a relation whose two ends are both passages is a
+ * relation between two pages this asker may read. A relation reaching a page
+ * that is NOT a passage might be reaching a page they may not see, and naming
+ * it — even to say "this conflicts with something" — would leak that the page
+ * exists. relations.ts drops the far end of an unreadable relation for exactly
+ * this reason; the answer path does not get to be looser.
+ *
+ * The second is that Canon quotes what it warns about. §7's rule is that the
+ * answer "says so, cites both, and does not choose", and an answer cannot cite
+ * a page it never retrieved a passage from. A warning about a page the reader
+ * cannot see the text of is a rumour, not a citation.
+ *
+ * The cost is real and is the right cost: a cited page that conflicts with a
+ * page this answer did not draw on goes unmentioned here. That conflict is on
+ * the page itself, on the map, and in the relation listing — it is not
+ * invisible, it is just not this answer's business.
  */
-export function detectDisagreement(passages: readonly AnswerPassage[]): Disagreement | null {
-  if (passages.length < 2) return null; // a single passage cannot disagree with itself
+function assertedConflicts(
+  passages: readonly AnswerPassage[],
+  asserted: readonly AssertedConflict[],
+): Conflict[] {
+  const byPage = new Map<string, AnswerPassage>();
+  for (const passage of passages) if (!byPage.has(passage.pageId)) byPage.set(passage.pageId, passage);
+  const conflicts: Conflict[] = [];
+  for (const relation of asserted) {
+    const a = byPage.get(relation.fromPageId);
+    const b = byPage.get(relation.toPageId);
+    if (!a || !b || a.pageId === b.pageId) continue;
+    conflicts.push({
+      pageIds: [a.pageId, b.pageId],
+      // Attributed as an assertion, in the asserter's own words. The reader is
+      // told a PERSON said this — not that Canon worked it out — because the
+      // two carry very different weight and the difference is theirs to use.
+      detail:
+        `${label(a)} and ${label(b)} are recorded as conflicting. ` +
+        `${relation.assertedByName} asserted that on ${day(relation.assertedAt)}, and wrote: “${relation.note}”`,
+      asserted: relation,
+    });
+  }
+  return conflicts;
+}
+
+/** The conflicts Canon INFERS from the passages' text: the lexical half. */
+function inferredConflicts(passages: readonly AnswerPassage[]): Conflict[] {
   const claims = passages.map((p) => claimsOf(p.text));
   const conflicts: Conflict[] = [];
 
@@ -701,15 +959,177 @@ export function detectDisagreement(passages: readonly AnswerPassage[]): Disagree
     }
   }
 
+  return conflicts;
+}
+
+/**
+ * One note, one field, from however many conflicts were found — whoever found
+ * them. Asserted conflicts are listed FIRST, because the note only has room
+ * for two details and a person's recorded assertion outranks Canon's reading
+ * of a sentence every time.
+ */
+function toDisagreement(passages: readonly AnswerPassage[], conflicts: readonly Conflict[]): Disagreement | null {
   if (conflicts.length === 0) return null;
 
+  const ordered = [...conflicts].sort((a, b) => Number(Boolean(b.asserted)) - Number(Boolean(a.asserted)));
   // Page order follows the order the passages were offered, so the note, the
   // citations and the field all read the same way round.
-  const involved = new Set(conflicts.flatMap((c) => c.pageIds));
+  const involved = new Set(ordered.flatMap((c) => c.pageIds));
   const pageIds = passages.map((p) => p.pageId).filter((id, at, all) => involved.has(id) && all.indexOf(id) === at);
-  const details = [...new Set(conflicts.map((c) => c.detail))].slice(0, 2);
-  const more = conflicts.length > details.length ? ' The record differs in more than one place here.' : '';
-  return { pageIds, note: `${DISAGREEMENT_LEAD} ${details.join(' ')}${more} ${DISAGREEMENT_TAIL}` };
+  const details = [...new Set(ordered.map((c) => c.detail))].slice(0, 2);
+  const more = ordered.length > details.length ? ' The record differs in more than one place here.' : '';
+  const asserted = ordered.flatMap((c) => (c.asserted ? [c.asserted] : []));
+  return {
+    pageIds,
+    note: `${DISAGREEMENT_LEAD} ${details.join(' ')}${more} ${DISAGREEMENT_TAIL}`,
+    // Absent unless a person is behind at least one of these, so a caller that
+    // reads only `{ pageIds, note }` sees exactly what it always saw.
+    ...(asserted.length ? { asserted } : {}),
+  };
+}
+
+/**
+ * The whole point of this module: given the passages an answer is about to be
+ * composed from, does the record give more than one answer?
+ *
+ * Pure, deterministic, and free of any dependency on the generator or on the
+ * database — it takes passages plus whatever the record already STATES about
+ * them, and returns a `Disagreement` or null. So it can be exercised directly,
+ * nothing downstream can influence it, and the two halves can be tested apart:
+ * call it with one argument for the text inference alone, with the second for
+ * the whole picture. The lookup that produces that second argument is a
+ * separate seam (`AnswerRecord`) precisely so this stays a pure function.
+ *
+ * `asserted` is NOT a hint that makes the lexical checks more willing. It is
+ * an independent finding: a conflict a person recorded is reported even when
+ * the two passages share no number, no negation, and no subject at all. That
+ * is the case USER-TESTING.md T1.2 caught in the demo corpus — a retention
+ * schedule and a platform spec whose prose gives the quantity detector nothing
+ * to compare, joined by a relation that says in so many words that one of them
+ * is wrong.
+ */
+export function detectDisagreement(
+  passages: readonly AnswerPassage[],
+  asserted: readonly AssertedConflict[] = [],
+): Disagreement | null {
+  if (passages.length < 2) return null; // a single passage cannot disagree with itself
+  return toDisagreement(passages, [...assertedConflicts(passages, asserted), ...inferredConflicts(passages)]);
+}
+
+/** How the supersession note opens. */
+export const SUPERSESSION_LEAD = 'This answer quotes a page the record says has been replaced.';
+
+/**
+ * Is this answer citing both a superseded page and the page that superseded
+ * it? Pure, like `detectDisagreement`, and for the same reasons.
+ *
+ * Only pairs where BOTH ends are passages count, on the same two grounds as an
+ * asserted conflict: a relation to a page outside this answer might be a
+ * relation to a page this asker may not see, and a page quoting only the
+ * current rule has no problem to warn about. Quoting the superseded page ALONE
+ * is not handled here either — that is a different and harder question (does
+ * the answer path prefer the superseding page? §7 says Canon does not decide,
+ * and the honest answer is that a person's supersession does not make the old
+ * page's status change, so it remains citable), and inventing a rule for it
+ * inside a bug fix would be the silent widening this was asked not to do.
+ */
+export function detectSupersession(
+  passages: readonly AnswerPassage[],
+  asserted: readonly AssertedSupersession[],
+): Supersession | null {
+  if (passages.length < 2) return null;
+  const byPage = new Map<string, AnswerPassage>();
+  for (const passage of passages) if (!byPage.has(passage.pageId)) byPage.set(passage.pageId, passage);
+
+  const pairs: AssertedSupersession[] = [];
+  const details: string[] = [];
+  for (const relation of asserted) {
+    const older = byPage.get(relation.supersededPageId);
+    const newer = byPage.get(relation.supersededByPageId);
+    if (!older || !newer || older.pageId === newer.pageId) continue;
+    pairs.push(relation);
+    details.push(
+      `${relation.assertedByName} recorded on ${day(relation.assertedAt)} that ${label(newer)} supersedes ` +
+        `${label(older)}${relation.note ? `, and wrote: “${relation.note}”` : '.'}`,
+    );
+  }
+  if (pairs.length === 0) return null;
+
+  const involved = new Set(pairs.flatMap((p) => [p.supersededPageId, p.supersededByPageId]));
+  const pageIds = passages.map((p) => p.pageId).filter((id, at, all) => involved.has(id) && all.indexOf(id) === at);
+  const shown = details.slice(0, 2);
+  const more = details.length > shown.length ? ' More than one page quoted here has been replaced.' : '';
+  return {
+    pageIds,
+    asserted: pairs,
+    note:
+      `${SUPERSESSION_LEAD} ${shown.join(' ')}${more} ` +
+      'Both are quoted above and both are cited: a supersession does not archive the older page, does not change ' +
+      'its status, and does not stop it being cited, so dropping that quotation would hide the change instead of ' +
+      'showing it. Canon is relaying what a person recorded, not deciding between the two.',
+  };
+}
+
+/** How the source-disagreement note opens. */
+export const SOURCE_DISAGREEMENT_LEAD =
+  'A page cited here is carrying an open disagreement between the systems its values come from.';
+
+/**
+ * Are any of the cited pages carrying an open divergence? Pure, like the two
+ * above; the lookup lives in `AnswerRecord`.
+ *
+ * This is a weaker claim than `disagreement` and the note is careful to say
+ * so: nothing here asserts that the answer's PROSE is wrong. It says that a
+ * value this page displays is one two systems do not agree about, and that
+ * nobody has yet settled which was right.
+ */
+export function detectSourceDisagreement(
+  passages: readonly AnswerPassage[],
+  divergences: readonly PageDivergence[],
+): SourceDisagreement | null {
+  const byPage = new Map<string, AnswerPassage>();
+  for (const passage of passages) if (!byPage.has(passage.pageId)) byPage.set(passage.pageId, passage);
+
+  const open: PageDivergence[] = [];
+  const details: string[] = [];
+  for (const divergence of divergences) {
+    const passage = byPage.get(divergence.pageId);
+    if (!passage) continue;
+    open.push(divergence);
+    details.push(
+      `On ${label(passage)}, ${divergence.authoritySourceName} is the authority for a field this page shows and ` +
+        `answered ${displayValue(divergence.authorityValue)}, while ${divergence.otherSourceName} answered ` +
+        `${displayValue(divergence.otherValue)} (observed ${day(divergence.observedAt)}).`,
+    );
+  }
+  if (open.length === 0) return null;
+
+  const involved = new Set(open.map((d) => d.pageId));
+  const pageIds = passages.map((p) => p.pageId).filter((id, at, all) => involved.has(id) && all.indexOf(id) === at);
+  const shown = details.slice(0, 2);
+  const more = details.length > shown.length ? ' There is more than one open divergence here.' : '';
+  return {
+    pageIds,
+    open,
+    note:
+      `${SOURCE_DISAGREEMENT_LEAD} ${shown.join(' ')}${more} ` +
+      'The page displays the authoritative value, because a corroborating source that disagrees is a signal about ' +
+      'the systems and never a vote about the value — so a federated figure quoted above is the authority’s, not ' +
+      'one the two systems agree on. The divergence is open, which means nobody has settled yet what happened. ' +
+      'This is two systems disagreeing about one page’s facts, which is not the same thing as two pages ' +
+      'contradicting each other.',
+  };
+}
+
+/**
+ * A resolved value, for the note. Mirrors the `display` in divergence.ts and
+ * for the same reason: a number reads as itself, a string in quotes, anything
+ * else as its JSON — and all of it capped, because a source that answers with
+ * a whole document should not put a whole document in an answer.
+ */
+function displayValue(value: unknown): string {
+  const text = typeof value === 'string' ? JSON.stringify(value) : JSON.stringify(value ?? null) ?? 'null';
+  return text.length > 120 ? `${text.slice(0, 117)}…` : text;
 }
 
 /**
@@ -721,6 +1141,165 @@ export function detectDisagreement(passages: readonly AnswerPassage[]): Disagree
 function disagreementNotice(disagreement: Disagreement, passages: readonly AnswerPassage[]): string {
   const quoted = passages.filter((p) => disagreement.pageIds.includes(p.pageId)).map(attribute);
   return `${disagreement.note}\n\n${quoted.join('\n\n')}`;
+}
+
+// ---------------------------------------------------------------------------
+// The record lookup seam
+//
+// Everything above this line is a pure function of passages and plain data,
+// and it stays that way. What the record STATES about a set of pages has to
+// come out of the database, and this is the one place it does.
+//
+// WHY A SEAM AND NOT A COUPLE OF QUERIES INSIDE `ask`. Two reasons, and the
+// first is the one that matters. `detectDisagreement` is the function this
+// module is really about, it is directly testable, and it must stay that way:
+// a test that has to stand up a store, two collections, four pages and a
+// person to check that "seven years" contradicts "ten years" is a test nobody
+// will extend. Keeping the lookup behind an interface means the detection
+// functions take data, the tests hand them data, and the SQL is exercised
+// separately — through `ask`, which is where it actually runs. The second is
+// that a deployment which one day holds relations somewhere other than this
+// database has one class to replace rather than a rewrite of `ask`.
+//
+// WHY THIS DOES NOT GO THROUGH RelationService AND DivergenceService. Both of
+// those take an actor and re-check permissions, and both are about a page at a
+// time. The answer path is past that gate: every passage has already been
+// through retrieval's per-asker SQL, so the pages named here are pages this
+// asker may read, and asking again would be a second, differently-worded
+// permission check that could drift from the first. Reading the two tables
+// directly is what this file already does for `audit_events`, and the filter
+// that keeps it safe — both ends must be passages — is enforced in the pure
+// functions above, where it can be tested.
+
+/** Everything the record already states about the pages an answer is citing. */
+export interface StatedContradictions {
+  /** `conflicts_with` relations with both ends among the pages asked about. */
+  conflicts: AssertedConflict[];
+  /** `supersedes` relations, likewise. */
+  supersessions: AssertedSupersession[];
+  /** Open divergences on any of those pages. */
+  divergences: PageDivergence[];
+}
+
+/**
+ * The seam. One call, so an answer costs two queries however many pages it
+ * cites, and a test can supply the whole thing as a literal.
+ */
+export interface AnswerRecord {
+  statedOver(pageIds: readonly string[]): StatedContradictions;
+}
+
+/**
+ * The real one, over Canon's own tables.
+ *
+ * IT DOES NOT SWALLOW ITS ERRORS, and that is deliberate and the opposite of
+ * the choice divergence.ts makes when observing. There, a failure to record a
+ * divergence must not cost the reader the page, because the page is still true
+ * and the divergence surfaces elsewhere. Here, a failure to read what the
+ * record states would produce a fluent, cited answer drawn from two pages a
+ * person has recorded as contradicting each other, with no warning attached —
+ * which is precisely the failure §7 calls the worst thing the system could do,
+ * and it would be invisible. An ask that fails loudly is recoverable. An ask
+ * that quietly answers while blind to the record is not.
+ */
+export class StoredAnswerRecord implements AnswerRecord {
+  constructor(private readonly db: DatabaseSync) {}
+
+  statedOver(pageIds: readonly string[]): StatedContradictions {
+    const unique = [...new Set(pageIds)];
+    const empty: StatedContradictions = { conflicts: [], supersessions: [], divergences: [] };
+    // Fewer than two pages cannot hold a relation between two of them, but one
+    // page can still carry a divergence, so only the relation query is skipped.
+    if (unique.length === 0) return empty;
+    const holes = unique.map(() => '?').join(', ');
+
+    const divergences = (
+      this.db
+        .prepare(
+          // `sources` is LEFT JOINed and the id is the fallback, because
+          // divergence.ts deliberately carries no foreign key to it: a
+          // divergence outlives the source that produced it, and a
+          // deregistered source must not make the disagreement unreadable.
+          `SELECT d.id, d.page_id, d.authority_value, d.other_value, d.observed_at,
+                  COALESCE(sa.name, d.authority_source_id) AS authority_name,
+                  COALESCE(so.name, d.other_source_id) AS other_name
+             FROM divergences d
+             LEFT JOIN sources sa ON sa.id = d.authority_source_id
+             LEFT JOIN sources so ON so.id = d.other_source_id
+            WHERE d.state = 'open' AND d.page_id IN (${holes})
+            ORDER BY d.observed_at, d.rowid`,
+        )
+        .all(...unique) as Record<string, unknown>[]
+    ).map((row) => ({
+      id: row.id as string,
+      pageId: row.page_id as string,
+      authoritySourceName: row.authority_name as string,
+      authorityValue: parseValue(row.authority_value),
+      otherSourceName: row.other_name as string,
+      otherValue: parseValue(row.other_value),
+      observedAt: row.observed_at as string,
+    }));
+
+    if (unique.length < 2) return { ...empty, divergences };
+
+    const rows = this.db
+      .prepare(
+        // Both ends inside the set, which is the filter that makes this safe
+        // to run without a per-asker permission check: every page named came
+        // back through retrieval's own filter for this asker.
+        `SELECT r.from_page_id, r.to_page_id, r.kind, r.note, r.asserted_by, r.asserted_at,
+                a.name AS asserted_by_name
+           FROM page_relations r
+           JOIN actors a ON a.id = r.asserted_by
+          WHERE r.from_page_id IN (${holes}) AND r.to_page_id IN (${holes})
+          ORDER BY r.asserted_at, r.rowid`,
+      )
+      .all(...unique, ...unique) as Record<string, unknown>[];
+
+    const conflicts: AssertedConflict[] = [];
+    const supersessions: AssertedSupersession[] = [];
+    for (const row of rows) {
+      const assertedBy = row.asserted_by as string;
+      const assertedByName = row.asserted_by_name as string;
+      const assertedAt = row.asserted_at as string;
+      const from = row.from_page_id as string;
+      const to = row.to_page_id as string;
+      if (row.kind === 'conflicts_with') {
+        conflicts.push({
+          fromPageId: from,
+          toPageId: to,
+          // relations.ts requires a note on this kind, so this is a fallback
+          // against a row written before that rule rather than a real case.
+          note: ((row.note as string) ?? '').trim() || 'These two pages conflict.',
+          assertedBy,
+          assertedByName,
+          assertedAt,
+        });
+      } else {
+        // `supersedes` is stored as asserted and is directed: the FROM page is
+        // the one that replaced the TO page (relations.ts, `relationPair`).
+        supersessions.push({
+          supersededPageId: to,
+          supersededByPageId: from,
+          note: ((row.note as string) ?? '').trim() || null,
+          assertedBy,
+          assertedByName,
+          assertedAt,
+        });
+      }
+    }
+    return { conflicts, supersessions, divergences };
+  }
+}
+
+/** Divergence values are stored as JSON; a row we cannot parse is not a value. */
+function parseValue(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw ?? null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
 }
 
 // The minimal slice of CanonStore this service needs; CanonStore satisfies it.
@@ -738,6 +1317,10 @@ export class AnswerService {
     private readonly host: AnswerHost,
     private readonly retrieval: RetrievalService,
     private readonly generator: AnswerGenerator = extractiveGenerator,
+    // The lookup seam, defaulted to the real tables. Injectable so a test can
+    // state what the record says without writing it, exactly as the generator
+    // is injectable so a test can state what a model returns.
+    private readonly record: AnswerRecord = new StoredAnswerRecord(db),
   ) {}
 
   async ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
@@ -818,10 +1401,21 @@ export class AnswerService {
     // outside the seam a real model will one day occupy. The generator is told
     // (so a good one can present the conflict well) and is not believed (so a
     // bad one cannot make the conflict go away).
-    const disagreement = detectDisagreement(passages);
+    //
+    // First, what the record already STATES about these pages: the conflicts
+    // and supersessions a person asserted, and the divergences observed
+    // between the sources those pages read from. This is not a second opinion
+    // on the text inference below — it is the record speaking, and it is
+    // consulted first because it is the stronger of the two by a distance.
+    const stated = this.record.statedOver(passages.map((p) => p.pageId));
+    const disagreement = detectDisagreement(passages, stated.conflicts);
+    const supersession = detectSupersession(passages, stated.supersessions);
+    const sourceDisagreement = detectSourceDisagreement(passages, stated.divergences);
 
     const generated =
-      passages.length > 0 ? this.generator.generate({ question, passages, disagreement }) : null;
+      passages.length > 0
+        ? this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
+        : null;
 
     // Citations are built from the passages the generator was given, matched
     // by page id — a generator cannot cite a page it was not offered, and an
@@ -880,9 +1474,46 @@ export class AnswerService {
           ...(passage.status ? { status: passage.status } : {}),
         });
       }
-      if (!answer.includes(disagreement.note)) {
-        answer = `${disagreementNotice(disagreement, passages)}\n\n${answer}`;
-      }
+    }
+
+    // ---- and so do the other two things the record states ----------------
+    //
+    // Recomputed over the pages that were ACTUALLY CITED, rather than reported
+    // from the advisory computed over the passages, and the difference is not
+    // pedantry:
+    //
+    //   * a supersession is only a problem when both ends are quoted. An
+    //     answer that cited the superseding page and left the old one alone
+    //     has nothing to warn about, and warning anyway would train readers to
+    //     ignore the warning. So it is reported only when both were cited —
+    //     and when it is reported, the superseded citation STAYS. §7 is
+    //     explicit that a supersession does not stop a page being cited, and
+    //     dropping it here would be Canon deciding, silently, with the
+    //     evidence removed rather than the problem.
+    //   * a source divergence belongs to one page, so it is reported only if
+    //     that page ended up cited.
+    //
+    // Neither adds a citation, unlike a disagreement: there is no second side
+    // that must be quoted for the warning to be honest. The pages they name
+    // are pages already in the answer.
+    const cited = passages.filter((p) => citations.some((c) => c.pageId === p.pageId));
+    const citedSupersession = detectSupersession(cited, stated.supersessions);
+    const citedSourceDisagreement = detectSourceDisagreement(cited, stated.divergences);
+
+    // In front of the generator's prose, in the order a reader needs them, and
+    // only when the prose does not already carry the note verbatim — the same
+    // rule the disagreement notice follows, for the same reason: a generator
+    // that stated it in Canon's own words has not suppressed anything.
+    const preamble: string[] = [];
+    for (const notice of [citedSupersession, citedSourceDisagreement]) {
+      if (notice && !answer.includes(notice.note)) preamble.push(notice.note);
+    }
+    if (preamble.length) answer = `${preamble.join('\n\n')}\n\n${answer}`;
+    // The disagreement goes on last so it reads first. It is the sharpest of
+    // the three: the other two describe the standing of what is quoted, this
+    // one says the record gives two answers and Canon will not choose.
+    if (disagreement && !answer.includes(disagreement.note)) {
+      answer = `${disagreementNotice(disagreement, passages)}\n\n${answer}`;
     }
 
     this.audit(
@@ -892,6 +1523,8 @@ export class AnswerService {
       false,
       citations.map((c) => c.pageId),
       disagreement,
+      citedSupersession,
+      citedSourceDisagreement,
     );
     // Which of the cited pages are past review, named so a caller does not have
     // to parse the prose. Omitted entirely when none are.
@@ -904,14 +1537,19 @@ export class AnswerService {
       refused: false,
       ...(pastReview.length ? { pastReview } : {}),
       ...(disagreement ? { disagreement } : {}),
+      ...(citedSupersession ? { supersession: citedSupersession } : {}),
+      ...(citedSourceDisagreement ? { sourceDisagreement: citedSourceDisagreement } : {}),
     };
   }
 
   // Answers are agent-facing as well as person-facing, so every ask is on the
   // record: who asked, what they asked, whether the record answered, exactly
   // which pages were cited, and — when the record disagreed with itself —
-  // which pages disagreed. An answer that carried a disagreement is a fact
-  // about the record worth being able to query for later.
+  // which pages disagreed, whether one of them had been superseded, and
+  // whether a cited page's sources were at odds. An answer that carried any of
+  // those is a fact about the record worth being able to query for later:
+  // "which answers went out while that conflict was open" is a question an
+  // auditor asks after the conflict is settled, and only the log can answer it.
   private audit(
     actor: Actor,
     question: string,
@@ -919,6 +1557,8 @@ export class AnswerService {
     refused: boolean,
     citedPageIds: string[],
     disagreement?: Disagreement | null,
+    supersession?: Supersession | null,
+    sourceDisagreement?: SourceDisagreement | null,
   ): void {
     this.db
       .prepare(
@@ -936,6 +1576,16 @@ export class AnswerService {
           citedPageIds,
           generator: this.generator.name,
           ...(disagreement ? { disagreement: disagreement.pageIds } : {}),
+          // Whether a person asserted it, or Canon read it off the passages.
+          // Six months later, "was this flagged because somebody said so?" is
+          // the first question anybody asks of one of these events.
+          ...(disagreement?.asserted
+            ? { disagreementAsserted: disagreement.asserted.map((a) => a.assertedBy) }
+            : {}),
+          ...(supersession ? { supersession: supersession.pageIds } : {}),
+          ...(sourceDisagreement
+            ? { sourceDisagreement: sourceDisagreement.open.map((d) => d.id) }
+            : {}),
         }),
       );
   }

@@ -312,6 +312,15 @@ Response `200`, refused — the honest response to a silent record, and the one 
 
 A refusal is `200`: the call succeeded and the record had nothing to say. A `403` here means something else entirely — one of the three gates closed — and an app must not render the two the same way.
 
+**Four optional fields may accompany an answer.** Each is present only when it applies, so the shape above is what an ordinary answer looks like and an app that has never heard of these reads exactly what it always read. Each is also stated in the `answer` prose verbatim, so an app that renders only the text still shows the warning — these fields are the machine-readable half, for an app that wants to render it as something other than a paragraph. **None of them may be dropped in rendering.** DATA-BACKBONE.md section 7 is explicit that an answer must never smooth a contradiction, and an app that showed the citations while discarding the warning attached to them would be doing exactly that, with Canon's name on it.
+
+| Field | Shape | Present when |
+|---|---|---|
+| `pastReview` | `[{ pageId, title }]` | a cited page is past the review date its owner set. It is still the official record; it has not been re-approved recently. |
+| `disagreement` | `{ pageIds, note, asserted? }` | two cited pages give different answers — because their text does, or because a **person asserted** a `conflicts_with` relation between them. `pageIds` is always at least two and always cited. `asserted` is present only when a person is behind it, and carries who said so, when, and in what words. Canon does not choose between the pages, and neither should an app. |
+| `supersession` | `{ pageIds, asserted, note }` | the answer quotes a page the record says was **replaced**, beside the page that replaced it. The superseded page stays cited: a supersession does not archive it or change its status, so dropping the quotation would hide the change rather than show it. |
+| `sourceDisagreement` | `{ pageIds, open, note }` | a cited page carries an **open divergence** between its authoritative source and a corroborating one. This is two systems disagreeing about one page's federated values, which is not the same thing as two pages contradicting each other — it is a separate field so that an app never has to guess which of the two it is showing. |
+
 ### `POST /knowledge/pages`
 
 Request: `{ "collectionId": "col-benefits", "parentId": null, "type": "note", "title": "Open enrolment FAQ" }`. Response `200`: the page, in the shape above, with `createdBy` set to the **app's** actor id.

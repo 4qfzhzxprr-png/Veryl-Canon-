@@ -110,7 +110,9 @@ POST /ask   { question, collectionId?, limit? }
               citations: [{ pageId, title, version, snippet, status? }],
               refused: bool, reason?: "no_canonical_match" | ...,
               pastReview?: [{ pageId, title }],
-              disagreement?: { pageIds: [...], note } }
+              disagreement?: { pageIds: [...], note, asserted? },
+              supersession?: { ... },
+              sourceDisagreement?: { ... } }
 ```
 
 An answer without citations is never returned. `refused: true` with an empty citation list is the honest response to a silent record, and it is the response we would rather ship than a plausible guess.
@@ -240,8 +242,13 @@ Divergence        { id, referenceId, pageId, authoritySourceId, authorityValue,
                     closedBy?, closedAt?, reason? }
 Page relation     { fromPageId, toPageId, kind: 'conflicts_with' | 'supersedes',
                     assertedBy, assertedAt, note }
-Answer            …, disagreement?: { pageIds: [...], note }
+Answer            …, disagreement?: { pageIds: [...], note, asserted? },
+                     supersession?, sourceDisagreement?
 ```
+
+An answer reports a contradiction from whichever of the three places the record holds one, and says which: `disagreement.asserted` carries the person who put their name to a `conflicts_with` relation, their words and the date, and is absent when Canon inferred the conflict from the passages' text instead. The two are not equivalent evidence and the reader is not asked to treat them as such.
+
+`supersession` and `sourceDisagreement` are siblings rather than more `disagreement`, because neither is two Canonical pages in unresolved conflict. A supersession has already been *settled* by a person — reporting it as a disagreement would tell a reader the opposite of what the record says. A source divergence is one page and two external systems: there is no second page to quote, and the remedy is a decision about the sources, not about the record.
 
 ### What Canon will not build
 

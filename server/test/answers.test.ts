@@ -12,10 +12,17 @@ import { CanonStore } from '../src/store.js';
 import {
   AnswerService,
   DISAGREEMENT_LEAD,
+  SOURCE_DISAGREEMENT_LEAD,
+  SUPERSESSION_LEAD,
   detectDisagreement,
+  detectSourceDisagreement,
+  detectSupersession,
   extractiveGenerator,
   type AnswerGenerator,
   type AnswerPassage,
+  type AssertedConflict,
+  type AssertedSupersession,
+  type PageDivergence,
 } from '../src/answers.js';
 import type { RetrievalService } from '../src/retrieval.js';
 
@@ -897,4 +904,380 @@ test('ask view: a citation badge is drawn only from a status the server sent', (
   assert.equal(citationBadge({ status: 'needs_update' }), '<badge needs_update sm>');
   assert.equal(citationBadge({ status: 'canonical' }), '<badge canonical sm>');
   assert.equal(citationBadge({ status: null }), '', 'no status, no badge');
+});
+
+// ---------------------------------------------------------------------------
+// What the RECORD states, not what Canon reads off the prose
+// (USER-TESTING.md T1.2, DATA-BACKBONE.md §7).
+//
+// A contradiction exists in the record three ways: inferred from two passages'
+// text, asserted by a person as a `conflicts_with` relation, or observed
+// between an authority and a corroborating source. The answer path used to
+// know only the first — the weakest, and the only one that is a guess — which
+// is DATA-BACKBONE.md §2's "structure over prose" run exactly backwards. These
+// tests hold the other two.
+
+/** A `conflicts_with` relation, as the `AnswerRecord` seam hands one over. */
+function asserted(fromPageId: string, toPageId: string, note: string): AssertedConflict {
+  return {
+    fromPageId,
+    toPageId,
+    note,
+    assertedBy: 'actor-nadia',
+    assertedByName: 'Nadia Haddad',
+    assertedAt: '2026-03-04T09:15:00.000Z',
+  };
+}
+
+test('disagreement: a conflict a person asserted is reported though the text gives the detector nothing', () => {
+  // Neither passage carries a quantity, a negation, or anything else the
+  // lexical checks can compare. This is the demo corpus's real case in
+  // miniature: a schedule and a platform spec whose prose does not visibly
+  // disagree, joined by a relation that says one of them is wrong.
+  const passages = [
+    passage('schedule', 'Records Retention Schedule', 'This policy states the retention period for every record class the company holds.'),
+    passage('platform', 'Data Retention in the Platform', 'This specification covers how the retention schedule is implemented in storage, backups, and logs.'),
+  ];
+  // Canon reading the prose finds nothing, and is right not to invent one.
+  assert.equal(detectDisagreement(passages), null);
+
+  const note =
+    'The schedule keeps claims records for seven years; the platform spec describes a deletion job that runs at ' +
+    'twenty-four months. One of the two is wrong, and Compliance owns which.';
+  const found = detectDisagreement(passages, [asserted('schedule', 'platform', note)]);
+  assert.ok(found, 'a conflict a person recorded must be reported whatever the text does');
+  assert.deepEqual(found!.pageIds, ['schedule', 'platform']);
+  // The note names both pages...
+  assert.ok(found!.note.includes('Records Retention Schedule'));
+  assert.ok(found!.note.includes('Data Retention in the Platform'));
+  // ...and carries the asserter's own words verbatim, because they are what
+  // the next person has to settle it from.
+  assert.ok(found!.note.includes(note));
+  assert.ok(found!.note.startsWith(DISAGREEMENT_LEAD));
+});
+
+test('disagreement: a person’s assertion is attributed as an assertion, not as something Canon inferred', () => {
+  const passages = [
+    passage('a', 'Records Retention Schedule', 'This policy states the retention period for every record class.'),
+    passage('b', 'Data Retention in the Platform', 'This specification covers how the retention schedule is implemented.'),
+  ];
+  const found = detectDisagreement(passages, [
+    asserted('a', 'b', 'One of the two is wrong, and Compliance owns which.'),
+  ]);
+  assert.ok(found);
+  // A person, by name, on a date, in their own words. A reader must be able to
+  // tell "a colleague wrote this down" from "a lexical check fired", because
+  // the two carry very different weight.
+  assert.ok(found!.note.includes('Nadia Haddad'), 'the asserter is named');
+  assert.ok(found!.note.includes('asserted'), 'and it reads as an assertion, not as a finding');
+  assert.ok(found!.note.includes('2026-03-04'), 'and it is dated');
+  // The machine-readable half says the same thing, so a UI need not parse prose.
+  assert.equal(found!.asserted?.length, 1);
+  assert.equal(found!.asserted![0]!.assertedBy, 'actor-nadia');
+
+  // And a disagreement Canon inferred claims no such thing: the field is
+  // absent, so `{ pageIds, note }` is exactly what it always was.
+  const inferred = detectDisagreement([
+    passage('a', 'Records retention policy', 'Client records are retained for seven years from the end of the engagement.'),
+    passage('b', 'Client data policy', 'Client records are retained for ten years after the engagement closes.'),
+  ]);
+  assert.ok(inferred);
+  assert.equal(inferred!.asserted, undefined);
+  assert.ok(!inferred!.note.includes('asserted'));
+});
+
+test('disagreement: an asserted conflict leads, and a relation reaching outside the answer is ignored', () => {
+  const passages = [
+    passage('a', 'Records retention policy', 'Client records are retained for seven years from the end of the engagement.'),
+    passage('b', 'Client data policy', 'Client records are retained for ten years after the engagement closes.'),
+  ];
+  // Both halves fire over the same pair. The note has room for two details and
+  // the person's assertion goes first: it outranks Canon's reading of a
+  // sentence, every time.
+  const found = detectDisagreement(passages, [
+    asserted('a', 'b', 'These two were written by different teams in the same week.'),
+  ]);
+  assert.ok(found);
+  const assertedAt = found!.note.indexOf('Nadia Haddad');
+  const inferredAt = found!.note.indexOf('“seven years”');
+  assert.ok(assertedAt !== -1 && inferredAt !== -1 && assertedAt < inferredAt);
+
+  // A relation whose other end is not a passage of this answer names nothing:
+  // it may be a page this asker cannot see, and Canon cannot quote a page it
+  // never retrieved. Silence, not a rumour.
+  const elsewhere = detectDisagreement(
+    [passage('a', 'Records retention policy', 'Client records are kept as the schedule requires.')],
+    [asserted('a', 'somewhere-else', 'These conflict.')],
+  );
+  assert.equal(elsewhere, null);
+});
+
+test('ask: two pages a person recorded as conflicting are flagged, though their prose gives the detector nothing', async () => {
+  const { store, marc, iris, collection } = setup();
+  // Deliberately bland: no quantity in comparable units, no negation, nothing
+  // for the lexical checks to catch. Only a person knows these two disagree.
+  const schedule = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client backup retention rule',
+    'The retention rule for client backups is stated here, and every team follows this rule.',
+  );
+  const platform = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client backup deletion in the platform',
+    'The platform implements the retention rule for client backups with a scheduled deletion job.',
+  );
+
+  const question = 'What is the retention rule for client backups?';
+  // Before anybody says so, Canon is honestly silent: the prose does not
+  // disagree in any way this module can see, and it does not pretend otherwise.
+  const before = await store.ask(marc.id, { question });
+  assert.equal(before.refused, false);
+  assert.deepEqual(before.citations.map((c) => c.pageId).sort(), [schedule.id, platform.id].sort());
+  assert.equal(before.disagreement, undefined);
+
+  // A person writes the conflict into the record, which is the whole point of
+  // relations.ts: contradiction as data rather than as something an auditor
+  // discovers later.
+  const note =
+    'The rule keeps client backups for seven years; the platform deletes them at twenty-four months. ' +
+    'One of the two is wrong, and Compliance owns which.';
+  store.assertRelation(marc.id, schedule.id, { toPageId: platform.id, kind: 'conflicts_with', note });
+
+  const after = await store.ask(marc.id, { question });
+  assert.equal(after.refused, false);
+  assert.ok(after.disagreement, 'the record states this conflict; the answer must not be blind to it');
+  assert.deepEqual([...after.disagreement!.pageIds].sort(), [schedule.id, platform.id].sort());
+  // Both sides cited, as §7 requires, and neither dropped.
+  const citedIds = after.citations.map((c) => c.pageId);
+  assert.ok(citedIds.includes(schedule.id) && citedIds.includes(platform.id));
+  // The note names the pages and the person, and quotes what they wrote.
+  assert.ok(after.disagreement!.note.includes('Client backup retention rule'));
+  assert.ok(after.disagreement!.note.includes('Client backup deletion in the platform'));
+  assert.ok(after.disagreement!.note.includes('Marc'), 'the person who asserted it is named');
+  assert.ok(after.disagreement!.note.includes(note));
+  assert.equal(after.disagreement!.asserted?.length, 1);
+  // And the prose carries the warning, not just a field a caller might drop.
+  assert.ok(after.answer!.includes(DISAGREEMENT_LEAD));
+  assert.ok(after.answer!.includes(note));
+});
+
+test('ask: an asserted conflict survives a generator that cites only one side', async () => {
+  const { db, store, marc, iris, collection } = setup();
+  const schedule = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client backup retention rule',
+    'The retention rule for client backups is stated here, and every team follows this rule.',
+  );
+  const platform = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client backup deletion in the platform',
+    'The platform implements the retention rule for client backups with a scheduled deletion job.',
+  );
+  store.assertRelation(marc.id, schedule.id, {
+    toPageId: platform.id,
+    kind: 'conflicts_with',
+    note: 'One of the two is wrong, and Compliance owns which.',
+  });
+
+  // The failure mode, now over a conflict a person asserted rather than one
+  // Canon inferred: one confident sentence, one citation, no mention of it.
+  // The generator has no channel through which to withdraw either kind.
+  const smoothing: AnswerGenerator = {
+    name: 'fluent-smoother',
+    generate({ passages }) {
+      return {
+        answer: 'Client backups are kept for as long as the retention rule requires.',
+        citedPageIds: [passages[0]!.pageId],
+      };
+    },
+  };
+  const retrieval = (store as unknown as { retrieval: RetrievalService }).retrieval;
+  const service = new AnswerService(db, store, retrieval, smoothing);
+
+  const result = await service.ask(marc.id, { question: 'What is the retention rule for client backups?' });
+  assert.ok(result.disagreement);
+  assert.deepEqual([...result.disagreement!.pageIds].sort(), [schedule.id, platform.id].sort());
+  assert.deepEqual(result.citations.map((c) => c.pageId).sort(), [schedule.id, platform.id].sort());
+  assert.ok(result.answer!.includes(DISAGREEMENT_LEAD));
+  for (const citation of result.citations) assert.ok(result.answer!.includes(citation.snippet));
+  // Canon adds; it does not censor.
+  assert.ok(result.answer!.includes('Client backups are kept for as long as the retention rule requires.'));
+});
+
+test('supersession: citing a replaced page beside the page that replaced it says so, and drops neither', async () => {
+  const { store, marc, iris, collection } = setup();
+  const runbook = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'On-call escalation runbook',
+    'The on-call escalation runbook describes how a paging escalation is handled out of hours.',
+  );
+  const spec = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Incident management escalation',
+    'This spec sets out incident management, including how a paging escalation is handled out of hours.',
+  );
+  store.assertRelation(marc.id, spec.id, {
+    toPageId: runbook.id,
+    kind: 'supersedes',
+    note: 'Paging and escalation were folded into this spec when it was reviewed.',
+  });
+
+  const result = await store.ask(marc.id, { question: 'How is a paging escalation handled out of hours?' });
+  assert.equal(result.refused, false);
+  const citedIds = result.citations.map((c) => c.pageId);
+  assert.ok(citedIds.includes(runbook.id) && citedIds.includes(spec.id), 'both were retrieved, so both are cited');
+
+  assert.ok(result.supersession, 'the record says one of these replaced the other, and the answer must say so');
+  assert.deepEqual([...result.supersession!.pageIds].sort(), [runbook.id, spec.id].sort());
+  assert.equal(result.supersession!.asserted.length, 1);
+  assert.equal(result.supersession!.asserted[0]!.supersededPageId, runbook.id);
+  assert.equal(result.supersession!.asserted[0]!.supersededByPageId, spec.id);
+  assert.ok(result.supersession!.note.includes('Marc'));
+  assert.ok(result.answer!.includes(SUPERSESSION_LEAD));
+  // A supersession is NOT an unsettled conflict and is never reported as one:
+  // a person already recorded which governs, so there is nothing for Canon to
+  // refuse to choose between.
+  assert.equal(result.disagreement, undefined);
+  // The superseded page is still quoted. §7: asserting `supersedes` does not
+  // archive it, does not change its status, and does not stop it being cited.
+  for (const citation of result.citations) assert.ok(result.answer!.includes(citation.snippet));
+});
+
+test('supersession: an answer that quotes only the current page has nothing to warn about', () => {
+  const relation: AssertedSupersession = {
+    supersededPageId: 'runbook',
+    supersededByPageId: 'spec',
+    note: null,
+    assertedBy: 'actor-marc',
+    assertedByName: 'Marc',
+    assertedAt: '2026-03-04T09:15:00.000Z',
+  };
+  const both = detectSupersession(
+    [passage('spec', 'Incident management', 'The spec.'), passage('runbook', 'On-call runbook', 'The runbook.')],
+    [relation],
+  );
+  assert.ok(both);
+  assert.deepEqual(both!.pageIds, ['spec', 'runbook']);
+  // Only the superseding page cited: no stale quotation, so no warning.
+  // Warning anyway would teach readers to ignore the warning.
+  assert.equal(detectSupersession([passage('spec', 'Incident management', 'The spec.')], [relation]), null);
+});
+
+test('sourceDisagreement: an open divergence on a cited page is reported, and as its own thing', async () => {
+  const { db, store, marc, iris, collection } = setup();
+  const page = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Standard plan deductible',
+    'The standard plan deductible is set by Benefits Admin and shown on this page for every member.',
+  );
+
+  // The divergence is written directly rather than driven through a source and
+  // a reference, because what is under test is the ANSWER path: given that the
+  // record holds an open divergence on a cited page, does the answer say so?
+  // divergence.test.ts owns the question of how one comes to be written.
+  const source = (id: string, name: string): string => {
+    db.prepare(
+      `INSERT INTO sources (id, name, kind, base_url, auth_mode, freshness_window_ms, created_by, created_at)
+       VALUES (?, ?, 'http', '', 'service', 60000, ?, ?)`,
+    ).run(id, name, marc.id, new Date().toISOString());
+    return id;
+  };
+  const authority = source('src-benefits-admin', 'Benefits Admin');
+  const other = source('src-claims-platform', 'Claims Platform');
+  db.prepare(
+    `INSERT INTO divergences (id, reference_id, page_id, authority_source_id, authority_value,
+                              other_source_id, other_value, observed_at, state)
+     VALUES ('div-1', 'ref-1', ?, ?, '1500', ?, '1200', '2026-03-04T09:15:00.000Z', 'open')`,
+  ).run(page.id, authority, other);
+
+  const result = await store.ask(marc.id, { question: 'What is the standard plan deductible?' });
+  assert.equal(result.refused, false);
+  assert.deepEqual(result.citations.map((c) => c.pageId), [page.id]);
+
+  assert.ok(result.sourceDisagreement, 'the page’s own sources disagree, and the answer must not hide it');
+  assert.deepEqual(result.sourceDisagreement!.pageIds, [page.id]);
+  assert.deepEqual(result.sourceDisagreement!.open.map((d) => d.id), ['div-1']);
+  // Sources by name, values as the systems gave them, and which one is the
+  // authority — because the authority's is the value the page displays.
+  assert.ok(result.sourceDisagreement!.note.includes('Benefits Admin'));
+  assert.ok(result.sourceDisagreement!.note.includes('Claims Platform'));
+  assert.ok(result.sourceDisagreement!.note.includes('1500'));
+  assert.ok(result.sourceDisagreement!.note.includes('1200'));
+  // And it is told apart from a page-to-page conflict, in so many words.
+  assert.ok(result.sourceDisagreement!.note.includes('not the same thing as two pages'));
+  assert.equal(result.disagreement, undefined, 'one page’s sources disagreeing is not two pages contradicting');
+  assert.ok(result.answer!.includes(SOURCE_DISAGREEMENT_LEAD));
+
+  // A closed divergence is history and belongs on the divergence endpoints,
+  // not on a live answer.
+  db.prepare("UPDATE divergences SET state = 'closed' WHERE id = 'div-1'").run();
+  const settled = await store.ask(marc.id, { question: 'What is the standard plan deductible?' });
+  assert.equal(settled.sourceDisagreement, undefined);
+});
+
+test('sourceDisagreement: a divergence on a page this answer does not cite is not this answer’s business', () => {
+  const divergence: PageDivergence = {
+    id: 'div-1',
+    pageId: 'somewhere-else',
+    authoritySourceName: 'Benefits Admin',
+    authorityValue: 1500,
+    otherSourceName: 'Claims Platform',
+    otherValue: 1200,
+    observedAt: '2026-03-04T09:15:00.000Z',
+  };
+  assert.equal(detectSourceDisagreement([passage('a', 'Deductibles', 'Text.')], [divergence]), null);
+  assert.ok(detectSourceDisagreement([passage('somewhere-else', 'Deductibles', 'Text.')], [divergence]));
+});
+
+test('ask: what the record stated is on the audit log, an asserted conflict marked as asserted', async () => {
+  const { store, marc, iris, collection } = setup();
+  const schedule = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client backup retention rule',
+    'The retention rule for client backups is stated here, and every team follows this rule.',
+  );
+  const platform = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Client backup deletion in the platform',
+    'The platform implements the retention rule for client backups with a scheduled deletion job.',
+  );
+  store.assertRelation(marc.id, schedule.id, {
+    toPageId: platform.id,
+    kind: 'conflicts_with',
+    note: 'One of the two is wrong, and Compliance owns which.',
+  });
+
+  await store.ask(marc.id, { question: 'What is the retention rule for client backups?' });
+  const [event] = store.queryAudit(marc.id, { action: 'answer.ask' });
+  assert.deepEqual([...(event!.details.disagreement as string[])].sort(), [schedule.id, platform.id].sort());
+  // "Was this flagged because somebody said so?" is the first question anybody
+  // asks of one of these events six months later, so the log answers it.
+  assert.deepEqual(event!.details.disagreementAsserted, [marc.id]);
 });
