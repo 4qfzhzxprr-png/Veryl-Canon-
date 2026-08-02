@@ -11,7 +11,7 @@ import {
   localEmbeddingProvider,
   type EmbeddingProvider,
 } from '../src/embeddings.js';
-import { contentTerms, parsePageLinks } from '../src/retrieval.js';
+import { contentTerms, parsePageLinks, passageFor, quotableText } from '../src/retrieval.js';
 
 // A Policy states an effective date before it can publish (USER-TESTING.md
 // T1.5). These fixtures are written and published in the same breath, so
@@ -397,4 +397,78 @@ test('embeddings: the local provider is deterministic and normalised', async () 
   assert.ok(Math.abs(cosine(a!, b!) - 1) < 1e-12);
   const [unrelated] = await localEmbeddingProvider.embed(['flamingo budget spreadsheet']);
   assert.ok(cosine(a!, unrelated!) < 0.2);
+});
+
+// USER-TESTING.md T4.1's open half. A page body is Markdown, and the passage
+// builder used to flatten it with a whitespace collapse — which is right for
+// the whitespace and wrong for everything else, because the newline was the
+// only thing separating a heading from the paragraph under it. Two testers
+// reported the result and both took it for a rendering bug: one saw `## Scope`
+// printed inside what "the record says", the other saw a page footer and a raw
+// `/pages/<uuid>` link quoted as though they were policy. No renderer can reach
+// a mark that is already mid-line inside a quotation.
+test('quotableText: the marks go, the words stay exactly', () => {
+  const body = [
+    '# Records Retention Schedule',
+    '',
+    'Claims records are kept for **seven years** from the closing date.',
+    '',
+    '## How long we keep each class',
+    '',
+    '- Claims and appeals: seven years',
+    '- Access logs: 90 days',
+    '',
+    'See [the deletion procedure](/pages/8f14e45f-ceea-467a-9f0b-1c2d3e4f5061) for how.',
+    '',
+    '---',
+    '',
+    'Owner: Compliance. Reviewed annually.',
+  ].join('\n');
+
+  const text = quotableText(body);
+
+  // Nothing that exists to instruct a renderer survives.
+  for (const mark of ['##', '**', '- ', '](', '---', '/pages/']) {
+    assert.ok(!text.includes(mark), `"${mark}" should not appear in a quotation: ${text}`);
+  }
+  // Every word does.
+  for (const words of [
+    'Records Retention Schedule',
+    'Claims records are kept for seven years from the closing date',
+    'How long we keep each class',
+    'Claims and appeals: seven years',
+    'Access logs: 90 days',
+    'Owner: Compliance',
+  ]) {
+    assert.ok(text.includes(words), `"${words}" should survive: ${text}`);
+  }
+  // A link keeps its text and loses its target: a URL is an instruction to a
+  // browser, not something a policy says.
+  assert.ok(text.includes('See the deletion procedure for how'));
+  // A heading does not run into the paragraph beneath it and make a sentence
+  // nobody wrote.
+  assert.ok(!/Schedule Claims records/.test(text), `heading ran into the body: ${text}`);
+});
+
+test('quotableText: a table quotes as its cells, not as its pipes', () => {
+  const text = quotableText(
+    ['| Record type | Retention |', '| --- | ---: |', '| Claims records | 7 years |', '| Access logs | 90 days |'].join('\n'),
+  );
+  assert.ok(!text.includes('|'), text);
+  assert.ok(!text.includes('---'), text);
+  assert.ok(text.includes('Claims records — 7 years'), text);
+  assert.ok(text.includes('Record type — Retention'), text);
+});
+
+test('quotableText: a fenced block is somebody’s example and is kept as written', () => {
+  const text = quotableText(['Send this:', '', '```', 'GET /audit?limit=50', '```', '', 'and read the reply.'].join('\n'));
+  assert.ok(text.includes('GET /audit?limit=50'), text);
+  assert.ok(!text.includes('```'), text);
+});
+
+test('passageFor: a quotation from a structured body carries no syntax', () => {
+  const body = ['## Retention', '', 'Claims and appeals records are kept for *seven years*.'].join('\n');
+  const passage = passageFor(body, ['claims', 'retention']);
+  assert.ok(!/[#*|]/.test(passage), `passage still carries syntax: ${passage}`);
+  assert.ok(passage.includes('Claims and appeals records are kept for seven years'), passage);
 });

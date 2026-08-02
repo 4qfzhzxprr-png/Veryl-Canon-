@@ -445,13 +445,14 @@ export class RetrievalService {
 }
 
 // A verbatim window of the published body, for citation. Nothing is
-// paraphrased or generated: the window is the record's own words, with
-// whitespace collapsed so it reads as one passage. The chunk the semantic
+// paraphrased or generated: the window is the record's own words, with the
+// marks that tell a renderer what to draw removed and the words kept exactly
+// (see `quotableText`, which owns that decision). The chunk the semantic
 // channel matched wins when there is one; otherwise the window is centred on
 // the first content term that appears, and failing that on the opening of the
 // page.
 export function passageFor(body: string, terms: string[], preferred?: string): string {
-  const text = collapse(preferred ?? body);
+  const text = quotableText(preferred ?? body);
   if (!text) return '';
   if (preferred) return clip(text, PASSAGE_LENGTH);
 
@@ -470,6 +471,94 @@ export function passageFor(body: string, terms: string[], preferred?: string): s
     if (start > 0 && space !== -1 && space < at) start = space + 1;
   }
   return clip(text.slice(start), PASSAGE_LENGTH);
+}
+
+// What "verbatim" means when the source is structured.
+//
+// A page body is Markdown, and `collapse` used to flatten it to one line by
+// replacing every run of whitespace with a space. That is right for the
+// whitespace and wrong for everything else: the newline was the only thing
+// separating a heading from the paragraph beneath it, so `\n## Scope\n` became
+// ` ## Scope ` sitting inside the middle of a quotation. Two testers reported
+// the result — one saw `## Scope` printed as part of what "the record says",
+// the other saw a page footer and a raw `/pages/<uuid>` link quoted as though
+// they were policy. Both looked like rendering bugs and neither was: no
+// renderer can reach a mark that is already mid-line inside a `“…”`.
+//
+// The decision this makes, since there is one to make: a quotation is the
+// record's WORDS, not its punctuation-for-machines. So the marks that exist to
+// tell a renderer what to draw are removed, and the words they were wrapped
+// around are kept exactly. Nothing is paraphrased, reordered, or summarised —
+// remove the marks from any line below and the words that remain are the words
+// on the page, in the order they were written.
+//
+// Two consequences worth stating rather than discovering later:
+//
+//   * A LINK KEEPS ITS TEXT AND LOSES ITS TARGET. `[the schedule](…/pages/8f14)`
+//     quotes as "the schedule". A URL is an instruction to a browser, not
+//     something a policy says, and it was the concrete thing one tester was
+//     shown as the record's own words.
+//   * A TABLE IS QUOTED AS A ROW OF CELLS joined by en-dashes, which is lossy
+//     and is the honest best available: a quotation is one passage of running
+//     text, and a table is not. The page itself renders it as a table, and the
+//     citation points there.
+//
+// Block boundaries become sentence boundaries, because that is what they are
+// when the structure is taken away — otherwise a heading runs into the
+// paragraph under it and produces a sentence nobody wrote.
+export function quotableText(markdown: string): string {
+  const out: string[] = [];
+  let inFence = false;
+  for (const raw of markdown.split('\n')) {
+    const line = raw.trim();
+    if (/^(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    // Inside a fenced block the content is kept as written: it is somebody's
+    // example, and mangling it would be its own falsehood.
+    if (inFence) {
+      if (line) out.push(line);
+      continue;
+    }
+    if (!line) continue;
+    // A rule separates; it says nothing. This is the page footer that was
+    // being quoted as one more clause of the policy.
+    if (/^([-*_])\s*(\1\s*){2,}$/.test(line)) continue;
+    // A table's alignment row is pure syntax.
+    if (/^\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes('-')) continue;
+
+    let text = line;
+    if (/^\|.*\|?$/.test(text) && text.includes('|')) {
+      text = text
+        .replace(/^\||\|$/g, '')
+        .split(/(?<!\\)\|/)
+        .map((cell) => cell.replace(/\\\|/g, '|').trim())
+        .filter(Boolean)
+        .join(' — ');
+    }
+    text = text
+      .replace(/^#{1,6}\s+/, '') // heading
+      .replace(/^>\s?/, '') // blockquote
+      .replace(/^([-*+]|\d+[.)])\s+/, ''); // list item
+    text = inlineWords(text);
+    if (text) out.push(endsSentence(text) ? text : `${text}.`);
+  }
+  return collapse(out.join(' '));
+}
+
+/** Inline marks removed, the words they wrapped kept exactly. */
+function inlineWords(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // image: its alt text, never its src
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // link: its text, never its target
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(?<![\w*])(\*|_)(?!\s)([^*_]+?)(?<!\s)\1(?![\w*])/g, '$2');
+}
+
+function endsSentence(text: string): boolean {
+  return /[.!?:;,—-]$/.test(text);
 }
 
 function collapse(text: string): string {
