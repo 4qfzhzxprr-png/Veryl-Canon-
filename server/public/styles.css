@@ -608,6 +608,36 @@ label.check input { width: auto; display: inline; margin: 0; }
 .doc-body pre.codeblock code { background: none; padding: 0; }
 .doc-body ul, .doc-body ol { padding-left: 1.5em; }
 .doc-body li { margin: 0.25em 0; }
+.doc-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+
+/* Tables inside a rendered body. Written once and used by the page view, the
+   version view, the editor's preview and the Ask answer, because a retention
+   schedule has to look like a retention schedule in all four. The scroll box
+   is the container that takes the overflow: a six-column plan comparison is
+   wider than the 46rem measure of a document body, and the alternative to
+   scrolling inside the box is the whole page scrolling sideways. */
+.table-scroll { overflow-x: auto; margin: 1.4em 0; }
+.md-table {
+  border-collapse: collapse;
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  min-width: 100%;
+}
+.md-table th, .md-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--border);
+}
+.md-table th { background: var(--surface-2); font-weight: 650; }
+.md-table th.md-right, .md-table td.md-right { text-align: right; }
+.md-table th.md-center, .md-table td.md-center { text-align: center; }
+.md-table th.md-left, .md-table td.md-left { text-align: left; }
 
 /* ---------- tables ------------------------------------------------------ */
 
@@ -682,13 +712,72 @@ label.check input { width: auto; display: inline; margin: 0; }
   gap: 1.5rem;
   align-items: start;
 }
+/* The body field sits outside its <label> so the toolbar can sit between the
+   two, which means it carries the field styling itself rather than inheriting
+   it from `label textarea`. */
+.editor-bodyLabel { margin-bottom: 0.3rem; }
 .editor-body {
+  display: block;
+  width: 100%;
   font-family: var(--serif);
   font-size: 1.05rem;
   line-height: 1.65;
   min-height: 440px;
   resize: vertical;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  padding: 0.7rem 0.85rem;
 }
+.editor-body:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+/* `display: block` above outranks the browser's own rule for the hidden
+   attribute, so switching to the preview has to say so here or the writing
+   surface stays on screen underneath it. */
+.editor-body[hidden], .editor-preview[hidden] { display: none; }
+
+/* ---------- the editor's formatting toolbar ----------------------------- */
+
+.md-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.4rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.md-toolbar-gap { flex: 1 1 auto; }
+.md-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 550;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+}
+.md-btn:hover { border-color: var(--border-strong); background: var(--bg); }
+.md-btn:disabled { opacity: 0.45; cursor: default; }
+.md-btn-mode { border-color: var(--border-strong); }
+.md-btn-mode[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* The preview is the published page's own .doc-body, squared off under the
+   toolbar so it occupies exactly the space the writing surface did. */
+.editor-preview {
+  min-height: 440px;
+  max-width: none;
+  border-radius: 0 0 8px 8px;
+  padding: 1.4rem 1.6rem;
+}
+
 .md-hint { font-size: 0.8rem; margin-top: 0.5rem; }
 .editor-sideCol .panel { margin: 0 0 1rem; }
 .editor-actions { display: flex; flex-direction: column; gap: 0.55rem; }
@@ -866,6 +955,8 @@ label.check input { width: auto; display: inline; margin: 0; }
   border-left: 3px solid var(--border-strong);
   color: var(--muted);
 }
+/* An answer quotes the record verbatim, so a quoted passage can be a table. */
+.answer-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }
 
 .cite-ref {
   font-family: var(--sans);

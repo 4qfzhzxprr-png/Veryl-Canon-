@@ -309,7 +309,30 @@ is validated, so a malformed request spends a token.
 
 **T4.1 · No tables in the editor.** *(Priya, hard stop.)* A pasted table
 renders as `| Region | Owner | | --- | --- |`. Retention schedules and plan
-comparisons *are* tables. There is also no toolbar and no preview.
+comparisons *are* tables. There is also no toolbar and no preview. **Fixed:**
+GFM pipe tables, alignment row included, in both renderers — `renderMarkdown`
+in `public/app.js` (page, version, editor preview, Ask answer) and a new
+`renderMarkdownHtml` in `src/html.ts` (the attestation, which used to print the
+body as its source in a `<pre>`: an attestation that shows a retention schedule
+as pipes has hidden the clause it is attesting to). One grammar, two
+implementations, checked against each other case for case in
+`test/markdown.test.ts`, including a cell containing a pipe and a ragged row.
+Both deviate from GFM only in the direction of never dropping what somebody
+wrote: a ragged row widens the table instead of being truncated. The editor has
+a toolbar that offers exactly what the renderer draws — a button for anything
+else would be a promise broken in front of twelve people — with a Table button
+that inserts a filled-in skeleton, and a Preview that renders through the same
+`renderMarkdown` into the same `.doc-body` the page uses. Two silent drops
+found on the way and closed: a thematic break printed as literal `---`, which
+is how an imported page footer came to read as another clause of the policy,
+and nested lists flattened, which turned three sub-clauses under clause 2 into
+six equal clauses. Verified against a running server: a real retention schedule
+written, published and read back as a table on the page, in the version view
+and in the attestation. **Still open:** the raw `## Scope` marks in Ask answers
+are not a renderer defect — `passageFor()` in `src/retrieval.ts` collapses a
+whole body onto one line to quote it, so the block marks land mid-line where no
+renderer can reach them. The same collapse is why a table inside a cited
+passage is quoted as pipes. Both want a fix where the passage is built.
 
 **T4.2 · The approver approves blind.** *(Marcus task 2.)* The page shows the
 *published* version; there is no preview or diff of the pending draft. The

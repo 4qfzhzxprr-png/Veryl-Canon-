@@ -1,4 +1,5 @@
-// A small, tolerant, dependency-free HTML reader and Markdown writer.
+// A small, tolerant, dependency-free HTML reader, Markdown writer and — at the
+// foot of the file — Markdown reader.
 //
 // Import fidelity is the risk named in CORE-PLAN.md section 7: "if a partner's
 // Confluence import arrives mangled, the record starts life untrusted". This
@@ -15,15 +16,16 @@
 //
 // The output target is the same safe-subset Markdown the Canon editor and the
 // web UI already speak (see public/app.js): headings, bold, italics, lists,
-// links, inline code, fenced code blocks, blockquotes. Tables are emitted as
-// GFM pipe tables, which the current UI renders as plain text but which reads
-// correctly and is exactly what a table renderer would want later.
+// links, inline code, fenced code blocks, blockquotes, thematic breaks, and
+// GFM pipe tables — which both renderers now draw as tables rather than as a
+// line of pipes (USER-TESTING.md T4.1).
 //
 // Deliberately not done: backslash-escaping of Markdown punctuation. The
-// renderer on the other side does not process backslash escapes, so escaping
-// would show the reader a backslash instead of protecting anything. The one
-// exception is "|" inside a table cell, which is escaped because it would
-// otherwise break the column count for any consumer that does parse tables.
+// renderers on the other side process exactly one backslash escape, so
+// escaping anything else would show the reader a backslash instead of
+// protecting anything. That one exception is "|" inside a table cell, which is
+// escaped because it would otherwise break the column count — and which both
+// renderers unescape when they split a row.
 
 export interface ElementNode {
   kind: 'element';
@@ -955,4 +957,291 @@ export function documentTitle(root: HtmlNode): string | null {
     if (text) return text;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Markdown reader
+//
+// The other direction, and the only Markdown-to-HTML renderer that runs on the
+// server. It exists for one caller: the attestation, which prints the body of
+// a version into a document a regulator may open years from now. Until tables
+// were renderable that body was printed as its source, inside a <pre> — which
+// is faithful to the byte but not to the record. A retention schedule IS a
+// table; an attestation that shows it as `| Region | Owner |` asks the person
+// who has to rely on it to parse Markdown in their head, and a document whose
+// whole claim is "this is what the record said" should not need that of a
+// reader (USER-TESTING.md T4.1).
+//
+// It renders the SAME grammar as `renderMarkdown` in public/app.js — the two
+// are checked against each other, case for case, in test/markdown.test.ts —
+// with exactly one deliberate difference:
+//
+//   LINKS ARE NOT ANCHORS HERE. An attestation is self-contained absolutely:
+//   no script, no image, no stylesheet, no font, and no `href` of any kind, so
+//   that opening the file can never reach the network and the document cannot
+//   quietly change or phone home. A link in a body therefore keeps both halves
+//   of itself as text — "the policy (https://example/p)" — which loses the
+//   click and loses nothing else. That property is asserted by the attestation
+//   tests, not merely intended.
+//
+// Everything emitted is generated here; every character that came from a
+// record goes through escapeHtml() first, so no markup in a page body — not
+// even markup an importer failed to strip — can reach the document.
+
+/** HTML text escaping for the Markdown reader. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Render safe-subset Markdown as inert, self-contained HTML. */
+export function renderMarkdownHtml(source: string): string {
+  const lines = String(source ?? '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    if (/^```/.test(line)) {
+      const buf: string[] = [];
+      i += 1;
+      while (i < lines.length && !/^```/.test(lines[i] ?? '')) {
+        buf.push(lines[i] ?? '');
+        i += 1;
+      }
+      i += 1; // closing fence (or EOF)
+      out.push(`<pre class="codeblock"><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      const level = (heading[1] ?? '').length;
+      out.push(`<h${level}>${mdInlineHtml(heading[2] ?? '')}</h${level}>`);
+      i += 1;
+      continue;
+    }
+    // Before the list check: `- - -` and `* * *` are rules, not one-item
+    // lists. An imported page footer arrives as an <hr> and the text under it,
+    // and rendering the rule as its literal characters made the footer read as
+    // one more paragraph of the policy (USER-TESTING.md T4.1, second half).
+    if (isThematicBreak(line)) {
+      out.push('<hr>');
+      i += 1;
+      continue;
+    }
+    if (isTableStart(lines, i)) {
+      const table = parseMdTable(lines, i);
+      out.push(table.html);
+      i = table.next;
+      continue;
+    }
+    const item = matchListItem(line);
+    if (item) {
+      const list = parseMdList(lines, i, item.indent);
+      out.push(list.html);
+      i = list.next;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const buf: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i] ?? '')) {
+        buf.push(mdInlineHtml((lines[i] ?? '').replace(/^\s*>\s?/, '')));
+        i += 1;
+      }
+      out.push(`<blockquote>${buf.join('<br>')}</blockquote>`);
+      continue;
+    }
+    if (isMdBlank(line)) {
+      i += 1;
+      continue;
+    }
+    const buf: string[] = [];
+    while (i < lines.length && !isMdBlank(lines[i]) && !startsMdBlock(lines, i)) {
+      buf.push(mdInlineHtml(lines[i] ?? ''));
+      i += 1;
+    }
+    out.push(`<p>${buf.join(' ')}</p>`);
+  }
+  return out.join('\n');
+}
+
+function isMdBlank(line: string | undefined): boolean {
+  return /^\s*$/.test(line ?? '');
+}
+
+function isThematicBreak(line: string | undefined): boolean {
+  return /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line ?? '');
+}
+
+// What ends a paragraph. A table is in here because a schedule written
+// directly under its introducing sentence, with no blank line between, is how
+// people write one — and without it the header row is eaten by the paragraph
+// and the rest of the table renders headless.
+function startsMdBlock(lines: string[], i: number): boolean {
+  const line = lines[i] ?? '';
+  return (
+    /^(#{1,6}\s|```|\s*>)/.test(line) ||
+    isThematicBreak(line) ||
+    matchListItem(line) !== null ||
+    isTableStart(lines, i)
+  );
+}
+
+interface MdListItem {
+  indent: number;
+  ordered: boolean;
+  text: string;
+}
+
+function matchListItem(line: string | undefined): MdListItem | null {
+  const m = /^(\s*)([-*]|\d+[.)])\s+(.*)$/.exec(line ?? '');
+  if (!m || isThematicBreak(line)) return null;
+  return { indent: (m[1] ?? '').length, ordered: /\d/.test(m[2] ?? ''), text: m[3] ?? '' };
+}
+
+// Nesting is preserved because this same file writes it: renderList() indents
+// a nested list by two spaces, and a reader that flattened it back out would
+// turn three sub-clauses under clause 2 into six equal clauses.
+function parseMdList(lines: string[], start: number, indent: number): { html: string; next: number } {
+  const ordered = matchListItem(lines[start])?.ordered ?? false;
+  const items: { text: string; blocks: string[] }[] = [];
+  let i = start;
+  while (i < lines.length) {
+    const item = matchListItem(lines[i]);
+    const last = items[items.length - 1];
+    if (item && last && item.indent > indent) {
+      const nested = parseMdList(lines, i, item.indent);
+      last.blocks.push(nested.html);
+      i = nested.next;
+      continue;
+    }
+    if (item && item.indent >= indent && item.ordered === ordered) {
+      items.push({ text: item.text, blocks: [] });
+      i += 1;
+      continue;
+    }
+    if (item) break; // a shallower item, or the other kind of list: not ours
+    // A continuation line: indented, not blank, not the start of some other
+    // block. It belongs to the item above rather than to a new paragraph,
+    // which is how an <li> holding more than one block is written out.
+    if (last && !isMdBlank(lines[i]) && /^\s{2,}/.test(lines[i] ?? '') && !startsMdBlock(lines, i)) {
+      last.text += ` ${(lines[i] ?? '').trim()}`;
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  const tag = ordered ? 'ol' : 'ul';
+  const html = `<${tag}>${items
+    .map((it) => `<li>${mdInlineHtml(it.text)}${it.blocks.join('')}</li>`)
+    .join('')}</${tag}>`;
+  return { html, next: i };
+}
+
+// Split one row into cells. The outer pipes are optional in GFM and are not
+// column breaks; `\|` is a literal pipe and is unescaped here — the mirror of
+// the escaping renderTable() applies on the way in, and the only place in the
+// subset where a backslash means anything.
+function splitTableRow(line: string | undefined): string[] {
+  let s = String(line ?? '').trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (/(^|[^\\])\|$/.test(s)) s = s.slice(0, -1);
+  const cells: string[] = [];
+  let cur = '';
+  for (let k = 0; k < s.length; k += 1) {
+    if (s[k] === '\\' && s[k + 1] === '|') {
+      cur += '|';
+      k += 1;
+      continue;
+    }
+    if (s[k] === '|') {
+      cells.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += s[k];
+  }
+  cells.push(cur);
+  return cells.map((c) => c.trim());
+}
+
+type MdAlign = 'left' | 'right' | 'center' | null;
+
+/** The alignment row as a list of alignments, or null when it is not one. */
+function tableAlignments(line: string | undefined): MdAlign[] | null {
+  if (line === undefined || !line.includes('|') || !/-/.test(line)) return null;
+  const aligns: MdAlign[] = [];
+  for (const cell of splitTableRow(line)) {
+    const m = /^(:?)-+(:?)$/.exec(cell);
+    if (!m) return null;
+    aligns.push(m[1] && m[2] ? 'center' : m[2] ? 'right' : m[1] ? 'left' : null);
+  }
+  return aligns;
+}
+
+// A table is a header row and an alignment row with the same number of cells.
+// Insisting on the count keeps a lone `---` under a line of prose a thematic
+// break rather than a one-column table.
+function isTableStart(lines: string[], i: number): boolean {
+  const header = lines[i];
+  if (header === undefined || !header.includes('|') || isThematicBreak(header)) return false;
+  const aligns = tableAlignments(lines[i + 1]);
+  return aligns !== null && aligns.length === splitTableRow(header).length;
+}
+
+function parseMdTable(lines: string[], start: number): { html: string; next: number } {
+  const header = splitTableRow(lines[start]);
+  const aligns = tableAlignments(lines[start + 1]) ?? [];
+  const rows: string[][] = [];
+  let i = start + 2;
+  while (
+    i < lines.length &&
+    !isMdBlank(lines[i]) &&
+    (lines[i] ?? '').includes('|') &&
+    !/^(#{1,6}\s|```|\s*>)/.test(lines[i] ?? '') &&
+    !isThematicBreak(lines[i])
+  ) {
+    rows.push(splitTableRow(lines[i]));
+    i += 1;
+  }
+  // A ragged row keeps every cell it was given: the table widens to its widest
+  // row rather than truncating, because truncating deletes content from a
+  // record — and this document's entire job is not doing that.
+  const width = Math.max(header.length, ...rows.map((r) => r.length));
+  const cell = (tag: 'th' | 'td', text: string | undefined, n: number): string => {
+    const align = aligns[n];
+    return `<${tag}${align ? ` class="md-${align}"` : ''}>${mdInlineHtml(text ?? '')}</${tag}>`;
+  };
+  const row = (cells: string[], tag: 'th' | 'td'): string =>
+    `<tr>${Array.from({ length: width }, (_, n) => cell(tag, cells[n], n)).join('')}</tr>`;
+  const html =
+    '<div class="table-scroll"><table class="md-table">' +
+    `<thead>${row(header, 'th')}</thead>` +
+    `<tbody>${rows.map((r) => row(r, 'td')).join('')}</tbody>` +
+    '</table></div>';
+  return { html, next: i };
+}
+
+/** Inline markup: code spans, links (as text), bold, italic. */
+function mdInlineHtml(raw: string): string {
+  let s = escapeHtml(raw);
+  const codes: string[] = [];
+  s = s.replace(/`([^`]+)`/g, (_, c: string) => {
+    codes.push(c);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+  // A link keeps its text and its target, both as text. See the note above on
+  // why an attestation carries no href.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text: string, href: string) =>
+    href && href !== text ? `${text} (${href})` : text,
+  );
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\u0000(\d+)\u0000/g, (_, n: string) => `<code>${codes[Number(n)] ?? ''}</code>`);
+  return s;
 }

@@ -608,6 +608,46 @@ test('bundle HTML: self-contained — no external reference of any kind', async 
   assert.match(html, /What this document does not prove/);
 });
 
+test('bundle HTML: a retention schedule attests as a table, and still reaches nothing', async () => {
+  const { store, dana, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, {
+    collectionId: collection.id,
+    type: 'policy',
+    title: 'Retention schedule',
+  });
+  store.editDraft(marc.id, page.id, {
+    body: [
+      '## Schedule',
+      '',
+      '| Record type | Retention | Owner |',
+      '| --- | ---: | --- |',
+      '| Client engagement file | 7 years | Legal |',
+      '| Payroll | 6 years | People |',
+      '',
+      'See [the policy](https://example.test/retention).',
+    ].join('\n'),
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
+  });
+  store.submitForReview(marc.id, page.id);
+  store.approve(iris.id, page.id, { note: 'Approved' });
+
+  const html = renderPageAttestationHtml(store.pageAttestation(dana.id, page.id, {}));
+
+  // The clause being attested to is a table, so the attestation shows a table.
+  assert.match(html, /<th[^>]*>Record type<\/th>/);
+  assert.match(html, /<td[^>]*>Client engagement file<\/td>/);
+  assert.match(html, /<td class="md-right">7 years<\/td>/);
+  assert.doesNotMatch(html, /\| Record type \| Retention \|/, 'not as a line of pipes');
+  assert.match(html, /<h2>Schedule<\/h2>/, "the body's own headings are headings");
+
+  // And the document is still a document that can reach nothing: the link in
+  // the body kept its text and its target, as text, and became no anchor.
+  assert.doesNotMatch(html, /<a /);
+  assert.doesNotMatch(html, /href=/);
+  assert.doesNotMatch(html, /<script/i);
+  assert.match(html, /the policy \(https:\/\/example.test\/retention\)/);
+});
+
 test('bundle HTML: a hostile title, body, note and send-back comment cannot escape', async () => {
   const { store, dana, marc, iris, collection } = setup();
   const hostile = '</title><script>alert("xss")</script><img src=x onerror=alert(1)>';

@@ -19,6 +19,7 @@ import {
   EffectiveDateStanding,
   effectiveDateStanding,
 } from './effectivedate.js';
+import { renderMarkdownHtml } from './html.js';
 import {
   Actor,
   ActorKind,
@@ -1109,8 +1110,28 @@ dl.fields dt { color: #56544d; }
 dl.fields dd { margin: 0; }
 code, .hash, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .hash { font-size: .72rem; word-break: break-all; color: #3d3b36; }
-pre.body { background: #fff; border: 1px solid #e0dfda; border-left: 3px solid #b9b6ad; padding: .9rem 1rem;
-  white-space: pre-wrap; word-wrap: break-word; font-size: .85rem; margin: .5rem 0 1.25rem; }
+.body { background: #fff; border: 1px solid #e0dfda; border-left: 3px solid #b9b6ad; padding: .9rem 1rem;
+  word-wrap: break-word; font-size: .9rem; margin: .5rem 0 1.25rem; }
+.body > :first-child { margin-top: 0; }
+.body > :last-child { margin-bottom: 0; }
+.body h1, .body h2, .body h3, .body h4, .body h5, .body h6 {
+  font-size: 1rem; margin: 1.1rem 0 .35rem; text-transform: none; letter-spacing: 0; border: 0; color: #1c1c1a; }
+.body ul, .body ol { padding-left: 1.3rem; margin: .5rem 0; }
+.body blockquote { margin: .6rem 0; padding: .1rem .9rem; border-left: 3px solid #d8d6cf; color: #56544d; }
+.body hr { border: 0; border-top: 1px solid #e0dfda; margin: 1.2rem 0; }
+.body pre.codeblock { background: #f7f6f3; border: 1px solid #e8e7e2; padding: .6rem .8rem;
+  white-space: pre-wrap; word-wrap: break-word; font-size: .82rem; }
+/* A body's own tables. A retention schedule is wider than the sheet, so it
+   scrolls inside its own box on a screen — and on paper, where there is
+   nothing to scroll, it is allowed to show in full instead. */
+.table-scroll { overflow-x: auto; margin: .75rem 0; }
+.md-table { border-collapse: collapse; font-size: .85rem; min-width: 100%; }
+.md-table th, .md-table td { border: 1px solid #d8d6cf; padding: .4rem .55rem;
+  text-align: left; vertical-align: top; white-space: normal; }
+.md-table th { background: #f2f1ed; font-weight: 600; }
+.md-table th.md-right, .md-table td.md-right { text-align: right; }
+.md-table th.md-center, .md-table td.md-center { text-align: center; }
+.md-table th.md-left, .md-table td.md-left { text-align: left; }
 .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600;
   letter-spacing: .04em; text-transform: uppercase; border: 1px solid #cfcdc5; background: #f2f1ed; color: #3d3b36; }
 .badge.canonical { background: #e6f2e9; border-color: #9ec4ac; color: #1f5233; }
@@ -1129,7 +1150,8 @@ footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e0dfda; col
 @media print {
   body { background: #fff; padding: 0; font-size: 11pt; }
   h2 { page-break-after: avoid; }
-  table, pre.body, .note { page-break-inside: avoid; }
+  table, .note { page-break-inside: avoid; }
+  .table-scroll { overflow-x: visible; }
 }
 `;
 
@@ -1140,6 +1162,29 @@ function document_(title: string, inner: string): string {
 <title>${esc(title)}</title>
 <style>${STYLE}</style>
 </head><body><main class="sheet">${inner}</main></body></html>`;
+}
+
+/**
+ * What a version said, drawn the way its readers read it.
+ *
+ * This used to be the Markdown source in a <pre>, which is faithful to the
+ * byte and unfaithful to the document: the corpus Canon holds is substantially
+ * tabular, and an attestation is read by the person who has to rely on it —
+ * an auditor, a regulator, a court — not by somebody who will parse pipes in
+ * their head (USER-TESTING.md T4.1). A retention schedule shown as
+ * `| Region | Owner |` is an attestation that has hidden the very clause it is
+ * attesting to.
+ *
+ * Nothing is lost by rendering it. The bundle's JSON carries the body as
+ * written, the content digest is taken over that JSON and not over this HTML,
+ * and "how to verify this without trusting it" points at the JSON — so the
+ * bytes remain checkable and this document remains readable. The renderer is
+ * in html.ts and emits no href, no script and no external reference of any
+ * kind, which is what keeps the document self-contained.
+ */
+function bodyBlock(body: string): string {
+  const html = renderMarkdownHtml(body);
+  return `<div class="body">${html || '<p class="muted">This version has an empty body.</p>'}</div>`;
 }
 
 function badge(status: string | null): string {
@@ -1283,7 +1328,7 @@ function asOfSection(asOf: PageAsOf, names: Map<string, string>): string {
   ${asOf.fields ? `<h3>Structured fields as they were</h3>${fieldsTable(asOf.fields, names)}` : ''}
   ${
     asOf.version
-      ? `<h3>What it said</h3><pre class="body">${esc(asOf.version.body)}</pre>`
+      ? `<h3>What it said</h3>${bodyBlock(asOf.version.body)}`
       : ''
   }`;
 }
@@ -1355,7 +1400,7 @@ export function renderPageAttestationHtml(bundle: PageAttestation): string {
       (v) =>
         `<h3>Version ${esc(v.number)} — ${esc(v.title)} <span class="muted small">${esc(v.createdAt)}, ${esc(
           v.authorName,
-        )}</span></h3>${fieldsTable(v.fields, names)}<pre class="body">${esc(v.body)}</pre>`,
+        )}</span></h3>${fieldsTable(v.fields, names)}${bodyBlock(v.body)}`,
     )
     .join('');
 

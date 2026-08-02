@@ -416,12 +416,37 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
 // ---------------------------------------------------------------------------
 // Markdown — a deliberately small, safe subset. Everything is HTML-escaped
 // first; only markup this renderer generates ever reaches the DOM.
+//
+// TABLES ARE PART OF THE SUBSET, and they have to be. The corpus Canon is for
+// — retention schedules, coverage criteria, plan comparisons — is
+// substantially tabular, and a renderer that shows a retention schedule as
+// `| Region | Owner | | --- | --- |` is not showing the record at all
+// (USER-TESTING.md T4.1, a hard stop for the one writer who was not an
+// engineer). GitHub-flavoured pipe tables are the syntax to support because
+// they are what everything else emits: what src/html.ts writes out of a
+// Confluence or Google Docs import, what a paste from another Markdown tool
+// carries, and what the editor's own Table button inserts.
+//
+// The grammar below is not all of GFM and is not trying to be. Every deviation
+// is in one direction — never silently drop what somebody wrote:
+//
+//   * A ragged row keeps its cells. GFM truncates a row longer than the header
+//     and pads a shorter one; truncating deletes content from a record, so the
+//     table is widened to its widest row instead and every cell survives. A
+//     column with no header cell simply has an empty header.
+//   * `\|` inside a cell is an escaped pipe, not a column break. This is the
+//     one backslash escape the subset has, and it exists because html.ts emits
+//     it: a Confluence cell reading "Retain 7 | 10 years" must not silently
+//     become two columns on the way in.
+//
+// What is deliberately still out: inline HTML, images, footnotes, setext
+// headings, and pipes inside a code span (`a | b` in a cell splits the cell —
+// write `a \| b`).
 
 function renderMarkdown(src) {
   const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   let i = 0;
-  const isBlank = (l) => /^\s*$/.test(l);
   while (i < lines.length) {
     const line = lines[i];
     if (/^```/.test(line)) {
@@ -439,22 +464,23 @@ function renderMarkdown(src) {
       i++;
       continue;
     }
-    if (/^\s*[-*]\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        items.push(`<li>${mdInline(lines[i].replace(/^\s*[-*]\s+/, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ul>${items.join('')}</ul>`);
+    // A thematic break before the list check: `- - -` and `* * *` are rules,
+    // not one-item lists. An imported page footer arrives as an <hr> and the
+    // text under it (html.ts writes the rule as `---`), and rendering the rule
+    // as the literal characters made the footer read as another paragraph of
+    // the policy — which is how a "Confidential — internal use only" line ends
+    // up looking like a clause (USER-TESTING.md T4.1, second half).
+    if (isThematicBreak(line)) { out.push('<hr>'); i++; continue; }
+    if (isTableStart(lines, i)) {
+      const table = parseTable(lines, i);
+      out.push(table.html);
+      i = table.next;
       continue;
     }
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(`<li>${mdInline(lines[i].replace(/^\s*\d+\.\s+/, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ol>${items.join('')}</ol>`);
+    if (matchListItem(line)) {
+      const list = parseList(lines, i, matchListItem(line).indent);
+      out.push(list.html);
+      i = list.next;
       continue;
     }
     if (/^\s*>\s?/.test(line)) {
@@ -466,18 +492,156 @@ function renderMarkdown(src) {
       out.push(`<blockquote>${buf.join('<br>')}</blockquote>`);
       continue;
     }
-    if (isBlank(line)) { i++; continue; }
+    if (isMdBlank(line)) { i++; continue; }
     const buf = [];
-    while (
-      i < lines.length && !isBlank(lines[i]) &&
-      !/^(#{1,6}\s|```|\s*[-*]\s|\s*\d+\.\s|\s*>)/.test(lines[i])
-    ) {
+    while (i < lines.length && !isMdBlank(lines[i]) && !startsMdBlock(lines, i)) {
       buf.push(mdInline(lines[i]));
       i++;
     }
     out.push(`<p>${buf.join(' ')}</p>`);
   }
   return out.join('\n');
+}
+
+function isMdBlank(line) {
+  return /^\s*$/.test(line ?? '');
+}
+
+// What ends a paragraph. A table has to be in here as well as in the block
+// loop: a schedule written directly under its sentence, with no blank line
+// between, is the normal way people write one, and without this the header row
+// is swallowed into the paragraph and the rest of the table renders headless.
+function startsMdBlock(lines, i) {
+  const line = lines[i];
+  return /^(#{1,6}\s|```|\s*>)/.test(line) ||
+    isThematicBreak(line) ||
+    matchListItem(line) !== null ||
+    isTableStart(lines, i);
+}
+
+function isThematicBreak(line) {
+  return /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line ?? '');
+}
+
+// ---------------------------------------------------------------------------
+// Lists, with nesting. Confluence exports nest deeply and html.ts preserves
+// that nesting as two-space indentation; a flat renderer threw the structure
+// away and turned "three sub-clauses under clause 2" into six equal clauses.
+// An indented line that is not itself an item continues the item above it,
+// because that is how html.ts writes an <li> holding more than one block.
+
+function matchListItem(line) {
+  const m = /^(\s*)([-*]|\d+[.)])\s+(.*)$/.exec(line ?? '');
+  if (!m || isThematicBreak(line)) return null;
+  return { indent: m[1].length, ordered: /\d/.test(m[2]), text: m[3] };
+}
+
+function parseList(lines, start, indent) {
+  const first = matchListItem(lines[start]);
+  const ordered = first.ordered;
+  const items = [];
+  let i = start;
+  while (i < lines.length) {
+    const item = matchListItem(lines[i]);
+    if (item && item.indent > indent && items.length) {
+      // Deeper than this list: a sub-list belonging to the item above it.
+      const nested = parseList(lines, i, item.indent);
+      items[items.length - 1].blocks.push(nested.html);
+      i = nested.next;
+      continue;
+    }
+    if (item && item.indent >= indent && item.ordered === ordered) {
+      items.push({ text: item.text, blocks: [] });
+      i++;
+      continue;
+    }
+    if (item) break; // a shallower item, or the other kind of list: not ours
+    // A continuation line: indented, not blank, not the start of some other
+    // block. It belongs to the item above rather than to a new paragraph.
+    if (!isMdBlank(lines[i]) && items.length && /^\s{2,}/.test(lines[i]) && !startsMdBlock(lines, i)) {
+      items[items.length - 1].text += ` ${lines[i].trim()}`;
+      i++;
+      continue;
+    }
+    break;
+  }
+  const tag = ordered ? 'ol' : 'ul';
+  const html = `<${tag}>${items
+    .map((it) => `<li>${mdInline(it.text)}${it.blocks.join('')}</li>`)
+    .join('')}</${tag}>`;
+  return { html, next: i };
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+
+// Split one row into cells. The outer pipes are optional in GFM and are not
+// column breaks; `\|` is a literal pipe and is unescaped here, at the only
+// place in the subset where a backslash means anything.
+function splitTableRow(line) {
+  let s = String(line ?? '').trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (/(^|[^\\])\|$/.test(s)) s = s.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let k = 0; k < s.length; k++) {
+    if (s[k] === '\\' && s[k + 1] === '|') { cur += '|'; k++; continue; }
+    if (s[k] === '|') { cells.push(cur); cur = ''; continue; }
+    cur += s[k];
+  }
+  cells.push(cur);
+  return cells.map((c) => c.trim());
+}
+
+// The alignment row, as a list of alignments — or null when the line is not
+// one. `:---`, `---:` and `:---:` are left, right and centre; a plain `---`
+// leaves the column to the stylesheet.
+function tableAlignments(line) {
+  if (line == null || !line.includes('|') || !/-/.test(line)) return null;
+  const aligns = [];
+  for (const cell of splitTableRow(line)) {
+    const m = /^(:?)-+(:?)$/.exec(cell);
+    if (!m) return null;
+    aligns.push(m[1] && m[2] ? 'center' : m[2] ? 'right' : m[1] ? 'left' : null);
+  }
+  return aligns;
+}
+
+// A table is a header row and an alignment row with the same number of cells.
+// Insisting on the count keeps a lone `---` under a line of prose a thematic
+// break rather than a one-column table.
+function isTableStart(lines, i) {
+  const header = lines[i];
+  if (!header || !header.includes('|') || isThematicBreak(header)) return false;
+  const aligns = tableAlignments(lines[i + 1]);
+  return aligns !== null && aligns.length === splitTableRow(header).length;
+}
+
+function parseTable(lines, start) {
+  const header = splitTableRow(lines[start]);
+  const aligns = tableAlignments(lines[start + 1]);
+  const rows = [];
+  let i = start + 2;
+  while (i < lines.length && !isMdBlank(lines[i]) && lines[i].includes('|') &&
+    !/^(#{1,6}\s|```|\s*>)/.test(lines[i]) && !isThematicBreak(lines[i])) {
+    rows.push(splitTableRow(lines[i]));
+    i++;
+  }
+  const width = Math.max(header.length, ...rows.map((r) => r.length));
+  const cell = (tag, text, n) => {
+    const align = aligns[n];
+    return `<${tag}${align ? ` class="md-${align}"` : ''}>${mdInline(text ?? '')}</${tag}>`;
+  };
+  const row = (cells, tag) =>
+    `<tr>${Array.from({ length: width }, (_, n) => cell(tag, cells[n], n)).join('')}</tr>`;
+  // The scroll box is not decoration: a plan comparison is six columns wide and
+  // the document column is 46rem, so without it the table pushes the whole page
+  // sideways and takes the navigation with it.
+  const html = `<div class="table-scroll"><table class="md-table">` +
+    `<thead>${row(header, 'th')}</thead>` +
+    `<tbody>${rows.map((r) => row(r, 'td')).join('')}</tbody>` +
+    `</table></div>`;
+  return { html, next: i };
 }
 
 function mdInline(raw) {
@@ -2842,6 +3006,112 @@ async function renderCommentsPanel(pageId, ability = null) {
 
 // ---------------------------------------------------------------------------
 // Editor
+//
+// THE TOOLBAR OFFERS EXACTLY WHAT THE RENDERER DRAWS, and nothing else. A
+// button for something renderMarkdown cannot draw is a promise the page then
+// breaks in front of the reader, which is worse than having no button: the
+// writer has no way to find out that the thing they were offered does not
+// work until twelve people are looking at it. So this list and the block
+// grammar above are one list, and the Table button is here because typing
+// pipe syntax by hand is precisely what the person who reported T4.1 could
+// not do.
+//
+// The buttons write through document.execCommand('insertText') where it
+// exists, which is deprecated and still the only way to insert text into a
+// textarea WITHOUT destroying the browser's own undo stack. A writer who
+// clicks Table and then presses Ctrl-Z expects the table to go away, not the
+// last twenty minutes. Where it is unavailable the fallback writes the value
+// directly and the button still works; only undo is coarser.
+
+const MD_TOOLS = [
+  { key: 'h2', label: 'Heading', title: 'Heading — ## text' },
+  { key: 'bold', label: 'Bold', title: 'Bold — **text**' },
+  { key: 'italic', label: 'Italic', title: 'Italic — *text*' },
+  { key: 'ul', label: 'List', title: 'Bulleted list — - item' },
+  { key: 'ol', label: 'Numbered', title: 'Numbered list — 1. item' },
+  { key: 'table', label: 'Table', title: 'Table — a three-column skeleton to fill in' },
+  { key: 'link', label: 'Link', title: 'Link — [text](https://…)' },
+  { key: 'quote', label: 'Quote', title: 'Quotation — > text' },
+  { key: 'code', label: 'Code', title: 'Inline code — `text`' },
+  { key: 'rule', label: 'Rule', title: 'Horizontal rule — ---' },
+];
+
+// A skeleton, not an empty grid: a person filling in a retention schedule
+// needs to see where the header row, the alignment row and the data rows go,
+// and the placeholder words are what makes that legible before it is filled in.
+const MD_TABLE_SKELETON = [
+  '| Column 1 | Column 2 | Column 3 |',
+  '| --- | --- | --- |',
+  '| Row 1 | | |',
+  '| Row 2 | | |',
+].join('\n');
+
+function mdEditorTools(ta) {
+  // One write path, so undo behaves the same whichever button was pressed.
+  const write = (text, selectFrom, selectTo) => {
+    ta.focus();
+    let inserted = false;
+    try { inserted = document.execCommand('insertText', false, text); } catch { inserted = false; }
+    if (!inserted) {
+      ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (selectFrom !== undefined) {
+      const base = ta.selectionEnd - text.length;
+      ta.setSelectionRange(base + selectFrom, base + (selectTo ?? selectFrom));
+    }
+  };
+
+  // Wrap the selection, or drop in a placeholder and select it so the next
+  // keystroke replaces it.
+  const wrap = (before, after, placeholder) => {
+    const chosen = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+    const text = chosen || placeholder;
+    write(before + text + after, before.length, before.length + text.length);
+  };
+
+  // Prefix every line the selection touches. `prefix` may be a function so a
+  // numbered list counts.
+  const prefixLines = (prefix, placeholder) => {
+    const start = ta.value.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+    let end = ta.value.indexOf('\n', ta.selectionEnd);
+    if (end === -1) end = ta.value.length;
+    const at = (n) => (typeof prefix === 'function' ? prefix(n) : prefix);
+    const lines = ta.value.slice(start, end).split('\n');
+    const empty = lines.length === 1 && lines[0].trim() === '';
+    const body = empty ? [placeholder] : lines;
+    const text = body.map((line, n) => at(n) + line).join('\n');
+    ta.setSelectionRange(start, end);
+    write(text, empty ? at(0).length : 0, empty ? at(0).length + placeholder.length : text.length);
+  };
+
+  // A block of its own, with whatever blank lines it needs to be one.
+  const block = (text, selectFrom, selectTo) => {
+    const before = ta.value.slice(0, ta.selectionStart);
+    const after = ta.value.slice(ta.selectionEnd);
+    const lead = before === '' || /\n\n$/.test(before) ? '' : /\n$/.test(before) ? '\n' : '\n\n';
+    const trail = after.startsWith('\n') ? '\n' : '\n\n';
+    write(lead + text + trail, lead.length + selectFrom, lead.length + selectTo);
+  };
+
+  return {
+    h2: () => prefixLines('## ', 'Heading'),
+    bold: () => wrap('**', '**', 'bold text'),
+    italic: () => wrap('*', '*', 'italic text'),
+    ul: () => prefixLines('- ', 'List item'),
+    ol: () => prefixLines((n) => `${n + 1}. `, 'List item'),
+    quote: () => prefixLines('> ', 'Quoted text'),
+    code: () => wrap('`', '`', 'code'),
+    link: () => {
+      const chosen = ta.value.slice(ta.selectionStart, ta.selectionEnd) || 'link text';
+      const text = `[${chosen}](https://)`;
+      // The caret lands after "https://", where the address goes.
+      write(text, text.length - 1, text.length - 1);
+    },
+    table: () => block(MD_TABLE_SKELETON, 2, 10), // "Column 1" selected
+    rule: () => block('---', 3, 3),
+  };
+}
 
 async function viewEditor(id) {
   const page = await api('GET', `/pages/${id}`);
@@ -2903,12 +3173,21 @@ async function viewEditor(id) {
       <form id="editor-form" class="editor-grid">
         <div class="editor-mainCol">
           <label>Title <input name="title" required maxlength="200" value="${esc(draft.title)}"></label>
-          <label>Body
-            <textarea name="body" class="editor-body" spellcheck="true">${esc(draft.body)}</textarea>
-          </label>
-          <p class="muted md-hint">Markdown subset: <code># headings</code>, <code>**bold**</code>,
-            <code>*italic*</code>, <code>- lists</code>, <code>1. lists</code>, <code>\`code\`</code>,
-            fenced blocks, <code>[links](https://…)</code>, <code>&gt; quotes</code>.</p>
+          <label class="editor-bodyLabel" for="ed-body">Body</label>
+          <div class="md-toolbar" role="toolbar" aria-label="Formatting" aria-controls="ed-body">
+            ${MD_TOOLS.map((t) =>
+              `<button type="button" class="md-btn" data-md="${esc(t.key)}" title="${esc(t.title)}">${esc(t.label)}</button>`).join('')}
+            <span class="md-toolbar-gap"></span>
+            <button type="button" class="md-btn md-btn-mode" id="ed-preview-toggle" aria-pressed="false">Preview</button>
+          </div>
+          <textarea id="ed-body" name="body" class="editor-body" spellcheck="true">${esc(draft.body)}</textarea>
+          <div id="ed-preview" class="doc-body editor-preview" hidden></div>
+          <p class="muted md-hint">The buttons insert everything the page can draw:
+            <code># headings</code>, <code>**bold**</code>, <code>*italic*</code>, <code>- lists</code>,
+            <code>1. lists</code>, <code>\`code\`</code>, fenced blocks,
+            <code>[links](https://…)</code>, <code>&gt; quotes</code>, <code>---</code> rules
+            and <code>| pipe | tables |</code>. <strong>Preview</strong> shows the page exactly as a
+            reader will meet it.</p>
         </div>
         <div class="editor-sideCol">
           <div class="panel">
@@ -2942,6 +3221,33 @@ async function viewEditor(id) {
 
   const form = app.querySelector('#editor-form');
   const saveState = app.querySelector('#save-state');
+
+  // The toolbar and the preview. The preview is the same renderMarkdown() the
+  // page view uses, inside the same .doc-body, because a preview that renders
+  // by any other route is a preview that can disagree with the page — and the
+  // whole complaint (T4.1) was not knowing what was about to be published.
+  const bodyEl = form.querySelector('#ed-body');
+  const preview = form.querySelector('#ed-preview');
+  const previewToggle = form.querySelector('#ed-preview-toggle');
+  const tools = mdEditorTools(bodyEl);
+  form.querySelectorAll('.md-toolbar [data-md]').forEach((btn) => {
+    btn.addEventListener('click', () => tools[btn.dataset.md]?.());
+  });
+  let previewing = false;
+  previewToggle.addEventListener('click', () => {
+    previewing = !previewing;
+    if (previewing) {
+      preview.innerHTML = renderMarkdown(bodyEl.value) ||
+        '<p class="muted">Nothing written yet.</p>';
+    }
+    preview.hidden = !previewing;
+    bodyEl.hidden = previewing;
+    previewToggle.textContent = previewing ? 'Write' : 'Preview';
+    previewToggle.setAttribute('aria-pressed', String(previewing));
+    // A formatting button with nowhere to write is a button that lies.
+    form.querySelectorAll('.md-toolbar [data-md]').forEach((btn) => { btn.disabled = previewing; });
+    if (!previewing) bodyEl.focus();
+  });
 
   const gather = () => {
     const fields = {};
