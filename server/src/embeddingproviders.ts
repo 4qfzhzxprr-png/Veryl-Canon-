@@ -79,6 +79,23 @@ export interface HttpEmbeddingOptions {
   apiKey?: string;
   batchSize?: number;
   timeoutMs?: number;
+  /**
+   * Text put in front of every QUESTION before it is embedded, for the model
+   * families trained asymmetric (E5, BGE): they expect an instruction on the
+   * query side and none on the passage side, and running them without it
+   * understates them. BGE v1.5's is
+   * "Represent this sentence for searching relevant passages: "; E5's is
+   * "query: ". Empty means the model is symmetric and questions go through
+   * exactly as typed.
+   */
+  queryPrefix?: string;
+  /**
+   * The passage-side counterpart (E5 wants "passage: "; BGE v1.5 wants none).
+   * Unlike `queryPrefix` this changes every STORED vector, so it is part of
+   * the provider's identity below: changing it re-derives the index rather
+   * than leaving rows embedded one way and questions asked another.
+   */
+  textPrefix?: string;
   transport?: OutboundTransport;
   resolver?: AddressResolver;
   /**
@@ -123,17 +140,31 @@ export function httpEmbeddingProvider(options: HttpEmbeddingOptions): EmbeddingP
   const transport = options.transport ?? pinnedHttpRequest;
   const resolver = options.resolver ?? systemResolver;
   const outbound = options.outbound ?? policyForEndpoint(url);
+  const queryPrefix = options.queryPrefix ?? '';
+  const textPrefix = options.textPrefix ?? '';
+
+  const embedAll = async (texts: string[], prefix: string): Promise<number[][]> => {
+    const out: number[][] = [];
+    for (let start = 0; start < texts.length; start += batchSize) {
+      const batch = texts.slice(start, start + batchSize).map((text) => `${prefix}${text}`);
+      out.push(...(await embedBatch(batch)));
+    }
+    return out;
+  };
 
   return {
-    name: `http:${model}`,
+    // The text prefix is baked into every stored vector, so it is part of what
+    // the index was built with and belongs in the name; the query prefix is
+    // applied at ask time to text that is never stored, so it stays out —
+    // including it would force a full re-derive for a change that invalidates
+    // nothing.
+    name: textPrefix ? `http:${model}+text-prefix` : `http:${model}`,
     dimensions: options.dimensions,
     async embed(texts: string[]): Promise<number[][]> {
-      const out: number[][] = [];
-      for (let start = 0; start < texts.length; start += batchSize) {
-        const batch = texts.slice(start, start + batchSize);
-        out.push(...(await embedBatch(batch)));
-      }
-      return out;
+      return embedAll(texts, textPrefix);
+    },
+    async embedQueries(texts: string[]): Promise<number[][]> {
+      return embedAll(texts, queryPrefix);
     },
   };
 
@@ -412,5 +443,8 @@ export function embeddingProviderFromEnv(env: NodeJS.ProcessEnv = process.env): 
     apiKey: (env.CANON_EMBEDDINGS_API_KEY ?? '').trim() || undefined,
     batchSize,
     timeoutMs: Number(env.CANON_EMBEDDINGS_TIMEOUT_MS ?? '') || undefined,
+    // Not trimmed: a trailing space is usually the whole point of a prefix.
+    queryPrefix: env.CANON_EMBEDDINGS_QUERY_PREFIX || undefined,
+    textPrefix: env.CANON_EMBEDDINGS_TEXT_PREFIX || undefined,
   });
 }

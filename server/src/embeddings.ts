@@ -43,6 +43,21 @@ export interface EmbeddingProvider {
   readonly name: string;
   readonly dimensions: number;
   embed(texts: string[]): Promise<number[][]>;
+  /**
+   * How to embed a QUESTION, where that differs from embedding the record.
+   *
+   * The retrieval-trained model families (E5, BGE) are asymmetric on purpose:
+   * they are trained with an instruction in front of the query and nothing in
+   * front of the passage, so that a three-word question and the paragraph
+   * answering it land near each other. Feeding both sides through `embed`
+   * runs those models outside their training and understates them.
+   *
+   * Optional, and absent means symmetric: `similar()` falls back to `embed`,
+   * which is right for the local provider and every symmetric model. This is
+   * a query-time distinction only — nothing produced here is ever stored, so
+   * changing it never requires re-deriving the index.
+   */
+  embedQueries?(texts: string[]): Promise<number[][]>;
 }
 
 export const CHUNK_SIZE = 800;
@@ -320,7 +335,9 @@ export class EmbeddingStore {
     // it returns when no provider is configured at all.
     let target: number[] | undefined;
     try {
-      target = (await this.provider.embed([question]))[0];
+      // The query side of the provider's asymmetry, where it has one.
+      const embed = this.provider.embedQueries?.bind(this.provider) ?? this.provider.embed.bind(this.provider);
+      target = (await embed([question]))[0];
     } catch (err) {
       this.lastError = err instanceof Error ? err : new Error(String(err));
       return [];

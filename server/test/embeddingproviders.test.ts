@@ -464,3 +464,55 @@ test('config: start-up validation refuses an incomplete provider and warns about
   );
   assert.ok(!loopback.warnings.some((w) => w.variable === 'CANON_EMBEDDINGS_URL'));
 });
+
+test('http provider: an asymmetric model gets its instruction on questions and never on the record', async () => {
+  const { seen, transport } = recordingTransport((req) => {
+    const sent = JSON.parse(req.body ?? '{}') as { input: string[] };
+    return { body: vectorsFor(sent.input, 4) };
+  });
+  const provider = httpEmbeddingProvider({
+    url: 'https://models.example.com/v1/embeddings',
+    model: 'bge-small-en-v1.5',
+    dimensions: 4,
+    queryPrefix: 'Represent this sentence for searching relevant passages: ',
+    transport,
+    resolver: fixedResolver,
+  });
+
+  await provider.embed(['Records are retained for seven years.']);
+  await provider.embedQueries!(['how long do we keep records']);
+
+  const [passage, query] = seen.map((r) => (JSON.parse(r.body!) as { input: string[] }).input[0]);
+  assert.equal(passage, 'Records are retained for seven years.', 'the record goes through as written');
+  assert.equal(
+    query,
+    'Represent this sentence for searching relevant passages: how long do we keep records',
+    'the question carries the instruction the model was trained with',
+  );
+
+  // A query-side prefix is applied to text that is never stored, so it must
+  // not change the provider's identity — that would force a full re-derive
+  // for a change that invalidates nothing. A TEXT prefix is baked into every
+  // stored row and must.
+  assert.equal(provider.name, 'http:bge-small-en-v1.5');
+  const asymmetricStore = httpEmbeddingProvider({
+    url: 'https://m/v1/embeddings',
+    model: 'e5-small-v2',
+    dimensions: 4,
+    textPrefix: 'passage: ',
+  });
+  assert.notEqual(asymmetricStore.name, 'http:e5-small-v2');
+});
+
+test('config: the prefixes come from the environment, untrimmed', () => {
+  const provider = embeddingProviderFromEnv({
+    CANON_EMBEDDINGS: 'http',
+    CANON_EMBEDDINGS_URL: 'https://m/v1/embeddings',
+    CANON_EMBEDDINGS_MODEL: 'e5-small-v2',
+    CANON_EMBEDDINGS_DIMENSIONS: '384',
+    CANON_EMBEDDINGS_QUERY_PREFIX: 'query: ',
+    CANON_EMBEDDINGS_TEXT_PREFIX: 'passage: ',
+  });
+  assert.ok(provider?.embedQueries, 'the query side exists');
+  assert.equal(provider?.name, 'http:e5-small-v2+text-prefix');
+});
