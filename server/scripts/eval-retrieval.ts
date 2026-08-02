@@ -71,6 +71,23 @@ export interface EvalCase {
   relevant: readonly string[];
   /** A note on what makes the case interesting, where it is not obvious. */
   why?: string;
+  /**
+   * Something the record's own words contain when this question is answered
+   * properly — a period, a figure, a time. Any one of them counts.
+   *
+   * This labels a different thing from `relevant`, and the difference is the
+   * whole reason it exists. `relevant` asks whether Canon found the right PAGE.
+   * This asks whether the sentence it QUOTED off that page is the one that
+   * answers, which is what a reader actually reads. Canon cited the page saying
+   * `claims-purge — nightly, 02:10 UTC` and quoted its paragraph about log
+   * scrubbing: right page, useless quotation, and every ranking metric scored
+   * it a hit.
+   *
+   * Only the questions with a checkable answer carry this. "What makes a claim
+   * clean?" is answered by a list, and turning that into a substring test would
+   * be inventing a right answer to have something to measure.
+   */
+  answerContains?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -83,42 +100,52 @@ export const EVAL_CASES: readonly EvalCase[] = [
   // --- plain lookup: the question uses the record's own words -------------
   {
     question: 'How long do we keep claims records?',
+    answerContains: ['seven years'],
     relevant: ['Retention periods: claims and appeals', 'Records Retention Schedule'],
   },
   {
     question: 'What is the retention period for clinical criteria?',
+    answerContains: ['ten years'],
     relevant: ['Retention periods: clinical criteria', 'Records Retention Schedule'],
   },
   {
     question: 'How long are employment records kept?',
+    answerContains: ['six years'],
     relevant: ['Retention periods: employment records', 'Records Retention Schedule'],
   },
   {
     question: 'What is the retention period for vendor contracts?',
+    answerContains: ['seven years'],
     relevant: ['Retention periods: vendor contracts', 'Records Retention Schedule'],
   },
   {
     question: 'How long is audit evidence kept?',
+    answerContains: ['seven years'],
     relevant: ['Records Retention Schedule'],
   },
   {
     question: 'How long do we keep member communications?',
+    answerContains: ['three years', 'thirty-six months'],
     relevant: ['Records Retention Schedule', 'Data Retention in the Platform'],
   },
   {
     question: 'What is the deductible for PLAN-7?',
+    answerContains: ['1,200'],
     relevant: ['PLAN-7 deductible and out-of-pocket maximum', 'Standard Plan (PLAN-7)'],
   },
   {
     question: 'What is the out-of-pocket maximum on the standard plan?',
+    answerContains: ['6,000'],
     relevant: ['PLAN-7 deductible and out-of-pocket maximum', 'Standard Plan (PLAN-7)'],
   },
   {
     question: 'How long does a member have to file a first level appeal?',
+    answerContains: ['180 days'],
     relevant: ['Appeals Process'],
   },
   {
     question: 'How many calendar days do we have to decide a clean claim?',
+    answerContains: ['thirty calendar days'],
     relevant: ['Claims Processing Standard'],
   },
 
@@ -129,6 +156,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   // disposed, "purge" for deletion job.
   {
     question: 'How quickly must we decide an urgent claim?',
+    answerContains: ['seventy-two hours'],
     relevant: ['Claims Processing Standard'],
     why: 'the record says "expedited", never "urgent"',
   },
@@ -149,6 +177,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   },
   {
     question: 'How long do we keep files about people who have left the company?',
+    answerContains: ['six years'],
     relevant: ['Retention periods: employment records'],
     why: 'not one content word of the title appears in the question',
   },
@@ -171,6 +200,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   // --- the answer is a rule, not a figure ---------------------------------
   {
     question: 'Who is allowed to change a retention period?',
+    answerContains: ['only function'],
     relevant: ['Records and Retention'],
   },
   {
@@ -179,6 +209,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   },
   {
     question: 'When does the retention clock start for a claim?',
+    answerContains: ['finally determined'],
     relevant: ['Retention periods: claims and appeals', 'Records Retention Schedule'],
   },
   {
@@ -191,6 +222,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   },
   {
     question: 'Who decides a second level appeal?',
+    answerContains: ['took no part'],
     relevant: ['Appeals Process'],
   },
   {
@@ -199,6 +231,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   },
   {
     question: 'Why are clinical criteria kept longer than claims?',
+    answerContains: ['challenged'],
     relevant: ['Retention periods: clinical criteria'],
   },
   {
@@ -207,6 +240,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   },
   {
     question: 'How many network tiers does the standard plan have?',
+    answerContains: ['three tiers', 'preferred, standard'],
     relevant: ['Standard Plan (PLAN-7)', 'PLAN-7 network tiers'],
   },
   {
@@ -215,6 +249,7 @@ export const EVAL_CASES: readonly EvalCase[] = [
   },
   {
     question: 'What evidence does a deletion run leave behind?',
+    answerContains: ['disposal record'],
     relevant: ['Retention jobs and their schedule', 'Data Retention in the Platform'],
   },
 
@@ -224,18 +259,22 @@ export const EVAL_CASES: readonly EvalCase[] = [
   // the asker means the obligation or the machine.
   {
     question: 'Does the platform delete claims data automatically?',
+    answerContains: ['twenty-four months'],
     relevant: ['Data Retention in the Platform', 'Retention jobs and their schedule'],
   },
   {
     question: 'When does the claims purge job run?',
+    answerContains: ['02:10'],
     relevant: ['Retention jobs and their schedule'],
   },
   {
     question: 'How long do backups last before they expire?',
+    answerContains: ['ninety days'],
     relevant: ['Data Retention in the Platform', 'Retention jobs and their schedule'],
   },
   {
     question: 'When are member identifiers removed from application logs?',
+    answerContains: ['ninety days'],
     relevant: ['Data Retention in the Platform', 'Retention jobs and their schedule'],
   },
   {
@@ -299,6 +338,16 @@ export const UNANSWERABLE: readonly string[] = [
   'Do we accept payment in cryptocurrency?',
   'How do I reset my password?',
   'Which airline should I book for business travel?',
+  'What is our policy on submarine procurement?',
+  'How many parking spaces does the office have?',
+  'What is the warranty on company laptops?',
+  'Who is the chief executive?',
+  'What are the opening hours of the canteen?',
+  'How do I order business cards?',
+  'Which charities does the company donate to?',
+  'What is the fire evacuation procedure?',
+  'How do I book a meeting room?',
+  'What is the policy on office pets?',
 ];
 
 // ---------------------------------------------------------------------------
@@ -347,18 +396,46 @@ export interface EvalReport {
   direct: number;
   /** The fraction whose citations included a page the labels call relevant. */
   citedRelevant: number;
+  /**
+   * Of the labelled questions with a checkable answer, the fraction whose
+   * QUOTATION contains it — the sentence a reader is shown, not the page it
+   * came from. The two come apart more often than they sound like they would.
+   */
+  quotedAnswer: number;
+  quotableCases: number;
+  /** The ones that cited a page and quoted the wrong part of it. */
+  misquoted: readonly { question: string; want: readonly string[]; quoted: string }[];
   /** The answerable questions Ask refused, named. */
   wrongfulRefusals: readonly string[];
   results: readonly CaseResult[];
   /** The cases with no relevant page in the whole returned list. */
   misses: readonly CaseResult[];
-  /** Unanswerable questions that were answered anyway, with what was cited. */
-  overreach: readonly { question: string; cited: readonly string[] }[];
+  /**
+   * Unanswerable questions that were answered anyway, with what was cited and
+   * how confidently.
+   *
+   * THESE ARE TWO DIFFERENT FAILURES AND ONLY ONE OF THEM IS SERIOUS. A
+   * `direct` answer to a question the record cannot answer is the confident
+   * non-answer this product exists to avoid — a page presented under "The
+   * record says". A `thin` one opens with "Nothing in the record answers this
+   * directly. The closest it comes:", which is a disclaimer, on screen, in the
+   * first sentence. Counting them together made a hedge look like a lie.
+   */
+  overreach: readonly { question: string; cited: readonly string[]; grounding?: string }[];
 }
 
 type RankingReport = Omit<
   EvalReport,
-  'refused' | 'refusalCases' | 'overreach' | 'answered' | 'direct' | 'citedRelevant' | 'wrongfulRefusals'
+  | 'refused'
+  | 'refusalCases'
+  | 'overreach'
+  | 'answered'
+  | 'direct'
+  | 'citedRelevant'
+  | 'quotedAnswer'
+  | 'quotableCases'
+  | 'misquoted'
+  | 'wrongfulRefusals'
 >;
 
 export async function runRetrievalEval(
@@ -420,18 +497,25 @@ export function askRetriever(corpus: EvalCorpus, limit = 8): Retriever {
 export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
   const ranking = await runRetrievalEval(askRetriever(corpus));
 
-  const overreach: { question: string; cited: readonly string[] }[] = [];
+  const overreach: { question: string; cited: readonly string[]; grounding?: string }[] = [];
   for (const question of UNANSWERABLE) {
     const answer = await corpus.store.ask(corpus.actorId, { question });
     if (!answer.refused) {
-      overreach.push({ question, cited: answer.citations.map((c) => c.title) });
+      overreach.push({
+        question,
+        cited: answer.citations.map((c) => c.title),
+        grounding: answer.grounding,
+      });
     }
   }
 
   // The other half: what Ask does with the questions the record answers.
   const wrongfulRefusals: string[] = [];
+  const misquoted: { question: string; want: readonly string[]; quoted: string }[] = [];
   let direct = 0;
   let citedRelevant = 0;
+  let quotable = 0;
+  let quotedAnswer = 0;
   for (const evalCase of EVAL_CASES) {
     const answer = await corpus.store.ask(corpus.actorId, { question: evalCase.question });
     if (answer.refused) {
@@ -440,6 +524,19 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
     }
     if (answer.grounding === 'direct') direct += 1;
     if (answer.citations.some((c) => evalCase.relevant.includes(c.title))) citedRelevant += 1;
+    if (evalCase.answerContains?.length) {
+      quotable += 1;
+      const quoted = answer.citations.map((c) => c.snippet).join(' ').toLowerCase();
+      if (evalCase.answerContains.some((want) => quoted.includes(want.toLowerCase()))) {
+        quotedAnswer += 1;
+      } else {
+        misquoted.push({
+          question: evalCase.question,
+          want: evalCase.answerContains,
+          quoted: answer.citations[0]?.snippet.slice(0, 120) ?? '(nothing)',
+        });
+      }
+    }
   }
   const total = EVAL_CASES.length || 1;
   const answeredCount = EVAL_CASES.length - wrongfulRefusals.length;
@@ -452,6 +549,9 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
     answered: answeredCount / total,
     direct: direct / (answeredCount || 1),
     citedRelevant: citedRelevant / total,
+    quotedAnswer: quotedAnswer / (quotable || 1),
+    quotableCases: quotable,
+    misquoted,
     wrongfulRefusals,
   };
 }
@@ -476,12 +576,22 @@ export function formatReport(report: EvalReport, pages: number): string {
     `answered          ${pct(report.answered)}   of the questions the record answers`,
     `direct            ${pct(report.direct)}   of those said "the record says", not "the closest it comes"`,
     `cited relevant    ${pct(report.citedRelevant)}   cited a page the labels call relevant`,
+    `quoted answer     ${pct(report.quotedAnswer)}   of ${report.quotableCases} with a checkable answer, the quotation contains it`,
     `refused           ${pct(report.refused)}   of questions the record cannot answer`,
   ];
   if (report.overreach.length) {
     lines.push('', 'ANSWERED WHAT IT SHOULD HAVE REFUSED');
     for (const miss of report.overreach) {
-      lines.push(`  ${miss.question}`, `    cited: ${miss.cited.join(' | ') || '(nothing)'}`);
+      lines.push(
+        `  [${miss.grounding ?? '?'}] ${miss.question}`,
+        `    cited: ${miss.cited.join(' | ') || '(nothing)'}`,
+      );
+    }
+  }
+  if (report.misquoted.length) {
+    lines.push('', 'CITED THE RIGHT PAGE AND QUOTED THE WRONG PART OF IT');
+    for (const miss of report.misquoted) {
+      lines.push(`  ${miss.question}`, `    want: ${miss.want.join(' / ')}`, `    got : ${miss.quoted}`);
     }
   }
   if (report.wrongfulRefusals.length) {
