@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, PageStatus } from './model.js';
 import { STOPWORDS } from './embeddings.js';
 import { objectBody, optionalCount, optionalString, optionalStringArray } from './input.js';
-import { ANSWERABLE_STATUSES, type RetrievalService } from './retrieval.js';
+import { ANSWERABLE_STATUSES, type RetrievalCandidate, type RetrievalService } from './retrieval.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
 // CORE-PLAN.md. Generation happens under the record's rules, and the rules are
@@ -618,8 +618,38 @@ export function isOnTopic(question: string, text: string, stats: TermStats | nul
   if (covered.length < minimum) return false;
 
   const weightOf = (t: string) => termWeight(t, stats);
+
+  // WHEN THE STATISTIC HAS NOTHING TO SAY, COUNT.
+  //
+  // A term the index has never seen weighs as the rarest thing there is, and
+  // that is the right reading when the rest of the question is made of words
+  // the corpus can rank against each other: "submarine" next to "policy" says
+  // the question is not about this record. It stops being a reading at all when
+  // NONE of the words the record does know can be told apart — in a small
+  // record, or a uniform one, every one of them is on every page and weighs
+  // nothing, so the entire judgement comes to rest on the single word the
+  // record happens not to use.
+  //
+  // "How long are client records retained?", asked of a record whose every page
+  // is about how long client records are retained, refused: "client", "record"
+  // and "retain" were on both pages and therefore worth zero each, "long" was
+  // on neither, and zero out of "long" is zero. The question was answered by
+  // the record twice over and the arithmetic could not see it.
+  //
+  // So: weigh the terms only where weighing means something, and otherwise fall
+  // back to counting them, which is what this gate did before it learned to
+  // weigh and is still a sane answer. The test is not the size of the record —
+  // that would be a number pulled out of the air — but whether any word the
+  // record actually uses carries any weight at all.
+  const informative = stats
+    ? questionTerms.filter((t) => (stats.df.get(t) ?? 0) > 0).reduce((n, t) => n + weightOf(t), 0)
+    : 0;
+  if (informative === 0) return covered.length / questionTerms.length >= MIN_TOPICAL_OVERLAP;
+
+  // Unseen terms keep their full weight here, in the denominator: a question
+  // built mostly of words the record does not use should still fail, and this
+  // is where it does.
   const asked = questionTerms.reduce((n, t) => n + weightOf(t), 0);
-  if (asked === 0) return covered.length / questionTerms.length >= MIN_TOPICAL_OVERLAP;
   const met = covered.reduce((n, t) => n + weightOf(t), 0);
   return met / asked >= MIN_TOPICAL_OVERLAP;
 }
@@ -1680,9 +1710,23 @@ export class AnswerService {
     // are about the subject is a different claim, and only that one earns "the
     // record says".
     const grounding: 'direct' | 'thin' = anchors.length >= 2 ? 'direct' : 'thin';
-    const passages: AnswerPassage[] = (
-      anchors.length === 0 ? [] : eligible.filter((c) => c.via === null ? anchored.has(c.pageId) : anchored.has(c.via.fromPageId))
-    )
+    // What may be cited, once there is an anchor: the anchors themselves, and
+    // the pages the record connects to one.
+    //
+    // THAT SECOND CLAUSE USED TO ASK THE WRONG QUESTION. It asked how a page
+    // ARRIVED — expanded pages rode on the anchor that reached them, directly
+    // retrieved pages had to clear the topical gate themselves — and a page can
+    // be both. A child procedure that shares no wording with the question was
+    // cited as its parent's context; the same procedure, once the index learned
+    // to stem and the question's words reached it, became a direct candidate,
+    // failed the gate on its own words, and vanished from the answer. Being
+    // easier to find made it disappear. What decides now is the edge, which is
+    // in the record either way and does not care how the page was found.
+    const rides = (c: RetrievalCandidate): boolean =>
+      anchored.has(c.pageId) ||
+      (c.via !== null && anchored.has(c.via.fromPageId)) ||
+      c.neighbourOf.some((id) => anchored.has(id));
+    const passages: AnswerPassage[] = (anchors.length === 0 ? [] : eligible.filter(rides))
       .slice(0, MAX_CITED_PASSAGES)
       .map((c) => ({ pageId: c.pageId, title: c.title, version: c.version, text: c.passage, status: c.status }));
 

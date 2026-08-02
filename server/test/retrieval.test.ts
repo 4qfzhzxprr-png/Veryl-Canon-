@@ -11,7 +11,8 @@ import {
   localEmbeddingProvider,
   type EmbeddingProvider,
 } from '../src/embeddings.js';
-import { contentTerms, parsePageLinks, passageFor, quotableText } from '../src/retrieval.js';
+import { contentTerms, parsePageLinks, passageFor } from '../src/retrieval.js';
+import { quotableText } from '../src/plaintext.js';
 
 // A Policy states an effective date before it can publish (USER-TESTING.md
 // T1.5). These fixtures are written and published in the same breath, so
@@ -326,19 +327,34 @@ test('retrieval: graph expansion pulls in a child procedure and a linked page', 
   const byId = new Map(candidates.map((c) => [c.pageId, c]));
   assert.ok(byId.has(policy.id), 'the policy is a direct hit');
 
+  // The child procedure carries "Contractor" in its own title, so once the
+  // index learned to stem, "contractors" reaches it and it is a DIRECT hit —
+  // and it is still the policy's child. Those are two different facts and the
+  // candidate records both: `via` is null because it did not need the edge to
+  // be found, and `neighbourOf` names the edge that is there regardless. Before
+  // they were separated, being findable cost this page its place in the answer.
   const child = byId.get(procedure.id);
-  assert.ok(child, 'the child procedure joins through the tree — this is where multi-hop answers come from');
-  assert.deepEqual(child.via, { fromPageId: policy.id, edge: 'child' });
-  assert.deepEqual(child.channels, ['graph']);
-  assert.ok(child.score < byId.get(policy.id)!.score, 'expanded context ranks below the hit that pulled it in');
+  assert.ok(child, 'the child procedure is in the context — this is where multi-hop answers come from');
+  assert.equal(child.via, null, 'it was found on its own words, so it did not arrive through the edge');
+  assert.deepEqual(child.neighbourOf, [policy.id], 'and the edge to its parent is recorded anyway');
 
+  // The linked page shares not one word with the question. It is here only
+  // because somebody wrote the link, which is what expansion is for.
   const viaLink = byId.get(linked.id);
   assert.ok(viaLink, 'the explicitly linked page joins too');
   assert.deepEqual(viaLink.via, { fromPageId: policy.id, edge: 'link' });
+  assert.deepEqual(viaLink.channels, ['graph']);
+  assert.ok(
+    viaLink.score < byId.get(policy.id)!.score,
+    'expanded context ranks below the hit that pulled it in',
+  );
 
-  // Depth 0 turns expansion off; the direct hit stays, the neighbours go.
+  // Depth 0 turns expansion off. The pages the question reaches on their own
+  // stay; the page that exists here only as a neighbour goes, and so does the
+  // record of the edge, because nothing walked it.
   const shallow = await store.retrieve(marc.id, { question: 'Which contractors may enter the building?', depth: 0 });
-  assert.deepEqual(shallow.map((c) => c.pageId), [policy.id]);
+  assert.deepEqual(new Set(shallow.map((c) => c.pageId)), new Set([policy.id, procedure.id]));
+  assert.deepEqual(shallow.find((c) => c.pageId === procedure.id)!.neighbourOf, []);
 
   // related() is the same walk, on demand.
   const related = store.related(marc.id, policy.id);

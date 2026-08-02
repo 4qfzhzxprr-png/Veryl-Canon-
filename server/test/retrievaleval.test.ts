@@ -8,6 +8,7 @@ import {
   formatMisses,
   formatReport,
   runRetrievalEval,
+  askRetriever,
 } from '../scripts/eval-retrieval.js';
 
 // The retrieval quality harness (scripts/eval-retrieval.ts, `npm run
@@ -116,11 +117,30 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
   // is the whole diagnosis, and hunting for it in a rerun wastes the run.
   const summary = `\n${formatReport(report, corpus.pages)}\n\n${formatMisses(report)}\n`;
 
-  assert.ok(report.precisionAt1 >= 0.78, `P@1 fell to ${report.precisionAt1.toFixed(3)}${summary}`);
-  assert.ok(report.primaryAt1 >= 0.62, `primary@1 fell to ${report.primaryAt1.toFixed(3)}${summary}`);
-  assert.ok(report.recallAt3 >= 0.88, `R@3 fell to ${report.recallAt3.toFixed(3)}${summary}`);
-  assert.ok(report.recallAt5 >= 0.93, `R@5 fell to ${report.recallAt5.toFixed(3)}${summary}`);
-  assert.ok(report.mrr >= 0.84, `MRR fell to ${report.mrr.toFixed(3)}${summary}`);
+  assert.ok(report.precisionAt1 >= 0.87, `P@1 fell to ${report.precisionAt1.toFixed(3)}${summary}`);
+  assert.ok(report.primaryAt1 >= 0.75, `primary@1 fell to ${report.primaryAt1.toFixed(3)}${summary}`);
+  assert.ok(report.recallAt3 >= 0.9, `R@3 fell to ${report.recallAt3.toFixed(3)}${summary}`);
+  assert.ok(report.recallAt5 >= 0.95, `R@5 fell to ${report.recallAt5.toFixed(3)}${summary}`);
+  assert.ok(report.mrr >= 0.9, `MRR fell to ${report.mrr.toFixed(3)}${summary}`);
+
+  // The same record answers the same question the same way. Two corpora built
+  // from one seed hold the same pages with the same words and different page
+  // ids, and every ranking they produce must be identical.
+  //
+  // This was not true, and nothing said so. Equally-scoring pages came back in
+  // whichever order the join against a UUID primary key produced, and the
+  // whole pipeline inherited it — so this harness's own numbers moved by
+  // twelve points between runs of the same code, and no tuning decision taken
+  // against them meant anything. It is asserted here rather than in a unit
+  // test because it is a property of the whole pipeline, and because this is
+  // the file whose conclusions depend on it.
+  const second = await buildEvalCorpus();
+  const rerun = await runRetrievalEval(askRetriever(second));
+  assert.deepEqual(
+    rerun.results.map((r) => r.ranked),
+    report.results.map((r) => r.ranked),
+    'two records with the same content ranked the same question differently',
+  );
 
   // No floor on this one, an equality. Refusing what the record cannot answer
   // is the product's central claim, and a change that trades one refusal for

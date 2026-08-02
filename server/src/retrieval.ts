@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, DocType, PageStatus } from './model.js';
 import { STOPWORDS, type EmbeddingStore } from './embeddings.js';
+import { quotableText } from './plaintext.js';
 import type { SearchIndex, SearchResult } from './search.js';
 
 // Retrieval, the four deterministic steps of DATA-BACKBONE.md §5. No inferred
@@ -27,7 +28,25 @@ export interface RetrievalCandidate {
   passage: string; // verbatim from the published body; what a citation quotes
   score: number;
   channels: RetrievalChannel[];
+  /**
+   * How this page ARRIVED, when it did not arrive on its own: the neighbour it
+   * was expanded from. Null for a page the two indexes found directly.
+   */
   via: { fromPageId: string; edge: GraphEdge } | null;
+  /**
+   * What this page is CONNECTED to, among the pages this same retrieval
+   * returned — its parent, its children, the pages it links to and the pages
+   * that link to it, as far as expansion walked.
+   *
+   * `via` and this are not the same question, and conflating them was a bug.
+   * A page can be found directly AND be the child of a better hit; `via` is
+   * null for it, because it did not need the edge to be found, and the edge is
+   * still there and still means what it always meant. Answers rely on this to
+   * decide whether a page rides on an anchor: before it existed, a child
+   * procedure was cited when the question's words missed it and dropped when
+   * they hit it, which is exactly backwards.
+   */
+  neighbourOf: string[];
 }
 
 export interface RetrieveRequest {
@@ -170,6 +189,12 @@ export class RetrievalService {
     const lexical = this.lexicalRanking(actorId, terms, request, canonicalOnly);
     const semantic = await this.semanticRanking(actorId, question, request);
 
+    // Both channels already know each candidate's title, so a tie can be
+    // broken on content rather than on a UUID without asking the record again.
+    const titles = new Map<string, string>();
+    for (const hit of lexical) titles.set(hit.pageId, hit.title);
+    for (const [pageId, hit] of semantic) titles.set(pageId, hit.title);
+
     const fused = new Map<string, { score: number; channels: Set<RetrievalChannel> }>();
     const contribute = (pageIds: string[], channel: RetrievalChannel): void => {
       pageIds.forEach((pageId, index) => {
@@ -179,11 +204,25 @@ export class RetrievalService {
         fused.set(pageId, entry);
       });
     };
-    contribute(lexical, 'lexical');
+    contribute(
+      lexical.map((hit) => hit.pageId),
+      'lexical',
+    );
     contribute([...semantic.keys()], 'semantic');
 
+    // Fused score first; then how many channels found the page, because a page
+    // both channels reached is better evidenced than one only a single channel
+    // reached at the same rank; then the title, then the id, so that the
+    // remaining ties resolve the same way every time. See search.ts over its
+    // ORDER BY for why "the same way every time" is worth spending a sort key
+    // on: this list decides which pages survive the limit, and it used to be
+    // settled by whichever UUID sorted first.
     const ordered = [...fused.entries()].sort(
-      (a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]),
+      (a, b) =>
+        b[1].score - a[1].score ||
+        b[1].channels.size - a[1].channels.size ||
+        (titles.get(a[0]) ?? '').localeCompare(titles.get(b[0]) ?? '') ||
+        a[0].localeCompare(b[0]),
     );
 
     // ---- step 2: permission filtering before ranking -------------------
@@ -205,10 +244,11 @@ export class RetrievalService {
         type: page.type,
         status: page.status,
         version: page.version,
-        passage: passageFor(page.body, terms, semantic.get(pageId)),
+        passage: passageFor(page.body, terms, semantic.get(pageId)?.text),
         score: entry.score,
         channels: [...entry.channels],
         via: null,
+        neighbourOf: [],
       });
     }
 
@@ -218,7 +258,9 @@ export class RetrievalService {
       candidates.push(...this.expand(actorId, candidates, seen, depth, terms, canonicalOnly, request));
     }
 
-    candidates.sort((a, b) => b.score - a.score || a.pageId.localeCompare(b.pageId));
+    candidates.sort(
+      (a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.pageId.localeCompare(b.pageId),
+    );
     return candidates;
   }
 
@@ -261,7 +303,7 @@ export class RetrievalService {
     terms: string[],
     request: RetrieveRequest,
     canonicalOnly: boolean,
-  ): string[] {
+  ): { pageId: string; title: string }[] {
     if (terms.length === 0) return [];
     const base = {
       collectionId: request.collectionId,
@@ -275,6 +317,7 @@ export class RetrievalService {
     };
     const queries = terms.length > 1 ? [terms.join(' '), ...terms] : [...terms];
     const scores = new Map<string, number>();
+    const titles = new Map<string, string>();
     for (const q of queries) {
       let hits: SearchResult[];
       try {
@@ -285,11 +328,17 @@ export class RetrievalService {
       }
       hits.forEach((hit, index) => {
         scores.set(hit.pageId, (scores.get(hit.pageId) ?? 0) + 1 / (RRF_K + index + 1));
+        titles.set(hit.pageId, hit.title);
       });
     }
     return [...scores.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([pageId]) => pageId)
+      .sort(
+        (a, b) =>
+          b[1] - a[1] ||
+          (titles.get(a[0]) ?? '').localeCompare(titles.get(b[0]) ?? '') ||
+          a[0].localeCompare(b[0]),
+      )
+      .map(([pageId]) => ({ pageId, title: titles.get(pageId) ?? '' }))
       .slice(0, LEXICAL_POOL);
   }
 
@@ -300,16 +349,17 @@ export class RetrievalService {
     actorId: string,
     question: string,
     request: RetrieveRequest,
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, { text: string; title: string }>> {
     const hits = await this.embeddings.similar(actorId, {
       question,
       collectionId: request.collectionId,
       limit: SEMANTIC_POOL * 4,
     });
-    const best = new Map<string, string>(); // pageId -> best chunk text, insertion-ordered by score
+    // pageId -> its best chunk, insertion-ordered by score.
+    const best = new Map<string, { text: string; title: string }>();
     for (const hit of hits) {
       if (best.has(hit.pageId)) continue;
-      best.set(hit.pageId, hit.text);
+      best.set(hit.pageId, { text: hit.text, title: hit.title });
       if (best.size >= SEMANTIC_POOL) break;
     }
     return best;
@@ -373,7 +423,12 @@ export class RetrievalService {
     const out: { pageId: string; edge: GraphEdge }[] = [];
     if (page.parentId) out.push({ pageId: page.parentId, edge: 'parent' });
     const children = this.db
-      .prepare("SELECT id FROM pages WHERE parent_id = ? AND status != 'archived' ORDER BY position, id")
+      // By position, then title: siblings share a position far more often than
+      // the tree suggests, and falling back to the id made which child joined
+      // the context under MAX_EXPANDED a matter of which UUID sorted first.
+      .prepare(
+        "SELECT id FROM pages WHERE parent_id = ? AND status != 'archived' ORDER BY position, title, id",
+      )
       .all(page.pageId) as { id: string }[];
     for (const child of children) out.push({ pageId: child.id, edge: 'child' });
     for (const linked of parsePageLinks(page.body)) {
@@ -397,6 +452,9 @@ export class RetrievalService {
     narrowing: Narrowing = {},
   ): RetrievalCandidate[] {
     const added: RetrievalCandidate[] = [];
+    // Every candidate this walk can reach, by id, so an edge that lands on a
+    // page already in the list is recorded on it rather than thrown away.
+    const byId = new Map(candidates.map((c) => [c.pageId, c]));
     let frontier = candidates.map((c) => ({ pageId: c.pageId, score: c.score }));
     for (let level = 0; level < depth && added.length < MAX_EXPANDED; level += 1) {
       const next: { pageId: string; score: number }[] = [];
@@ -405,15 +463,26 @@ export class RetrievalService {
         const source = this.hydrate(actorId, node.pageId, false, narrowing);
         if (!source) continue;
         for (const edge of this.neighbours(source)) {
+          // The edge is real whether or not it brings a new page with it, and
+          // recording it costs nothing. This happens BEFORE the cap and before
+          // the seen check, because both of those are about whether to FETCH a
+          // page, and this is about a page already fetched.
+          const already = byId.get(edge.pageId);
+          if (already && edge.pageId !== node.pageId && !already.neighbourOf.includes(node.pageId)) {
+            already.neighbourOf.push(node.pageId);
+          }
           if (added.length >= MAX_EXPANDED) break;
           if (seen.has(edge.pageId)) continue;
           seen.add(edge.pageId);
           const page = this.hydrate(actorId, edge.pageId, canonicalOnly, narrowing);
           if (!page) continue;
           const score = node.score * EXPANSION_DAMPING;
-          added.push(
-            this.toCandidate(page, score, ['graph'], terms, { fromPageId: node.pageId, edge: edge.edge }),
-          );
+          const candidate = this.toCandidate(page, score, ['graph'], terms, {
+            fromPageId: node.pageId,
+            edge: edge.edge,
+          });
+          added.push(candidate);
+          byId.set(candidate.pageId, candidate);
           next.push({ pageId: page.pageId, score });
         }
       }
@@ -440,6 +509,7 @@ export class RetrievalService {
       score,
       channels: channels.length ? channels : ['graph'],
       via,
+      neighbourOf: [],
     };
   }
 }
@@ -447,10 +517,10 @@ export class RetrievalService {
 // A verbatim window of the published body, for citation. Nothing is
 // paraphrased or generated: the window is the record's own words, with the
 // marks that tell a renderer what to draw removed and the words kept exactly
-// (see `quotableText`, which owns that decision). The chunk the semantic
-// channel matched wins when there is one; otherwise the window is centred on
-// the first content term that appears, and failing that on the opening of the
-// page.
+// (see `quotableText` in plaintext.ts, which owns that decision). The chunk
+// the semantic channel matched wins when there is one; otherwise the window is
+// centred on the first content term that appears, and failing that on the
+// opening of the page.
 export function passageFor(body: string, terms: string[], preferred?: string): string {
   const text = quotableText(preferred ?? body);
   if (!text) return '';
@@ -471,98 +541,6 @@ export function passageFor(body: string, terms: string[], preferred?: string): s
     if (start > 0 && space !== -1 && space < at) start = space + 1;
   }
   return clip(text.slice(start), PASSAGE_LENGTH);
-}
-
-// What "verbatim" means when the source is structured.
-//
-// A page body is Markdown, and `collapse` used to flatten it to one line by
-// replacing every run of whitespace with a space. That is right for the
-// whitespace and wrong for everything else: the newline was the only thing
-// separating a heading from the paragraph beneath it, so `\n## Scope\n` became
-// ` ## Scope ` sitting inside the middle of a quotation. Two testers reported
-// the result — one saw `## Scope` printed as part of what "the record says",
-// the other saw a page footer and a raw `/pages/<uuid>` link quoted as though
-// they were policy. Both looked like rendering bugs and neither was: no
-// renderer can reach a mark that is already mid-line inside a `“…”`.
-//
-// The decision this makes, since there is one to make: a quotation is the
-// record's WORDS, not its punctuation-for-machines. So the marks that exist to
-// tell a renderer what to draw are removed, and the words they were wrapped
-// around are kept exactly. Nothing is paraphrased, reordered, or summarised —
-// remove the marks from any line below and the words that remain are the words
-// on the page, in the order they were written.
-//
-// Two consequences worth stating rather than discovering later:
-//
-//   * A LINK KEEPS ITS TEXT AND LOSES ITS TARGET. `[the schedule](…/pages/8f14)`
-//     quotes as "the schedule". A URL is an instruction to a browser, not
-//     something a policy says, and it was the concrete thing one tester was
-//     shown as the record's own words.
-//   * A TABLE IS QUOTED AS A ROW OF CELLS joined by en-dashes, which is lossy
-//     and is the honest best available: a quotation is one passage of running
-//     text, and a table is not. The page itself renders it as a table, and the
-//     citation points there.
-//
-// Block boundaries become sentence boundaries, because that is what they are
-// when the structure is taken away — otherwise a heading runs into the
-// paragraph under it and produces a sentence nobody wrote.
-export function quotableText(markdown: string): string {
-  const out: string[] = [];
-  let inFence = false;
-  for (const raw of markdown.split('\n')) {
-    const line = raw.trim();
-    if (/^(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    // Inside a fenced block the content is kept as written: it is somebody's
-    // example, and mangling it would be its own falsehood.
-    if (inFence) {
-      if (line) out.push(line);
-      continue;
-    }
-    if (!line) continue;
-    // A rule separates; it says nothing. This is the page footer that was
-    // being quoted as one more clause of the policy.
-    if (/^([-*_])\s*(\1\s*){2,}$/.test(line)) continue;
-    // A table's alignment row is pure syntax.
-    if (/^\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes('-')) continue;
-
-    let text = line;
-    if (/^\|.*\|?$/.test(text) && text.includes('|')) {
-      text = text
-        .replace(/^\||\|$/g, '')
-        .split(/(?<!\\)\|/)
-        .map((cell) => cell.replace(/\\\|/g, '|').trim())
-        .filter(Boolean)
-        .join(' — ');
-    }
-    text = text
-      .replace(/^#{1,6}\s+/, '') // heading
-      .replace(/^>\s?/, '') // blockquote
-      .replace(/^([-*+]|\d+[.)])\s+/, ''); // list item
-    text = inlineWords(text);
-    if (text) out.push(endsSentence(text) ? text : `${text}.`);
-  }
-  return collapse(out.join(' '));
-}
-
-/** Inline marks removed, the words they wrapped kept exactly. */
-function inlineWords(text: string): string {
-  return text
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // image: its alt text, never its src
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // link: its text, never its target
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/(\*\*|__)(.+?)\1/g, '$2')
-    .replace(/(?<![\w*])(\*|_)(?!\s)([^*_]+?)(?<!\s)\1(?![\w*])/g, '$2');
-}
-
-function endsSentence(text: string): boolean {
-  return /[.!?:;,—-]$/.test(text);
-}
-
-function collapse(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
 }
 
 function clip(text: string, max: number): string {

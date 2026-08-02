@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { indexableText } from './plaintext.js';
 
 // Semantic retrieval over the PUBLISHED record (DATA-BACKBONE.md §5, step 1).
 // Like the FTS index, this table is a derived structure per principle 1:
@@ -95,8 +96,16 @@ function hashToken(token: string): number {
 // dimension and produce a small spurious similarity — the standard cost of the
 // hashing trick, reduced but not removed by the dimension count. Swap in a
 // real provider and the rest of retrieval is unchanged.
+// The version in the name is not decoration. Every stored vector carries the
+// name of the provider that made it, and a query only ever matches vectors made
+// by the provider it is running — which is how a provider swap is caught and
+// repaired instead of silently mixing two vector spaces. That machinery covers
+// a change of MODEL; it also has to cover a change in what the model is fed.
+// v2 is v1 fed the page's words instead of its raw Markdown (see `derive`), so
+// every v1 row was made from different input and is not comparable with a v2
+// query. Bumping the name is what tells an existing record to re-derive.
 export const localEmbeddingProvider: EmbeddingProvider = {
-  name: 'local-hashed-bow-v1',
+  name: 'local-hashed-bow-v2',
   dimensions: LOCAL_DIMENSIONS,
   async embed(texts: string[]): Promise<number[][]> {
     return texts.map((text) => embedLocal(text, LOCAL_DIMENSIONS));
@@ -207,6 +216,8 @@ export interface SemanticHit {
   chunkIndex: number;
   text: string;
   score: number;
+  /** The page's title, carried so ties can be broken on content, not on id. */
+  title: string;
 }
 
 export interface SemanticQuery {
@@ -308,7 +319,7 @@ export class EmbeddingStore {
     }
     const rows = this.db
       .prepare(
-        `SELECT e.page_id, e.chunk_index, e.text, e.vector FROM embeddings e
+        `SELECT e.page_id, e.chunk_index, e.text, e.vector, p.title FROM embeddings e
          JOIN pages p ON p.id = e.page_id AND p.current_version = e.version
          JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
          WHERE e.provider = ? AND e.dimensions = ? AND p.status != 'archived' ${clause}`,
@@ -325,9 +336,19 @@ export class EmbeddingStore {
         chunkIndex: row.chunk_index as number,
         text: row.text as string,
         score,
+        title: row.title as string,
       });
     }
-    hits.sort((a, b) => b.score - a.score || a.pageId.localeCompare(b.pageId) || a.chunkIndex - b.chunkIndex);
+    // Ties fall to the title before the id, for the reason set out over the
+    // ORDER BY in search.ts: cosine ties are common, the id is a UUID, and a
+    // record should answer the same question the same way twice.
+    hits.sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.title.localeCompare(b.title) ||
+        a.chunkIndex - b.chunkIndex ||
+        a.pageId.localeCompare(b.pageId),
+    );
     return hits.slice(0, Math.min(Math.max(query.limit ?? 25, 1), 200));
   }
 
@@ -359,7 +380,15 @@ export class EmbeddingStore {
 
     // A page with a title but no body is still worth finding, so the title
     // stands in as its single chunk.
-    const chunks = chunkText(row.body);
+    //
+    // Chunked from the page's WORDS, not from its Markdown — the same text the
+    // search index is built from and a citation quotes (plaintext.ts). It
+    // matters more here than anywhere: this provider hashes tokens into
+    // buckets, so `#/pages/8f14e45f-…` contributed a handful of hex tokens to
+    // the vector of every page that linked anywhere, and two pages that linked
+    // to nothing in common still shared whatever those tokens collided with.
+    // That is similarity manufactured out of punctuation.
+    const chunks = chunkText(indexableText(row.body));
     const texts = chunks.length ? chunks : [row.title];
     // The stored text is the chunk itself — that is what a citation quotes —
     // while the vector is derived from the title plus the chunk, because a

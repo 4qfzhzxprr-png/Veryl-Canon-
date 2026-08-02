@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
+import { indexableText } from './plaintext.js';
 
 // Full-text search over the record (CORE-PLAN.md Epic A scope, FEATURES.md
 // "Search"). The index is a derived structure per DATA-BACKBONE.md §2:
@@ -31,11 +32,37 @@ import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
 // that have published one. Archived pages leave search entirely, because they
 // have left the record. Permission filtering is unchanged and is where it has
 // always been: the membership join in `search` below.
+//
+// HOW WORDS ARE CUT UP, AND WHY IT IS NOT THE DEFAULT.
+//
+// FTS5's default tokenizer matches whole words and nothing else, so a policy
+// that says "records are RETAINED for seven years" is invisible to a question
+// about "RETENTION", and one that says a claim "is DECIDED within thirty days"
+// is invisible to "who DECIDES". That is not a subtle relevance problem; it is
+// the page not existing. The Porter stemmer folds both ends of each of those
+// pairs to a common stem, at both index and query time, so the question and
+// the page meet.
+//
+// It is applied over unicode61 rather than instead of it, because Porter alone
+// does not fold case or strip diacritics — it is a suffix stemmer, not a
+// tokenizer. `remove_diacritics 2` is the modern form of that folding and the
+// one a corpus with European names needs.
+//
+// The cost is honest and worth stating: stemming conflates words that are not
+// the same. "Universal" and "universe" share a stem. In a policy corpus that
+// trade is plainly worth making — the words people write about the same rule
+// differ far more often by inflection than by anything else — but it does mean
+// the index can no longer be used to prove a page contains a literal word.
+// Nothing here does that; the record is the source of truth for what a page
+// says, and this index is a derived structure that only ever suggests pages.
+const TOKENIZER = 'porter unicode61 remove_diacritics 2';
+
 const SEARCH_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS page_search USING fts5(
   page_id UNINDEXED,
   title,
-  body
+  body,
+  tokenize = '${TOKENIZER}'
 );
 `;
 
@@ -49,6 +76,56 @@ const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical',
 // below Canonical because the flag is real, and above everything unreviewed
 // because it earned the mark and has only grown old.
 const STATUS_RANK = `CASE p.status WHEN 'canonical' THEN 0 WHEN 'needs_update' THEN 1 ELSE 2 END`;
+
+// Relevance, once standing has spoken. bm25() takes one weight per column in
+// declaration order — page_id, title, body — and returns a negative number, so
+// ascending order is best-first and a larger weight pulls harder.
+//
+// A TITLE MATCH IS WORTH MORE THAN A BODY MATCH, and the default weighting says
+// they are worth the same. That default is wrong here for a reason particular
+// to this corpus rather than to search in general: the titles in a record are
+// not headlines somebody wrote to attract a reader. They are the names of
+// obligations — "Retention periods: vendor contracts", "Retention jobs and
+// their schedule" — chosen by the person who owns the page to say what the page
+// IS. A page whose title matches the question is usually the page about the
+// question; a page whose body matches it is often merely a page that mentions
+// it in passing, and in a policy corpus almost everything mentions almost
+// everything in passing.
+//
+// The number is measured, not guessed. Swept against the labelled set in
+// scripts/eval-retrieval.ts, primary@1 — how often the top page is the single
+// best one — climbs from 70.7% at flat weights to 78.0% at 3, and then does not
+// move again anywhere out to 20. Nothing gets worse at the top end either, and
+// the reason is worth knowing rather than reading as a licence to turn it up:
+// standing is sorted BEFORE relevance, and the pool is capped, so this weight
+// only ever reorders pages that already share a status and already made the
+// cut. It cannot pull a Draft above a Canonical page however large it is.
+//
+// 3 is taken as the low end of the plateau rather than a point inside it. The
+// plateau is flat on THIS corpus; the smallest weight that reaches it is the
+// least fitted to it.
+//
+// The page_id column is UNINDEXED and can never match, so its weight is zero to
+// say so rather than to do anything.
+const RELEVANCE = 'bm25(page_search, 0.0, 3.0, 1.0)';
+
+// WHY THE ORDER BY DOES NOT STOP AT RELEVANCE.
+//
+// Two pages can score identically — in a policy corpus they routinely do, since
+// half of it is written from the same handful of sentences — and SQL with no
+// further key returns them in whatever order the query plan happens to produce.
+// Here that order followed the join against `pages`, whose primary key is a
+// UUID, so which of two equally-relevant pages came first depended on a random
+// identifier. Two copies of the same record answered the same question with
+// different top results, and neither was wrong.
+//
+// That is a defect in a product whose answers get cited in an audit file. So
+// ties fall to the title, then to the id: the title because it is content —
+// somebody wrote it, a reader can see it, and the resulting order is the one
+// they could predict — and the id last, only to guarantee a total order. This
+// is not a claim that alphabetical is more relevant. Among genuine ties there
+// is no relevance judgement left to make; what remains to decide is whether the
+// same record answers the same question the same way twice, and it should.
 
 export interface SearchResult {
   pageId: string;
@@ -87,6 +164,29 @@ export interface SearchFilter {
 export class SearchIndex {
   constructor(private readonly db: DatabaseSync) {
     db.exec(SEARCH_SCHEMA);
+    // An index built by an earlier version of this file was cut up by a
+    // different tokenizer, and `CREATE VIRTUAL TABLE IF NOT EXISTS` leaves it
+    // exactly as it was — so a record that already exists would keep answering
+    // with the old rules for ever, and nothing would say so.
+    //
+    // This is not a migration and deliberately does not go in db.ts. The
+    // migrations there are append-only changes to the RECORD, which is
+    // authoritative and must never be rebuilt. This table is a derived
+    // structure: the honest repair for "it was built wrong" is to throw it away
+    // and derive it again from the pages, which costs a query per page once, at
+    // open, and cannot lose anything that was not already recoverable.
+    if (!this.tokenizerMatches()) {
+      this.db.exec('DROP TABLE page_search');
+      this.db.exec(SEARCH_SCHEMA);
+      this.rebuildIndex();
+    }
+  }
+
+  private tokenizerMatches(): boolean {
+    const row = this.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'page_search'")
+      .get() as { sql: string | null } | undefined;
+    return (row?.sql ?? '').includes(TOKENIZER);
   }
 
   /**
@@ -146,23 +246,25 @@ export class SearchIndex {
       )
       .get(pageId) as { title: string; body: string } | undefined;
     if (!row) return;
-    this.db
-      .prepare('INSERT INTO page_search (page_id, title, body) VALUES (?, ?, ?)')
-      .run(pageId, row.title, row.body);
+    this.insert.run(pageId, row.title, indexableText(row.body));
   }
 
   // Drops and rebuilds the whole index from the record. The index is never
   // the source of truth; this proves it.
   rebuildIndex(): void {
     this.db.exec('DELETE FROM page_search');
-    this.db
+    const rows = this.db
       .prepare(
-        `INSERT INTO page_search (page_id, title, body)
-         SELECT p.id, p.title, COALESCE(v.body, '') FROM pages p
+        `SELECT p.id AS id, p.title AS title, COALESCE(v.body, '') AS body FROM pages p
          LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          WHERE p.status != 'archived'`,
       )
-      .run();
+      .all() as { id: string; title: string; body: string }[];
+    for (const row of rows) this.insert.run(row.id, row.title, indexableText(row.body));
+  }
+
+  private get insert() {
+    return this.db.prepare('INSERT INTO page_search (page_id, title, body) VALUES (?, ?, ?)');
   }
 
   // Permission-filtered search: results come only from collections where
@@ -237,7 +339,7 @@ export class SearchIndex {
          JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
          ${second}
          WHERE page_search MATCH ? ${clauses.join(' ')}
-         ORDER BY ${STATUS_RANK}, bm25(page_search)
+         ORDER BY ${STATUS_RANK}, ${RELEVANCE}, p.title, p.id
          LIMIT ?`,
       )
       .all(actorId, ...(filter.alsoVisibleTo ? [filter.alsoVisibleTo] : []), match, ...params, limit) as Record<

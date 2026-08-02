@@ -435,6 +435,89 @@ test('ask: graph-expanded neighbours ride on their anchor, not on their own word
   );
 });
 
+test('ask: a neighbour of an anchor is cited whether or not the question also finds it', async () => {
+  // THE BUG THIS IS HERE FOR: whether a child procedure was cited depended on
+  // whether the question's own words happened to reach it. Miss it, and it
+  // rode into the answer on its parent. Hit it, and it became a candidate in
+  // its own right, failed the topical gate on its own two words, and fell out
+  // of the answer altogether — so making the search index better at finding it
+  // made the answer worse. The edge to its parent was in the record the whole
+  // time and is what decides now.
+  //
+  // Two runs over identical records. The only difference is one word in the
+  // child's title, which decides whether the question reaches it directly.
+  const run = async (childTitle: string) => {
+    const { store, marc, iris, collection } = setup();
+    const policy = publishCanonical(
+      store,
+      marc.id,
+      iris.id,
+      collection.id,
+      'Contractor access policy',
+      'Contractors may enter the building only with an escort.',
+    );
+    const child = publishCanonical(
+      store,
+      marc.id,
+      iris.id,
+      collection.id,
+      childTitle,
+      'Step one: the duty officer countersigns the escort register. Step two: the escort stays for the whole visit.',
+      policy.id,
+    );
+    await store.embeddings.ready();
+    const answer = await store.ask(marc.id, { question: 'Which contractors may enter the building?' });
+    const candidates = await store.retrieve(marc.id, {
+      question: 'Which contractors may enter the building?',
+      canonicalOnly: true,
+    });
+    return {
+      cited: answer.citations.map((c) => c.pageId),
+      policyId: policy.id,
+      childId: child.id,
+      childVia: candidates.find((c) => c.pageId === child.id)?.via ?? null,
+    };
+  };
+
+  // Out of reach of the question: it arrives through the edge.
+  const unreachable = await run('Escort register countersigning');
+  assert.equal(unreachable.childVia?.edge, 'child', 'this one really did arrive through the tree');
+  assert.ok(unreachable.cited.includes(unreachable.childId));
+
+  // In reach of the question: it arrives on its own, and is cited all the same.
+  const reachable = await run('Contractor escort procedure');
+  assert.equal(reachable.childVia, null, 'this one was found directly');
+  assert.ok(
+    reachable.cited.includes(reachable.childId),
+    'being easier to find must not take a page out of the answer',
+  );
+});
+
+test('isOnTopic: the corpus statistic is used where it says something and counted where it does not', () => {
+  const question = 'How long are client records retained?';
+  const text = 'Client data retention policy. Client records are retained for ten years.';
+
+  // A record of two pages, both about exactly this. Every word the question
+  // uses that the record knows is on both pages, so every one of them weighs
+  // nothing; "long" is on neither, so it weighs everything. Judged by weight
+  // alone this question — answered by the record twice over — scores zero.
+  const uniform = { total: 2, df: new Map([['client', 2], ['record', 2], ['retain', 2], ['long', 0]]) };
+  assert.equal(isOnTopic(question, text, uniform), true, 'when nothing can be told apart, count');
+
+  // The same shape of question against a corpus that CAN tell its words apart:
+  // the weighting is back on, and a question made mostly of words this record
+  // does not use is refused even though it covers two of them.
+  const informative = {
+    total: 400,
+    df: new Map([['polici', 380], ['approv', 40], ['submarin', 0], ['procur', 0]]),
+  };
+  assert.equal(
+    isOnTopic('What is our policy on submarine procurement?', 'A policy about approvals.', informative),
+    false,
+    'two of the commonest words in the corpus is not a topic match',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Contradiction awareness — DATA-BACKBONE.md §7, "Answers must never smooth a
 // contradiction". An answer that reads two disagreeing passages into one
