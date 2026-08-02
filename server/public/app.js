@@ -281,6 +281,29 @@ function esc(s) {
   ));
 }
 
+/**
+ * A search snippet, which is the one string the server sends with markup in
+ * it: SQLite's FTS5 `snippet()` wraps each matched term in `<mark>…</mark>`.
+ * Escaping the whole thing printed those tags as literal text in every result
+ * — "…<mark>unreadable</mark> <mark>member</mark> id…" — which is what a
+ * contributor saw on the screen she touches most.
+ *
+ * The bug is older than it looks: it was reachable only once search started
+ * returning matches for the things people actually type, so it went unseen
+ * while search was the weaker half of the product.
+ *
+ * Everything is still escaped. The string is SPLIT on the two tags the server
+ * is known to emit, every piece between them is escaped as text, and only the
+ * tags themselves are re-emitted as markup — so a page whose body genuinely
+ * contains `<script>` is inert here, exactly as before.
+ */
+function highlightedSnippet(snippet) {
+  return String(snippet ?? '')
+    .split(/(<\/?mark>)/)
+    .map((part) => (part === '<mark>' || part === '</mark>' ? part : esc(part)))
+    .join('');
+}
+
 function fmtDateTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -1007,7 +1030,7 @@ function wireSearch() {
             const snippet = it.snippet ?? it.excerpt ?? '';
             return `<a class="search-hit" href="#/pages/${esc(id)}">
               <span class="search-hit-title">${esc(title)}</span> ${status} ${type}
-              ${snippet ? `<span class="search-snippet">${esc(snippet)}</span>` : ''}
+              ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
             </a>`;
           }).join('');
         }
@@ -1948,6 +1971,13 @@ function summarizeChange(page, draft) {
   const proposed = draft.fields ?? {};
   return {
     hasPublished: Boolean(current),
+    // The text itself, for the case where there is nothing to diff it against.
+    // A first version has no published body, so the page below the panel is the
+    // "Nothing published yet" empty state — and an approver reading a panel
+    // that says "the whole of the text below is new" was being pointed at an
+    // invitation to write the page they were about to approve. They approved it
+    // without ever seeing a word of it.
+    proposedBody: draft.body ?? '',
     baseVersion: page.currentVersion ?? null,
     nextVersion: (page.currentVersion ?? 0) + 1,
     rows,
@@ -2007,7 +2037,11 @@ function reviewChangeHTML(change) {
     ? `<p class="review-change-title">Title: <del>${esc(change.titleFrom)}</del> → <ins>${esc(change.titleTo)}</ins></p>`
     : '';
   const body = !change.hasPublished
-    ? '<p class="muted">There is no published version to compare against; the whole of the text below is new.</p>'
+    ? `<p class="muted">Nothing has been published on this page yet, so there is nothing to compare against:
+         this is the whole of it, and approving publishes it as v${change.nextVersion}.</p>
+       ${change.proposedBody.trim()
+         ? `<article class="doc-body review-proposed">${renderMarkdown(change.proposedBody)}</article>`
+         : '<p class="muted">The draft has no body text.</p>'}`
     : change.changed
       ? diffTableHTML(change.rows, `Published v${change.baseVersion}`, `Proposed v${change.nextVersion}`)
       : '<p class="muted">The body is unchanged.</p>';
@@ -2214,7 +2248,17 @@ async function viewPage(id) {
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
 
-        ${current ? `<article class="doc-body">${renderMarkdown(current.body)}</article>` : `
+        ${current ? `<article class="doc-body">${renderMarkdown(current.body)}</article>` : inReview ? `
+          <div class="empty-state">
+            <h2>Nothing published yet</h2>
+            ${/* A page in review HAS text — it is in the panel above, which is
+                  what approving publishes. Offering "Write the first draft"
+                  here invited the approver to overwrite the very draft they
+                  were reviewing, and it is the one action that is wrong for
+                  everybody standing on this page right now. */ ''}
+            <p>The text waiting for approval is under <a href="#review-change">What is being approved</a>, above.
+              It becomes v1 of this page when it is approved.</p>
+          </div>` : `
           <div class="empty-state">
             <h2>Nothing published yet</h2>
             <p>This page has no published version. ${isArchived ? '' : 'Open the editor to write the first draft, then publish it.'}</p>
@@ -3316,6 +3360,41 @@ async function viewEditor(id) {
   const actorOptions = (selected) => `<option value="">—</option>` + people.map((a) =>
     `<option value="${esc(a.id)}" ${a.id === selected ? 'selected' : ''}>${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('');
 
+  // WHO MAY BE NAMED AS THE APPROVER.
+  //
+  // The picker used to offer the whole directory, and `approve` accepts only
+  // somebody holding the approve role on this collection. A contributor named
+  // the senior colleague she would actually have walked over to, was told
+  // "Waiting on the named approver, Iris Cho", and Iris found Approve greyed
+  // out and her own queue empty — the page sat in a state nobody could act on
+  // and nothing on either screen said why. The product already knows this
+  // distinction; it simply was not applied where the choice is made.
+  //
+  // Same rule as the server's, read from the collection's own membership. If
+  // the membership cannot be read — a rare view-only edge — the picker falls
+  // back to the full directory rather than offering nothing, because an empty
+  // approver list would be a worse dead end than a wrong name.
+  let approvers = null;
+  try {
+    const members = await api('GET', `/collections/${page.collectionId}/members`);
+    approvers = members.filter((m) => ROLES.indexOf(m.role) >= ROLES.indexOf('approve'));
+  } catch { approvers = null; }
+  const approverOptions = (selected) => {
+    if (!approvers) return actorOptions(selected);
+    const named = approvers.map((m) => {
+      const who = people.find((a) => a.id === m.actorId) ?? {};
+      return { id: m.actorId, name: who.name ?? m.actorName ?? m.actorId };
+    });
+    // Somebody already named who has since lost the role stays in the list, so
+    // the page does not silently forget who it was waiting on.
+    if (selected && !named.some((n) => n.id === selected)) {
+      const who = people.find((a) => a.id === selected);
+      named.push({ id: selected, name: `${who?.name ?? selected} (no longer holds approve)` });
+    }
+    return `<option value="">—</option>` + named.map((n) =>
+      `<option value="${esc(n.id)}" ${n.id === selected ? 'selected' : ''}>${esc(n.name)}</option>`).join('');
+  };
+
   app.innerHTML = `
     <div class="page-wide editor">
       <p class="breadcrumb"><a href="#/pages/${esc(id)}">← Back to page</a></p>
@@ -3349,7 +3428,8 @@ async function viewEditor(id) {
           <div class="panel">
             <h2 class="h-small">Fields</h2>
             ${rules.owner ? `<label>Owner <select name="ownerId">${actorOptions(draft.fields.ownerId)}</select></label>` : ''}
-            ${rules.approver ? `<label>Approver <select name="approverId">${actorOptions(draft.fields.approverId)}</select></label>` : ''}
+            ${rules.approver ? `<label>Approver <select name="approverId">${approverOptions(draft.fields.approverId)}</select></label>
+            <p class="muted">${approvers ? `Only ${approvers.length === 1 ? 'the one person' : `the ${approvers.length} people`} who hold the approve role here can be named.` : 'Naming somebody without the approve role on this collection will leave the page waiting on somebody who cannot act.'}</p>` : ''}
             ${rules.effectiveDate ? `<label>Effective date <input type="date" name="effectiveDate" value="${esc(draft.fields.effectiveDate ?? '')}"></label>
             ${/* A date earlier than the page's own first publication is usually
                   legitimate — a policy adopted before Canon existed — but the

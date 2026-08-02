@@ -168,6 +168,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 .search-hit:hover { background: var(--surface-2); text-decoration: none; }
 .search-hit-title { font-weight: 600; }
 .search-snippet { display: block; color: var(--muted); font-size: 0.85rem; margin-top: 0.15rem; }
+/* The matched terms, which FTS5 wraps in <mark>. The default UA yellow is far
+   too loud against a muted snippet and reads as a highlighter pen; this is the
+   same emphasis the rest of the product uses for "this is the bit you asked
+   about" — weight and colour, not a block of paint. */
+.search-snippet mark { background: none; color: var(--text); font-weight: 600; }
 .search-empty { padding: 0.7rem 0.9rem; color: var(--muted); }
 
 /* ---------- layout ---------------------------------------------------- */
