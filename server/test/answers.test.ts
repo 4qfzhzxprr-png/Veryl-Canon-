@@ -1287,3 +1287,77 @@ test('ask: what the record stated is on the audit log, an asserted conflict mark
   // asks of one of these events six months later, so the log answers it.
   assert.deepEqual(event!.details.disagreementAsserted, [marc.id]);
 });
+
+// A page's standing must not depend on how the question was phrased.
+//
+// A compliance director asked one question three ways. Two phrasings pulled
+// both sides of an asserted conflict into the answer and he was warned; the
+// third — "the one I would actually use" — cited one side only and said
+// nothing, while the record held a written assertion that the number was
+// disputed. `disagreement` needs both sides so it can quote both; `disputed`
+// is the standing itself, and it is true whenever the page is cited.
+test('ask: a contested page says so even when only its own side is cited', async () => {
+  const { store, marc, iris, collection } = setup();
+  const schedule = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Records Retention Schedule',
+    'Claims and appeals records are kept for seven years from final determination.',
+  );
+  const platform = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Data Retention in the Platform',
+    'A scheduled job in the claims platform deletes stored artefacts at twenty-four months.',
+  );
+  store.assertRelation(marc.id, schedule.id, {
+    toPageId: platform.id,
+    kind: 'conflicts_with',
+    note: 'Seven years on the schedule against twenty-four months in the platform. One is wrong.',
+  });
+
+  // A question that reaches only the schedule.
+  const oneSided = await store.ask(marc.id, { question: 'final determination claims appeals kept' });
+  assert.equal(oneSided.refused, false);
+  const cited = oneSided.citations.find((c) => c.pageId === schedule.id);
+  assert.ok(cited, `the schedule should be cited: ${oneSided.citations.map((c) => c.title).join(', ')}`);
+  assert.ok(cited!.disputed, 'a contested page carries its standing however the question was phrased');
+  assert.equal(cited!.disputed!.assertedByName, 'Marc');
+  assert.match(cited!.disputed!.note, /twenty-four months/);
+  assert.deepEqual(cited!.disputed!.withTitles, ['Data Retention in the Platform']);
+  // And the prose says it too, for a reader who takes the words and leaves the
+  // cards behind.
+  assert.match(oneSided.answer!, /contested in the record/);
+
+  // The two-sided panel is unchanged and still the stronger form.
+  const bothSides = await store.ask(marc.id, { question: 'how long are claims records retained' });
+  if (bothSides.disagreement) {
+    assert.ok(bothSides.disagreement.pageIds.includes(schedule.id));
+    assert.ok(bothSides.disagreement.pageIds.includes(platform.id));
+  }
+});
+
+test('ask: a conflict with a page the asker cannot see is disclosed without naming it', async () => {
+  const { db, store, dana, marc, iris, collection } = setup();
+  const visible = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Retention in this collection',
+    'Claims records are kept for seven years from final determination here.',
+  );
+  // A collection Marc holds no role in. Iris admins it and Dana writes there,
+  // because the approver may not submit their own draft.
+  const secret = store.createCollection(iris.id, { name: 'Restricted' });
+  store.setMember(iris.id, secret.id, dana.id, 'edit');
+  const hidden = publishCanonical(store, dana.id, iris.id, secret.id, 'Hidden rule', 'A different period applies.');
+  store.assertRelation(iris.id, hidden.id, {
+    toPageId: visible.id,
+    kind: 'conflicts_with',
+    note: 'These disagree about the claims period.',
+  });
+  assert.ok(db);
+
+  const answer = await store.ask(marc.id, { question: 'final determination claims kept seven' });
+  const cited = answer.citations.find((c) => c.pageId === visible.id);
+  assert.ok(cited?.disputed, 'the page Marc can see still declares that it is contested');
+  assert.deepEqual(cited!.disputed!.withTitles, [], 'the page he cannot see is not named');
+  assert.equal(cited!.disputed!.someWithheld, true);
+  assert.ok(!JSON.stringify(answer).includes('Hidden rule'), 'nothing discloses the withheld page');
+});

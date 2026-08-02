@@ -4629,8 +4629,20 @@ function citationsHTML(citations, disputed = new Set()) {
           <span class="citation-title">${esc(c.title)}</span>
           ${citationBadge(c)}
           ${c.version ? `<span class="citation-version">v${esc(c.version)}</span>` : ''}
-          ${disputed.has(c.pageId)
-            ? '<span class="citation-disputed" title="This page is one of the two the record answers differently from. Both are cited; neither has been chosen.">in disagreement</span>'
+          ${/* The pill is drawn from the CITATION, so it is a property of the
+                page rather than of this query. It used to come from the set of
+                pages in this answer's disagreement, which meant the same page,
+                at the same version, showed "in disagreement" in one answer and
+                nothing at all in another — the standing changing with the
+                phrasing of the question. */ ''}
+          ${c.disputed
+            ? `<span class="citation-disputed" title="${esc(
+                (c.disputed.withTitles.length
+                  ? `The record holds an asserted conflict between this page and ${c.disputed.withTitles.join(' and ')}.`
+                  : 'The record holds an asserted conflict against this page.') +
+                  ` ${c.disputed.assertedByName} asserted it: “${c.disputed.note}”` +
+                  (disputed.has(c.pageId) ? ' Both sides are cited here; neither has been chosen.' : ''),
+              )}">${disputed.has(c.pageId) ? 'in disagreement' : 'contested'}</span>`
             : ''}
         </span>
         ${c.snippet ? `<span class="citation-snippet">${esc(c.snippet)}</span>` : ''}

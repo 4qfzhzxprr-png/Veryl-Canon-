@@ -56,6 +56,27 @@ export interface Citation {
    * record never told it. Render nothing instead.
    */
   status?: PageStatus;
+  /**
+   * Set when the record holds an asserted conflict touching this page — a fact
+   * about the PAGE, true every time it is cited, not a fact about this answer's
+   * retrieval. `disagreement` is the stronger two-sided form and fires only
+   * when both sides were cited so both can be quoted; this is the standing that
+   * must never depend on how somebody phrased their question.
+   *
+   * A compliance director found the gap by asking one question three ways: two
+   * phrasings pulled both sides of a conflict into the answer and warned him,
+   * and the third — the one he said he would actually use — cited one side and
+   * said nothing, while the record held a written assertion that the number was
+   * disputed.
+   */
+  disputed?: {
+    /** The counterpart pages this asker may see. May be empty. */
+    withTitles: string[];
+    /** True when at least one counterpart is outside what this asker may read. */
+    someWithheld: boolean;
+    assertedByName: string;
+    note: string;
+  };
 }
 
 /**
@@ -351,6 +372,14 @@ export interface AnswerGenerator {
     sourceDisagreement?: SourceDisagreement | null;
   }): GeneratedAnswer | null;
 }
+
+// Said when a cited page is disputed but the other side is not in this answer,
+// so there is nothing to quote against it — only a standing to disclose.
+// Deliberately different words from DISAGREEMENT_LEAD: that one means "here are
+// two answers, read both"; this one means "somebody has recorded that this is
+// contested, and you are seeing one side of it".
+export const DISPUTED_LEAD =
+  'One of the pages below is contested in the record, and this answer quotes only its side of it.';
 
 // How many passages an answer may draw on.
 export const MAX_CITED_PASSAGES = 3;
@@ -1206,6 +1235,42 @@ export interface StatedContradictions {
  */
 export interface AnswerRecord {
   statedOver(pageIds: readonly string[]): StatedContradictions;
+  /**
+   * Whether each of these pages is under an asserted conflict AT ALL — as a
+   * property of the page, not of this answer's retrieval.
+   *
+   * `statedOver` requires BOTH ends of a conflict to be among the pages cited,
+   * because the two-sided panel quotes both and Canon quotes what it warns
+   * about. That is right for the panel and wrong as the only signal, and a
+   * compliance director found exactly where it breaks: of three ways of asking
+   * the same question, two pulled both sides in and warned him, and the third —
+   * the phrasing he said he would actually use — cited one side and said
+   * nothing. "The record holds a written assertion that this number is
+   * disputed, and that framing sails straight past it." A page's standing must
+   * not depend on how somebody phrased a question.
+   *
+   * The other end is checked against the ASKER's own permissions, because this
+   * is the one place the both-ends rule was also doing permission work. It
+   * discloses nothing new: a reader who can see this page can already open it
+   * and read the same conflict panel, so saying it in an answer only saves them
+   * the trip. Where the other end is one they cannot see, the conflict is
+   * reported without naming it — that a page is disputed is a fact about a page
+   * they hold, and it is exactly the fact they most need before acting on it.
+   */
+  disputedAmong(actorId: string, pageIds: readonly string[]): Map<string, PageDispute>;
+}
+
+/** One page's standing: is what it says contradicted somewhere in the record? */
+export interface PageDispute {
+  pageId: string;
+  /** The other pages, where the asker may see them. Empty when none are visible. */
+  withPageIds: string[];
+  withTitles: string[];
+  /** True when at least one counterpart is outside what this asker may read. */
+  someWithheld: boolean;
+  assertedByName: string;
+  assertedAt: string;
+  note: string;
 }
 
 /**
@@ -1223,6 +1288,64 @@ export interface AnswerRecord {
  */
 export class StoredAnswerRecord implements AnswerRecord {
   constructor(private readonly db: DatabaseSync) {}
+
+  /**
+   * A conflict touching any of these pages, whichever end they sit on, with the
+   * counterpart resolved only where this asker holds a role in its collection —
+   * the same membership test every other read applies, in the SQL that selects
+   * the rows rather than after them.
+   */
+  disputedAmong(actorId: string, pageIds: readonly string[]): Map<string, PageDispute> {
+    const unique = [...new Set(pageIds)];
+    if (unique.length === 0) return new Map();
+    const holes = unique.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT r.from_page_id, r.to_page_id, r.note, r.asserted_at,
+                a.name AS asserted_by_name,
+                pf.title AS from_title, pt.title AS to_title,
+                EXISTS (SELECT 1 FROM collection_members m
+                         WHERE m.collection_id = pf.collection_id AND m.actor_id = ?) AS from_visible,
+                EXISTS (SELECT 1 FROM collection_members m
+                         WHERE m.collection_id = pt.collection_id AND m.actor_id = ?) AS to_visible
+           FROM page_relations r
+           JOIN actors a ON a.id = r.asserted_by
+           JOIN pages pf ON pf.id = r.from_page_id
+           JOIN pages pt ON pt.id = r.to_page_id
+          WHERE r.kind = 'conflicts_with'
+            AND (r.from_page_id IN (${holes}) OR r.to_page_id IN (${holes}))
+          ORDER BY r.asserted_at, r.rowid`,
+      )
+      .all(actorId, actorId, ...unique, ...unique) as Record<string, unknown>[];
+
+    const out = new Map<string, PageDispute>();
+    const cited = new Set(unique);
+    for (const row of rows) {
+      for (const [self, other, otherTitle, otherVisible] of [
+        [row.from_page_id, row.to_page_id, row.to_title, row.to_visible],
+        [row.to_page_id, row.from_page_id, row.from_title, row.from_visible],
+      ] as [string, string, string, number][]) {
+        if (!cited.has(self)) continue;
+        const entry = out.get(self) ?? {
+          pageId: self,
+          withPageIds: [],
+          withTitles: [],
+          someWithheld: false,
+          assertedByName: row.asserted_by_name as string,
+          assertedAt: row.asserted_at as string,
+          note: row.note as string,
+        };
+        if (otherVisible) {
+          entry.withPageIds.push(other);
+          entry.withTitles.push(otherTitle);
+        } else {
+          entry.someWithheld = true;
+        }
+        out.set(self, entry);
+      }
+    }
+    return out;
+  }
 
   statedOver(pageIds: readonly string[]): StatedContradictions {
     const unique = [...new Set(pageIds)];
@@ -1493,6 +1616,41 @@ export class AnswerService {
           ...(passage.status ? { status: passage.status } : {}),
         });
       }
+    }
+
+    // ---- a cited page's own standing, whatever the question was ----------
+    //
+    // The two-sided panel above needs both sides cited so it can quote both.
+    // This does not: a page under an asserted conflict is under it whoever
+    // asks and however they phrase it, and a compliance director found the
+    // gap by asking one question three ways and being warned twice.
+    const disputes = this.record.disputedAmong(actorId, citations.map((c) => c.pageId));
+    for (const citation of citations) {
+      const dispute = disputes.get(citation.pageId);
+      if (!dispute) continue;
+      citation.disputed = {
+        withTitles: dispute.withTitles,
+        someWithheld: dispute.someWithheld,
+        assertedByName: dispute.assertedByName,
+        note: dispute.note,
+      };
+    }
+    // Where the two-sided notice did NOT fire, the answer still has to say it
+    // in words — a reader who takes the prose and leaves the cards behind is
+    // the reader this exists for.
+    const undisclosed = citations.filter(
+      (c) => c.disputed && !(disagreement?.pageIds ?? []).includes(c.pageId),
+    );
+    if (undisclosed.length > 0) {
+      const lines = undisclosed.map((c) => {
+        const d = c.disputed!;
+        const others = d.withTitles.length
+          ? ` with ${d.withTitles.join(' and ')}`
+          : ' with another page in the record';
+        const withheld = d.someWithheld && d.withTitles.length ? ' (and with a page you cannot see)' : '';
+        return `“${c.title}” is recorded as conflicting${others}${withheld}. ${d.assertedByName} asserted that, and wrote: “${d.note}”`;
+      });
+      answer = `${DISPUTED_LEAD} ${lines.join(' ')}\n\n${answer}`;
     }
 
     // ---- and so do the other two things the record states ----------------
