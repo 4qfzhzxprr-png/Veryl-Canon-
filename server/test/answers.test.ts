@@ -15,6 +15,7 @@ import {
   SOURCE_DISAGREEMENT_LEAD,
   SUPERSESSION_LEAD,
   detectDisagreement,
+  isOnTopic,
   detectSourceDisagreement,
   detectSupersession,
   extractiveGenerator,
@@ -1360,4 +1361,75 @@ test('ask: a conflict with a page the asker cannot see is disclosed without nami
   assert.deepEqual(cited!.disputed!.withTitles, [], 'the page he cannot see is not named');
   assert.equal(cited!.disputed!.someWithheld, true);
   assert.ok(!JSON.stringify(answer).includes('Hidden rule'), 'nothing discloses the withheld page');
+});
+
+// The relevance gate weighs a term by how much it distinguishes a page.
+//
+// It used to count them and treat them alike: half the question's content
+// terms, minimum two. So "Who approves a change to a Policy?" was satisfied by
+// any page carrying "change" and "policy" — two of the commonest words in a
+// policy corpus — and a compliance director was handed three unrelated pages
+// under "ANSWER … The record says:".
+test('isOnTopic: common words do not add up to relevance', () => {
+  const stats = {
+    total: 300,
+    // "policy" and "change" are everywhere; "indemnity" is on one page.
+    df: new Map([['policy', 200], ['change', 150], ['indemnity', 1]]),
+  };
+  const question = 'what indemnity applies to a policy change';
+  const commonOnly = 'This policy covers a change to the working week and nothing else.';
+  const theRealOne = 'Indemnity under this policy is limited, and any change requires sign-off.';
+
+  // Unweighted, the near-miss passes: two of three terms covered.
+  assert.equal(isOnTopic(question, commonOnly), true, 'the old behaviour, kept as the fallback');
+  // Weighted, it does not: it missed the only term that distinguishes anything.
+  assert.equal(isOnTopic(question, commonOnly, stats), false);
+  assert.equal(isOnTopic(question, theRealOne, stats), true);
+});
+
+test('isOnTopic: a term the record has never used counts against a match', () => {
+  // Every term the gate weighs is looked up, so the map carries all three.
+  // "submarine" is the one the record has never used.
+  const stats = { total: 300, df: new Map([['policy', 200], ['procurement', 40], ['submarine', 0]]) };
+  // A page about procurement policy must not answer a question about submarine
+  // procurement: it misses the only word that made the question specific, and
+  // that word carries the most weight precisely because nothing here uses it.
+  assert.equal(isOnTopic('submarine procurement policy', 'This policy covers procurement.', stats), false);
+  // The same page does answer the question without that word in it.
+  assert.equal(isOnTopic('procurement policy', 'This policy covers procurement.', stats), true);
+});
+
+// An answer says how well grounded it is, and the extractive generator opens
+// differently when it is thin. "The record says:" over one weak match and its
+// graph neighbours is an assertion the evidence does not support.
+test('ask: one anchor and its neighbours is a thin answer, and says so', async () => {
+  const { store, marc, iris, collection } = setup();
+  const anchor = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Learning budget',
+    'The team lead approves a learning budget request up to five hundred pounds.',
+  );
+  // A neighbour that answers nothing, reachable only through the graph.
+  const child = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Booking a course',
+    'Courses are booked through the supplier portal once funds are confirmed.',
+    anchor.id,
+  );
+  assert.ok(child);
+
+  const thin = await store.ask(marc.id, { question: 'who approves a learning budget request' });
+  assert.equal(thin.refused, false);
+  assert.equal(thin.grounding, 'thin');
+  assert.match(thin.answer!, /^Nothing in the record answers this directly/);
+
+  // Two pages that each address the question on their own terms is direct.
+  publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Learning budget approvals over five hundred',
+    'A learning budget request above five hundred pounds is approved by the department head.',
+  );
+  const direct = await store.ask(marc.id, { question: 'who approves a learning budget request' });
+  assert.equal(direct.grounding, 'direct');
+  assert.match(direct.answer!, /^The record says:/);
 });

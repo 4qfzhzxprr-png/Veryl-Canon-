@@ -283,6 +283,29 @@ export interface AnswerResponse {
    */
   disagreement?: Disagreement;
   /**
+   * How much of this answer actually addresses the question.
+   *
+   * `direct` — more than one page addressed the question on its own terms.
+   * `thin`   — ONE page did, and anything else here arrived with it through the
+   *            graph rather than by answering. The quotations are real and the
+   *            citations are real; what is not established is that the record
+   *            answers the question at all.
+   *
+   * It exists because the two ways of being wrong point in opposite directions.
+   * A compliance director was refused a policy that plainly exists, and — from
+   * the product's own suggested question — handed three unrelated pages under
+   * "ANSWER … The record says:", one of which mentioned approving something
+   * else entirely while the other two came in as its graph neighbours. His
+   * conclusion: "a confident non-answer and a refusal are separated by how many
+   * words I typed", and if retrieval cannot be made to find the right page,
+   * "present the thing honestly as search results and stop asserting."
+   *
+   * This is that, without giving up the answer: a thin answer still cites,
+   * still quotes verbatim, still carries every warning — it simply stops
+   * claiming the record has spoken.
+   */
+  grounding?: 'direct' | 'thin';
+  /**
    * Set when this answer quotes a page the record says was replaced, beside
    * the page that replaced it. Additive and absent otherwise; a caller that
    * has never heard of it reads exactly the shape it always read. See
@@ -370,6 +393,14 @@ export interface AnswerGenerator {
     supersession?: Supersession | null;
     /** Advisory, same rules: where a cited page's own sources disagree. */
     sourceDisagreement?: SourceDisagreement | null;
+    /**
+     * How much of this actually addresses the question — `direct` when more
+     * than one page did on its own terms, `thin` when one did and the rest
+     * arrived through the graph. Advisory like the others: a generator that
+     * ignores it changes nothing, and the caller states the same thing in the
+     * response's `grounding` field whatever the prose says.
+     */
+    grounding?: 'direct' | 'thin';
   }): GeneratedAnswer | null;
 }
 
@@ -394,7 +425,7 @@ export const MAX_CITED_PASSAGES = 3;
 // instruction.
 export const extractiveGenerator: AnswerGenerator = {
   name: 'extractive-v1',
-  generate({ passages, disagreement }) {
+  generate({ passages, disagreement, grounding }) {
     const usable = passages.filter((p) => p.text.trim().length > 0);
     if (usable.length === 0) return null;
     // A passage from a page past its review date is attributed as such, in the
@@ -423,8 +454,16 @@ export const extractiveGenerator: AnswerGenerator = {
       };
     }
 
+    // A thin answer opens differently, and the difference is the whole point.
+    // "The record says:" over one weak match and its graph neighbours is an
+    // assertion the evidence does not support; naming it as the closest the
+    // record comes is true, and leaves the reader to judge.
+    const lead =
+      grounding === 'thin'
+        ? 'Nothing in the record answers this directly. The closest it comes:'
+        : 'The record says:';
     return {
-      answer: `The record says:\n\n${usable.map(attribute).join('\n\n')}${notice}`,
+      answer: `${lead}\n\n${usable.map(attribute).join('\n\n')}${notice}`,
       citedPageIds,
     };
   },
@@ -475,6 +514,34 @@ function contentTerms(text: string): string[] {
   return [...seen];
 }
 
+/**
+ * WHICH of the question's terms this text covers, rather than how many. The
+ * count is no longer enough: the terms have to be weighed, so the caller needs
+ * to know which ones were met. `termsCovered` is kept beside it because the
+ * count is still the right answer to "did it cover at least two".
+ */
+function coveredTerms(questionTerms: string[], text: string): string[] {
+  const found = new Set(contentTerms(text));
+  const covered: string[] = [];
+  for (const term of questionTerms) {
+    if (found.has(term)) {
+      covered.push(term);
+      continue;
+    }
+    let matched = false;
+    for (const candidate of found) {
+      const shorter = term.length <= candidate.length ? term : candidate;
+      const longer = term.length <= candidate.length ? candidate : term;
+      if (shorter.length >= 5 && longer.startsWith(shorter)) {
+        matched = true;
+        break;
+      }
+    }
+    if (matched) covered.push(term);
+  }
+  return covered;
+}
+
 function termsCovered(questionTerms: string[], text: string): number {
   const found = new Set(contentTerms(text));
   let covered = 0;
@@ -497,15 +564,64 @@ function termsCovered(questionTerms: string[], text: string): number {
   return covered;
 }
 
-// Is this candidate actually about the question? Coverage of at least half the
-// question's content terms, and never on the strength of a single shared word
-// unless the question itself was a single word.
-export function isOnTopic(question: string, text: string): boolean {
+/**
+ * How much a term distinguishes one page from another, from the corpus's own
+ * statistics: `log(total / documents containing it)`, the standard inverse
+ * document frequency, floored at zero so a term on every page contributes
+ * nothing rather than something negative.
+ *
+ * A term the index has never seen scores as if it were on one page — the
+ * highest weight available. That is the right direction: a question containing
+ * a word the record does not use anywhere is a question the record probably
+ * cannot answer, and the gate should notice its absence loudly.
+ */
+export function termWeight(term: string, stats: TermStats | null): number {
+  if (!stats || stats.total === 0) return 1;
+  const seen = stats.df.get(term) ?? 0;
+  return Math.max(0, Math.log(stats.total / Math.max(1, seen)));
+}
+
+export interface TermStats {
+  total: number;
+  df: Map<string, number>;
+}
+
+/**
+ * Is this candidate actually about the question?
+ *
+ * IT COUNTED WORDS AND TREATED THEM ALL ALIKE, and that is what broke. Half of
+ * the question's content terms, minimum two, no weighting — so "Who approves a
+ * change to a Policy?" was satisfied by any page carrying "change" and
+ * "policy". A compliance director watched three unrelated pages come back under
+ * "ANSWER … The record says:", matched on two of the commonest words in a
+ * policy corpus, with no sentence in any of them naming an approver. His
+ * verdict was that a confident non-answer and a refusal were separated by how
+ * many words he typed.
+ *
+ * The fix is not a higher threshold — that would refuse more real questions
+ * without touching this one, since the padding scored 0.67. It is to weigh each
+ * term by how much it actually distinguishes a page (`termWeight`), so covering
+ * "change" and "policy" while missing "approves" is the near-miss it always
+ * was, and the arithmetic says so.
+ *
+ * `stats` is optional and the unweighted behaviour is what happens without it:
+ * the pure function stays directly testable, and a caller that has no corpus to
+ * hand (a test, a generator harness) still gets a sane answer.
+ */
+export function isOnTopic(question: string, text: string, stats: TermStats | null = null): boolean {
   const questionTerms = contentTerms(question);
   if (questionTerms.length === 0) return false;
-  const covered = termsCovered(questionTerms, text);
+  const covered = coveredTerms(questionTerms, text);
+  // Never on one shared word, unless the question was one word. Unchanged, and
+  // it is about the shape of the question rather than about relevance.
   const minimum = questionTerms.length === 1 ? 1 : 2;
-  return covered >= minimum && covered / questionTerms.length >= MIN_TOPICAL_OVERLAP;
+  if (covered.length < minimum) return false;
+
+  const weightOf = (t: string) => termWeight(t, stats);
+  const asked = questionTerms.reduce((n, t) => n + weightOf(t), 0);
+  if (asked === 0) return covered.length / questionTerms.length >= MIN_TOPICAL_OVERLAP;
+  const met = covered.reduce((n, t) => n + weightOf(t), 0);
+  return met / asked >= MIN_TOPICAL_OVERLAP;
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,6 +1563,13 @@ function parseValue(raw: unknown): unknown {
 // The minimal slice of CanonStore this service needs; CanonStore satisfies it.
 export interface AnswerHost {
   getActor(id: string): Actor;
+  /**
+   * The lexical index, for its corpus statistics only — `isOnTopic` weighs a
+   * question's terms by how much each one distinguishes a page, and the index
+   * is what knows that. Optional so a harness can construct an AnswerService
+   * without one; the gate falls back to its unweighted form when it is absent.
+   */
+  readonly searchIndex?: { documentFrequency(terms: readonly string[]): TermStats };
 }
 
 function now(): string {
@@ -1464,6 +1587,21 @@ export class AnswerService {
     // is injectable so a test can state what a model returns.
     private readonly record: AnswerRecord = new StoredAnswerRecord(db),
   ) {}
+
+  /**
+   * Document frequencies for this question's content terms, or null where the
+   * index cannot answer — in which case `isOnTopic` falls back to its
+   * unweighted form rather than refusing everything. A relevance gate that
+   * fails closed on a missing statistic would turn an index problem into a
+   * product that answers nothing, which is the wrong failure.
+   */
+  private termStats(question: string): TermStats | null {
+    try {
+      return this.host.searchIndex?.documentFrequency(contentTerms(question)) ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   async ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
     const actor = this.host.getActor(actorId);
@@ -1529,8 +1667,19 @@ export class AnswerService {
     // The topical gate. A directly retrieved candidate must be about the
     // question to anchor an answer; expanded neighbours ride on the anchor
     // that reached them, and are dropped when their anchor does not clear.
-    const anchors = eligible.filter((c) => c.via === null && isOnTopic(question, `${c.title} ${c.passage}`));
+    // The corpus's own view of which of these words distinguish a page. Read
+    // once per ask, over the question's terms only. Without it the gate counts
+    // words and treats "policy" as worth as much as "indemnity".
+    const stats = this.termStats(question);
+    const anchors = eligible.filter((c) => c.via === null && isOnTopic(question, `${c.title} ${c.passage}`, stats));
     const anchored = new Set(anchors.map((c) => c.pageId));
+    // How much of this answer is going to be an ANSWER. One anchor means one
+    // page addressed the question and everything else riding along came through
+    // the graph — real, cited, quotable context, but not evidence that the
+    // record answers what was asked. Two independent pages agreeing that they
+    // are about the subject is a different claim, and only that one earns "the
+    // record says".
+    const grounding: 'direct' | 'thin' = anchors.length >= 2 ? 'direct' : 'thin';
     const passages: AnswerPassage[] = (
       anchors.length === 0 ? [] : eligible.filter((c) => c.via === null ? anchored.has(c.pageId) : anchored.has(c.via.fromPageId))
     )
@@ -1556,7 +1705,7 @@ export class AnswerService {
 
     const generated =
       passages.length > 0
-        ? this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
+        ? this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement, grounding })
         : null;
 
     // Citations are built from the passages the generator was given, matched
@@ -1712,6 +1861,10 @@ export class AnswerService {
       answer,
       citations,
       refused: false,
+      // Stated from the anchor count, never from the generator's prose: a
+      // generator cannot talk its way into "direct" any more than it can talk
+      // its way out of a disagreement.
+      grounding,
       ...(pastReview.length ? { pastReview } : {}),
       ...(disagreement ? { disagreement } : {}),
       ...(citedSupersession ? { supersession: citedSupersession } : {}),

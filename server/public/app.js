@@ -4714,7 +4714,7 @@ function citationsHTML(citations, disputed = new Set()) {
     </section>`;
 }
 
-function answerHTML(answer, citations, disagreement = null) {
+function answerHTML(answer, citations, disagreement = null, grounding = null) {
   const n = citations.length;
   const disputed = new Set((disagreement?.pages ?? []).map((p) => p.id));
   // The grounding line is a claim about the sources, so it counts them rather
@@ -4730,11 +4730,19 @@ function answerHTML(answer, citations, disagreement = null) {
       : `, ${stale} of them past review`;
   return `
     ${disagreement ? disagreementHTML(disagreement) : ''}
-    <article class="answer ${disagreement ? 'is-contested' : ''}">
+    ${/* A thin answer does not get to wear an answer's clothes. One page
+          addressed the question and the rest arrived through the graph, so the
+          heading says "Closest passages" and the note says what that means. The
+          quotations and citations are unchanged and just as real — what is
+          withdrawn is the claim that the record answered. See `grounding` in
+          answers.ts for the compliance director whose report this comes from. */ ''}
+    <article class="answer ${disagreement ? 'is-contested' : ''} ${grounding === 'thin' ? 'is-thin' : ''}">
       <div class="answer-head">
-        <h2 class="h-small">Answer</h2>
-        <span class="answer-grounding">drawn from ${n} Canonical page${n === 1 ? '' : 's'}${staleNote}${
-          disagreement ? ', which do not agree' : ''
+        <h2 class="h-small">${grounding === 'thin' ? 'Closest passages' : 'Answer'}</h2>
+        <span class="answer-grounding">${
+          grounding === 'thin'
+            ? `nothing in the record answers this directly · ${n} nearby page${n === 1 ? '' : 's'}${staleNote}`
+            : `drawn from ${n} Canonical page${n === 1 ? '' : 's'}${staleNote}${disagreement ? ', which do not agree' : ''}`
         }</span>
       </div>
       <div class="answer-body">${linkifyCitationMarkers(renderMarkdown(answer), n)}</div>
@@ -4885,7 +4893,7 @@ async function viewAsk(collectionId = null) {
     } else {
       // §7: the record answering twice, differently, is a correct answer and
       // is drawn as one. Absent from the payload, absent from the screen.
-      resultHost.innerHTML = answerHTML(result.answer, citations, normalizeDisagreement(result.disagreement, citations));
+      resultHost.innerHTML = answerHTML(result.answer, citations, normalizeDisagreement(result.disagreement, citations), result.grounding ?? null);
     }
     wireResult(question);
   };

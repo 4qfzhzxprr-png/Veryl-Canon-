@@ -89,6 +89,45 @@ export class SearchIndex {
     db.exec(SEARCH_SCHEMA);
   }
 
+  /**
+   * How many indexed pages contain each term, and how many there are in total.
+   *
+   * This is the corpus statistic a relevance judgement needs and did not have.
+   * `isOnTopic` counted how many of a question's words a passage covered and
+   * treated them all alike, so "Who approves a change to a Policy?" was
+   * satisfied by any page carrying "change" and "policy" — two of the commonest
+   * words in a policy corpus — and three unrelated pages were presented under
+   * "The record says:". A word that appears on most pages cannot tell one page
+   * from another, and the record already knows which words those are.
+   *
+   * Counted over the whole index rather than per asker, and deliberately so:
+   * this is a property of the language in the corpus, not of anybody's
+   * permissions, and it is used only to WEIGH terms the asker already typed.
+   * It reveals nothing about which pages exist — no title, no id, no count of
+   * anything a reader could not already learn from a dictionary.
+   */
+  documentFrequency(terms: readonly string[]): { total: number; df: Map<string, number> } {
+    const total = (this.db.prepare('SELECT COUNT(*) AS n FROM page_search').get() as { n: number }).n;
+    const df = new Map<string, number>();
+    for (const term of new Set(terms)) {
+      // A bare term against FTS5, quoted so a stray operator in somebody's
+      // question cannot become syntax.
+      const quoted = `"${term.replace(/"/g, '""')}"`;
+      try {
+        const row = this.db
+          .prepare('SELECT COUNT(*) AS n FROM page_search WHERE page_search MATCH ?')
+          .get(quoted) as { n: number };
+        df.set(term, row.n);
+      } catch {
+        // An unindexable term (punctuation, a stopword FTS5 drops) tells us
+        // nothing; treating it as present everywhere gives it no weight, which
+        // is the safe direction.
+        df.set(term, total);
+      }
+    }
+    return { total, df };
+  }
+
   // Re-derives one page's index entry from the record. Called from the store
   // whenever a page appears (create) or its published state changes: publish,
   // approve, restore (all through writeVersion) and archive. Idempotent: an
