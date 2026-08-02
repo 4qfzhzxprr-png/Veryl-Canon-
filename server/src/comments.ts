@@ -46,6 +46,19 @@ export interface Comment {
   resolvedAt: string | null;
   resolvedBy: string | null;
   createdAt: string;
+  /**
+   * True when this comment IS an approver's send-back reason — the comment
+   * `CanonStore.sendBack` files (USER-TESTING.md T4.3), so a panel can say
+   * "sent this back" rather than showing the most consequential sentence on the
+   * page as an ordinary remark.
+   *
+   * Derived, not stored: it is read from the `page.send_back` audit event that
+   * names this comment. The log is already the record of who did what, and a
+   * column here would be a second copy of that answer, free to disagree with
+   * it. The mark therefore survives resubmission, which is right — the comment
+   * goes on being the refusal it was even after the page has moved on.
+   */
+  sentBack: boolean;
 }
 
 // Mention parsing is simple and exact: @ followed by an actor id, no fuzzy
@@ -195,7 +208,8 @@ export class CommentService {
          WHERE c.page_id = ? ORDER BY c.created_at, c.rowid`,
       )
       .all(pageId) as Record<string, unknown>[];
-    return rows.map((r) => this.toComment(r));
+    const sentBack = this.sendBackComments(pageId);
+    return rows.map((r) => this.toComment(r, sentBack));
   }
 
   resolve(actorId: string, commentId: string): Comment {
@@ -238,7 +252,25 @@ export class CommentService {
       )
       .get(id) as Record<string, unknown> | undefined;
     if (!row) throw new CanonError('not_found', `No such comment: ${id}`);
-    return this.toComment(row);
+    return this.toComment(row, this.sendBackComments(row.page_id as string));
+  }
+
+  /**
+   * The comments on this page that ARE send-backs, read off the events that
+   * recorded them. A handful of rows on any real page, parsed in TypeScript
+   * rather than picked apart with SQL JSON functions, because `details_json` is
+   * this application's shape and not the database's.
+   */
+  private sendBackComments(pageId: string): Set<string> {
+    const rows = this.db
+      .prepare("SELECT details_json FROM audit_events WHERE page_id = ? AND action = 'page.send_back'")
+      .all(pageId) as { details_json: string }[];
+    const ids = new Set<string>();
+    for (const r of rows) {
+      const details = JSON.parse(r.details_json) as { commentId?: unknown };
+      if (typeof details.commentId === 'string') ids.add(details.commentId);
+    }
+    return ids;
   }
 
   private commentWithPage(id: string): { comment: Comment; page: { collectionId: string } } {
@@ -247,9 +279,10 @@ export class CommentService {
     return { comment, page };
   }
 
-  private toComment(row: Record<string, unknown>): Comment {
+  private toComment(row: Record<string, unknown>, sentBack: Set<string>): Comment {
     const quote = (row.anchor_quote as string) ?? null;
     return {
+      sentBack: sentBack.has(row.id as string),
       id: row.id as string,
       pageId: row.page_id as string,
       authorId: row.author_id as string,

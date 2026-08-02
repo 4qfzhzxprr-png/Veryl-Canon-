@@ -99,8 +99,19 @@ const APPROVING_ROLES: readonly Role[] = (Object.keys(ROLE_RANK) as Role[]).filt
  * The events that are acts in the review workflow, newest-first over one page.
  * `sentBackTo` reads the last of them: a send-back is the current state of a
  * page only until its author does something about it.
+ *
+ * Exported because `CanonStore.sentBack` asks the identical question about one
+ * page — "is the send-back still the last word?" — and a second list that
+ * forgot `page.withdraw` would leave a banner standing on a page whose author
+ * had already dealt with it, on a screen where the queue said otherwise.
  */
-const WORKFLOW_ACTIONS = ['page.send_back', 'page.submit', 'page.approve', 'page.publish', 'page.withdraw'] as const;
+export const WORKFLOW_ACTIONS = [
+  'page.send_back',
+  'page.submit',
+  'page.approve',
+  'page.publish',
+  'page.withdraw',
+] as const;
 
 /**
  * The filter. Every member is optional; an empty query means "every page I may

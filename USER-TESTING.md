@@ -315,18 +315,44 @@ comparisons *are* tables. There is also no toolbar and no preview.
 *published* version; there is no preview or diff of the pending draft. The
 excellent side-by-side diff is reachable only *after* approval, via History.
 The change he approved added a whole section about a missing escalation path.
+**Fixed:** a *What is being approved* panel sits above the published body while
+a page is In Review — the same `diffLines` and the same side-by-side table
+History uses, now shared between the two, against the version the draft would
+replace, with the title and field changes beside it. The Approve modal restates
+the extent from the same summary and offers a way back down to the diff, since
+the button sits above it. Nothing is a summary of the change: what is on screen
+is the text that will publish.
 
 **T4.3 · A send-back reason vanishes.** *(Marcus task 2.)* The modal promises
 "Your comment goes to the author", the toast says "Sent back with your
 comment", the comments panel says "No comments yet", and the author sees a
 Draft with no banner, no reason and no rejector. The text exists only in the
 global audit log. Related: send-back *requires* a reason and approve does not,
-which is backwards.
+which is backwards. **Fixed:** `sendBack` now files the reason as a comment on
+the page, through the ordinary comment path, and records that comment's id on
+the `page.send_back` event; the comment is marked as the refusal it is, and
+stays marked after the page moves on. The author meets it as a banner at the
+top of the page — who sent it back, when, and what they said in full — read
+from the log by `sentBack`, which stops answering the moment a resubmission, a
+withdrawal or a publish is written after it. No flag, no column, nothing to
+clear. The asymmetry with approve is **deliberate and stays**: a refusal
+without its reason is unperformable by the person who receives it, while an
+approval writes its own record — the version, the approver's name, the instant,
+and the diff. A required note would fill forty rows a quarter with "ok", which
+is not missing evidence but a convincing imitation of evidence.
 
 **T4.4 · Every action is offered and then refused.** *(Priya, Ruth #14.)* New
 page, Comment, Approve, Send back, and a red **Delete** on a live data source —
 all shown, all 403 at the last click. Grey out what the caller cannot do and
-say who can.
+say who can. **Partly fixed:** `GET /pages/:id` carries `abilities` — what the
+asking actor may do to this page and, where they may not, the sentence that
+says who can ("Only Nadia Haddad, the named approver on this draft, can approve
+it"). Every action on the page view and the comment box is drawn from it:
+greyed, with the reason on the button and repeated as text, because a `title`
+is invisible to a keyboard and to a phone. It is a MIRROR of the checks and
+never one of them — a test walks every actor over pages in three states and
+fails if anything reported as refused is in fact accepted. Still outstanding:
+**New page** in the sidebar, and **Delete** on a source.
 
 **T4.5 · An author cannot retract their own submission.** *(Priya bug D.)*
 Send back is offered and refused, the editor is locked, approve is refused. The

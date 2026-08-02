@@ -1896,6 +1896,50 @@ label.check input { width: auto; display: inline; margin: 0; }
 .queue-unsent { color: var(--amber); }
 .queue-truncated { font-size: 0.87rem; }
 
+/* ---------- the review decision ----------------------------------------- */
+/* What is being approved (USER-TESTING.md T4.2) and what came back and why
+   (T4.3). Both sit above the published body, because the published body is the
+   one thing on a page in review that is not what is being decided. */
+
+.review-change { border-left: 3px solid var(--amber); }
+.review-change .diff-scroll { margin-top: 0.75rem; }
+.review-change-title { margin: 0.4rem 0; }
+.review-change-title del, .review-change-fields del {
+  color: var(--del-ink); background: var(--del-bg); text-decoration: line-through;
+  padding: 0 0.2em; border-radius: 3px;
+}
+.review-change-title ins, .review-change-fields ins {
+  color: var(--add-ink); background: var(--add-bg); text-decoration: none;
+  padding: 0 0.2em; border-radius: 3px;
+}
+.review-change-fields { list-style: none; margin: 0.4rem 0 0; padding: 0; font-size: 0.92rem; }
+.review-change-fields li { padding: 0.15rem 0; }
+.review-change-field { font-weight: 600; margin-right: 0.4rem; }
+
+/* Amber, like every other "this is waiting on somebody" state. A send-back is
+   not an error; it is an unkept promise pointed the other way. */
+.notice-sentback { border-left-color: var(--amber); background: var(--amber-soft); }
+.sentback-reason {
+  margin: 0.5rem 0;
+  padding: 0.15rem 0 0.15rem 0.8rem;
+  border-left: 2px solid var(--amber);
+  white-space: pre-wrap;
+  font-style: normal;
+}
+/* The refusals under the action row. The greyed buttons carry the same
+   sentences in a `title`, which a keyboard and a phone never see. */
+.action-refusals { font-size: 0.87rem; margin: 0.3rem 0 0; padding: 0; list-style: none; }
+.action-refusals li { margin: 0.15rem 0; }
+.actions .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+.comment-sentback { border-left: 2px solid var(--amber); padding-left: 0.7rem; }
+.comment-flash { animation: comment-flash 2s ease; }
+@keyframes comment-flash {
+  0%, 60% { background: var(--amber-soft); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .comment-flash { animation: none; } }
+
 /* ---------- responsive --------------------------------------------------- */
 
 @media (max-width: 900px) {

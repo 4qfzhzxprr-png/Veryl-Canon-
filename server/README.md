@@ -392,6 +392,11 @@ POST   /pages                               { collectionId, parentId?, type, tit
 GET    /pages/:id                           page + current published version + its reference descriptors
                                             + `review`: while In Review, the draft's fields and the approver
                                               `approve` will accept; null otherwise
+                                            + `sentBack`: the approver's refusal while it is still the last
+                                              word on the page — who, when, why, and the comment carrying it
+                                            + `abilities`: what the ASKING actor may do here and, where they
+                                              may not, the sentence naming who can. A mirror of the checks,
+                                              never one of them; every act still asks its own question
 PUT    /pages/:id/draft                     { title?, body?, fields? } — acquires the page lock
 DELETE /pages/:id/draft                     discard
 POST   /pages/:id/publish                   { note? }

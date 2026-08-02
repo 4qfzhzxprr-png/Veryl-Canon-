@@ -10,11 +10,14 @@ import {
   Draft,
   DOC_TYPES,
   Page,
+  PageAbilities,
+  PageAbility,
   PageFields,
   PageVersion,
   ReviewState,
   Role,
   ROLE_RANK,
+  SendBackNotice,
   TYPE_RULES,
 } from './model.js';
 import {
@@ -54,7 +57,14 @@ import {
   requireBasisForBackdating,
   validateEffectiveDateShape,
 } from './effectivedate.js';
-import { CollectionHealth, PageQuery, QueryResultPage, QueryService, SavedQuery } from './queries.js';
+import {
+  CollectionHealth,
+  PageQuery,
+  QueryResultPage,
+  QueryService,
+  SavedQuery,
+  WORKFLOW_ACTIONS,
+} from './queries.js';
 import { QueueService, WorkQueue } from './queue.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
 import { AuditChainVerification, verifyAuditChain } from './auditchain.js';
@@ -1155,6 +1165,41 @@ export class CanonStore {
     return this.getPage(actorId, pageId);
   }
 
+  /**
+   * The named approver accepts the draft, and the page becomes Canonical.
+   *
+   * WHY THE NOTE IS STILL OPTIONAL HERE WHILE THE SEND-BACK COMMENT IS NOT.
+   *
+   * A compliance director called that asymmetry backwards (USER-TESTING.md
+   * T4.3): you must type something to refuse and nothing to accept. It is the
+   * right observation and it has the wrong remedy, so the asymmetry stays and
+   * is argued for rather than left looking like an oversight.
+   *
+   * The send-back comment is required because WITHOUT IT THE ACT IS
+   * UNPERFORMABLE BY ITS RECIPIENT. "Not yet" tells an author nothing they can
+   * do; the whole content of a refusal is what has to change. Nothing else in
+   * the record carries it — there is no diff to read, because the draft did not
+   * publish and history did not move.
+   *
+   * Approval is the opposite: the act writes its own record. `writeVersion`
+   * publishes the exact text approved, stamped with this actor's name and this
+   * instant, and the diff against what it replaced is on the page and in
+   * history for as long as the record exists. An auditor sampling this control
+   * asks "what did she approve, and was she the person named to approve it" —
+   * and both answers are in the record already, with or without a sentence.
+   *
+   * A REQUIRED FIELD WOULD MAKE THAT WORSE, NOT BETTER. Forty policies a
+   * quarter through a mandatory box produces forty rows reading "ok", and a
+   * column of "ok" is not an absence of evidence, it is fake evidence: it looks
+   * like forty considered approvals. Everything Canon knows about that column
+   * would be a lie it made somebody tell.
+   *
+   * What the complaint is actually about is that approval was CHEAP — the
+   * approver could not see what they were accepting (T4.2). That is fixed where
+   * it belongs, by putting the diff in front of the decision instead of behind
+   * it, and the note stays what it is: optional, and worth reading when
+   * somebody chose to write one, which is a property a required field destroys.
+   */
   approve(actorId: string, pageId: string, input: { note?: string } = {}): Page {
     const row = this.pageRow(pageId);
     const page = this.toPage(row);
@@ -1195,6 +1240,36 @@ export class CanonStore {
     return approved;
   }
 
+  /**
+   * An approver refuses a draft and says why (USER-TESTING.md T4.3).
+   *
+   * WHERE THE REASON GOES, AND WHY IT GOES THERE THREE TIMES.
+   *
+   * It used to go to one place: the `details` of an audit event, which is a
+   * screen an author has no reason to open and, when they do open it, is a
+   * thousand rows of everybody's work. The modal promised "Your comment goes to
+   * the author", the toast said "Sent back with your comment", the comments
+   * panel said "No comments yet", and the author got back a Draft with no
+   * banner, no reason and no name on it. Every one of those sentences was true
+   * of the outbox and none of them was true of the page.
+   *
+   * So the reason is now:
+   *
+   *   1. A COMMENT ON THE PAGE, filed here, authored by the approver, through
+   *      the ordinary comment path — so it is in the panel that promised it, it
+   *      can be replied to and resolved like any other, and it is still there
+   *      in six months when somebody asks why the page took three rounds.
+   *      Filed FIRST, before the status moves: a send-back whose reason could
+   *      not be recorded is not a send-back this record wants to have happened.
+   *   2. THE AUDIT EVENT, unchanged, plus the id of that comment — so the log
+   *      and the panel are demonstrably the same refusal rather than two.
+   *   3. THE OUTBOX, unchanged: the author is told, carrying the text.
+   *
+   * And the banner the author actually sees is none of these — it is `sentBack`
+   * below, which reads 2 back out. There is no fourth copy and no flag on
+   * `pages`; a column saying "this was sent back" would be a second answer that
+   * can disagree with the log about the first.
+   */
   sendBack(actorId: string, pageId: string, input: { comment: string }): Page {
     const row = this.pageRow(pageId);
     const page = this.toPage(row);
@@ -1202,17 +1277,64 @@ export class CanonStore {
     if (page.status !== 'in_review') {
       throw new CanonError('workflow', `Only a page In Review can be sent back (status: ${page.status})`);
     }
-    if (!input.comment?.trim()) {
+    const comment = input.comment?.trim();
+    if (!comment) {
       throw new CanonError('invalid', 'Sending a draft back requires a comment for the author');
     }
+    // `approve` outranks `comment`, so an approver always holds the role this
+    // needs; it is called rather than inlined so a send-back comment is a
+    // comment in every respect — attributed, audited, mentionable, resolvable.
+    const filed = this.commentService.create(actorId, pageId, { body: comment });
     this.db.prepare("UPDATE pages SET status = 'draft' WHERE id = ?").run(pageId);
     this.audit(actorId, 'page.send_back', {
       collectionId: page.collectionId,
       pageId,
-      details: { comment: input.comment.trim() },
+      details: { comment, commentId: filed.id },
     });
-    this.notifier.draftSentBack(actorId, pageId, input.comment.trim());
+    this.notifier.draftSentBack(actorId, pageId, comment);
     return this.getPage(actorId, pageId);
+  }
+
+  /**
+   * The send-back that is still standing on this page, or null.
+   *
+   * "Still standing" is not a state anybody sets. It is read from the log, in
+   * the same sentence the queue's "Sent back to you" strand reads: the last act
+   * in the review workflow on this page was a send-back, and the page is a
+   * Draft. A resubmission, a withdrawal or a direct publish displaces it, and
+   * the banner disappears without anybody having to remember to clear a flag —
+   * which is exactly why there is no flag to clear.
+   *
+   * Readable with `view`, like `reviewState` and for the same reason: why a
+   * page is sitting in Draft rather than carrying the mark is a fact about the
+   * page, not a private message. The reason's text is in a comment on that same
+   * page anyway, and comments are readable with `view`.
+   */
+  sentBack(actorId: string, pageId: string): SendBackNotice | null {
+    const row = this.pageRow(pageId);
+    const page = this.toPage(row);
+    this.requireRole(actorId, page.collectionId, 'view');
+    if (page.status !== 'draft') return null;
+    const last = this.db
+      .prepare(
+        `SELECT actor_id, at, action, details_json FROM audit_events
+          WHERE page_id = ? AND action IN (${WORKFLOW_ACTIONS.map(() => '?').join(', ')})
+          ORDER BY id DESC LIMIT 1`,
+      )
+      .get(pageId, ...WORKFLOW_ACTIONS) as
+      | { actor_id: string; at: string; action: string; details_json: string }
+      | undefined;
+    if (!last || last.action !== 'page.send_back') return null;
+    const details = JSON.parse(last.details_json) as { comment?: unknown; commentId?: unknown };
+    const reason = typeof details.comment === 'string' ? details.comment : '';
+    return {
+      byId: last.actor_id,
+      at: last.at,
+      reason,
+      // Null for a send-back written before this filed a comment. The banner
+      // still reads, because the text is on the event either way.
+      commentId: typeof details.commentId === 'string' ? details.commentId : null,
+    };
   }
 
   /**
@@ -1282,6 +1404,177 @@ export class CanonStore {
     // fills with work nobody needs to do.
     this.notifier.reviewWithdrawn(actorId, pageId, reason);
     return this.getPage(actorId, pageId);
+  }
+
+  /**
+   * WHAT THIS ACTOR MAY DO TO THIS PAGE, AND WHERE THEY MAY NOT, WHO CAN.
+   *
+   * USER-TESTING.md T4.4: "Every action is offered then refused: New page,
+   * Comment, Approve, Send back, and a red Delete on a live data source — all
+   * shown, all 403 at the last click." An auditor hit the same wall from the
+   * other side, shown a green Approve button the server would refuse her.
+   *
+   * The server always knew. Every one of those refusals is a rule written a few
+   * lines above this one, and the screen simply never asked. So it can ask:
+   * this is `reviewState.canWithdraw` generalised to every act the page view
+   * offers, with the sentence attached.
+   *
+   * IT IS A MIRROR, NEVER A GATE. That is the whole discipline of this method
+   * and it cuts in one direction only:
+   *
+   *   * Nothing here is a permission check. Every act still asks its own
+   *     question at the moment it is performed, against the record as it is
+   *     then, and a caller who reaches `approve` directly is refused by
+   *     `approve` exactly as before. A UI that trusted this and a server that
+   *     stopped checking would be a product with no access control and a
+   *     tooltip.
+   *   * `can: true` where the act would refuse is a BUG — that is the defect
+   *     being fixed, restated. `can: false` where the act would succeed is
+   *     merely unhelpful. So where a rule is fiddly this CALLS the rule rather
+   *     than restating it: `whyNotReady` runs `validateReadyToPublish` and
+   *     hands back its own sentence, so the day a new field becomes required
+   *     before publishing, this screen says so without being edited.
+   *
+   * Naming names gives nothing away: this needs `view`, and anyone with `view`
+   * can already read the collection's membership and every comment on the page.
+   */
+  pageAbilities(actorId: string, pageId: string): PageAbilities {
+    const row = this.pageRow(pageId);
+    const page = this.toPage(row);
+    this.requireRole(actorId, page.collectionId, 'view');
+    const role = this.roleOf(actorId, page.collectionId);
+    const rank = role ? ROLE_RANK[role] : 0;
+    const rules = TYPE_RULES[page.type];
+    const draft = this.draftRow(pageId);
+    const fields = draft ? (JSON.parse(draft.fields_json as string) as PageFields) : null;
+    const archived = page.status === 'archived';
+
+    const yes: PageAbility = { can: true, why: null };
+    const no = (why: string): PageAbility => ({ can: false, why });
+    const holds = (needed: Role): boolean => rank >= ROLE_RANK[needed];
+    const needsRole = (act: string, needed: Role): PageAbility =>
+      no(
+        `${act} needs the ${needed} role on this collection; you hold ${role ?? 'none'}. ` +
+          this.whoHolds(page.collectionId, needed),
+      );
+    const readOnly = 'This page is archived and read-only. Its history is preserved.';
+
+    // Each block below mirrors one method above, in that method's own order —
+    // the order decides which sentence a person is given when two rules refuse
+    // them at once, and the useful one is always the first the server hits.
+
+    // editDraft
+    let edit: PageAbility;
+    if (!holds('edit')) edit = needsRole('Editing', 'edit');
+    else if (archived) edit = no(readOnly);
+    else if (page.status === 'in_review') {
+      edit = no('This page is in review; it unlocks when the approver accepts it or sends it back.');
+    } else if (draft && (draft.editor_id as string) !== actorId) {
+      edit = no(
+        `${this.getActor(draft.editor_id as string).name} is editing this page; ` +
+          'Canon keeps drafts to one editor at a time.',
+      );
+    } else edit = yes;
+
+    // CommentService.create
+    let comment: PageAbility;
+    if (!holds('comment')) comment = needsRole('Commenting', 'comment');
+    else if (archived) comment = no(readOnly);
+    else comment = yes;
+
+    // submitForReview
+    let submit: PageAbility;
+    if (!holds('edit')) submit = needsRole('Submitting for review', 'edit');
+    else if (!rules.reviewed) {
+      submit = no('A Note publishes directly and never carries the Canonical mark, so it never goes to review.');
+    } else if (archived) submit = no(readOnly);
+    else if (page.status !== 'draft' && page.status !== 'needs_update') {
+      submit = no('Only a Draft or a Needs Update page can be submitted for review.');
+    } else if (!draft || !fields) submit = no('There is nothing to review: this page has no draft.');
+    else {
+      const unready = this.whyNotReady(page.type, fields);
+      if (unready) submit = no(unready);
+      else if (rules.requiresApprover && fields.approverId === actorId) {
+        submit = no(
+          'You are the named approver on this draft, and an approver cannot submit their own draft for review.',
+        );
+      } else submit = yes;
+    }
+
+    // approve — the draft's approver, per the invariant at the top of this
+    // section. This answer and that refusal read the same row.
+    let approve: PageAbility;
+    if (!holds('approve')) approve = needsRole('Approving', 'approve');
+    else if (page.status !== 'in_review') approve = no('Only a page In Review can be approved.');
+    else if (!draft || !fields) approve = no('The draft under review is missing.');
+    else if (rules.requiresApprover && fields.approverId !== actorId) {
+      approve = fields.approverId
+        ? no(`Only ${this.getActor(fields.approverId).name}, the named approver on this draft, can approve it.`)
+        : no('This draft names no approver, so there is nobody the server would accept; it has to name one.');
+    } else approve = yes;
+
+    // sendBack
+    let sendBack: PageAbility;
+    if (!holds('approve')) sendBack = needsRole('Sending a draft back', 'approve');
+    else if (page.status !== 'in_review') sendBack = no('Only a page In Review can be sent back.');
+    else sendBack = yes;
+
+    // withdrawFromReview
+    let withdraw: PageAbility;
+    const submitted = page.status === 'in_review' ? this.lastSubmission(pageId) : null;
+    if (!holds('edit')) withdraw = needsRole('Withdrawing a submission', 'edit');
+    else if (page.status !== 'in_review') withdraw = no('Only a page In Review can be withdrawn.');
+    else if (!submitted) {
+      withdraw = no('No submission is on the record for this page; an approver sends it back.');
+    } else if (submitted.actorId !== actorId) {
+      withdraw = no(
+        `Only ${this.getActor(submitted.actorId).name}, who submitted this page for review, can withdraw it; ` +
+          'an approver sends it back with a comment.',
+      );
+    } else withdraw = yes;
+
+    // archivePage, which asks for `edit` and asks nothing else — an archived
+    // page can be archived again and the record is unmoved by it. Reported as
+    // it is rather than as it might read better: this projection's one promise
+    // is that it says what the server would do.
+    const archive: PageAbility = holds('edit') ? yes : needsRole('Archiving', 'edit');
+
+    return { role, edit, comment, submit, approve, sendBack, withdraw, archive };
+  }
+
+  /** Why this draft could not publish as it stands, in `validateReadyToPublish`'s own words. */
+  private whyNotReady(type: DocType, fields: PageFields): string | null {
+    try {
+      this.validateReadyToPublish(type, fields);
+      return null;
+    } catch (err) {
+      return err instanceof CanonError ? err.message : 'This draft is not ready to publish.';
+    }
+  }
+
+  /**
+   * Who on this collection holds at least `needed`, as a sentence to hand
+   * somebody who does not. Capped at three names because the point is to give a
+   * person somebody to ask, not to print a directory.
+   */
+  private whoHolds(collectionId: string, needed: Role): string {
+    const rows = this.db
+      .prepare('SELECT actor_id, role FROM collection_members WHERE collection_id = ?')
+      .all(collectionId) as { actor_id: string; role: Role }[];
+    const names = rows
+      .filter((r) => ROLE_RANK[r.role] >= ROLE_RANK[needed])
+      .map((r) => this.getActor(r.actor_id).name)
+      .sort((a, b) => a.localeCompare(b));
+    if (!names.length) return 'Nobody here holds it; an administrator of this collection can grant it.';
+    const shown = names.slice(0, 3);
+    const rest = names.length - shown.length;
+    const list =
+      rest > 0
+        ? `${shown.join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`
+        : shown.length > 1
+          ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]!}`
+          : shown[0]!;
+    return `${list} ${names.length === 1 ? 'holds' : 'hold'} it.`;
   }
 
   // ---- audit -----------------------------------------------------------

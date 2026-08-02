@@ -150,7 +150,17 @@ const routes: Route[] = [
     // a second request that a reader without `edit` is refused. Null on every
     // page that is not in review.
     const review = store.reviewState(actorId, page.id);
-    return { ...page, current, references, review };
+    // The approver's refusal, where it is still the last word on this page
+    // (USER-TESTING.md T4.3). It rides along for the same reason `review` does:
+    // the author must meet it on the page, not in a global audit log, and a
+    // banner that needed a second request would be a banner that is sometimes
+    // missing.
+    const sentBack = store.sentBack(actorId, page.id);
+    // What this actor may actually do to this page, so a screen can stop
+    // offering what the server is about to refuse (USER-TESTING.md T4.4). It is
+    // a projection of the checks, never one of them; see `pageAbilities`.
+    const abilities = store.pageAbilities(actorId, page.id);
+    return { ...page, current, references, review, sentBack, abilities };
   }),
   route('POST', '/pages/:id/move', ({ store, actorId, params, body }) =>
     store.movePage(actorId, params.id!, { parentId: body.parentId ?? null }),

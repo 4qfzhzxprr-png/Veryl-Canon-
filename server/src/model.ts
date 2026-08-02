@@ -238,6 +238,50 @@ export interface ReviewState {
   canWithdraw: boolean;
 }
 
+// An approver's refusal, still standing (USER-TESTING.md T4.3).
+//
+// A send-back is the last thing that happened to a page only until its author
+// does something about it, so this is not a column: it is read from the audit
+// log, and it stops being the answer the moment a resubmission, a withdrawal or
+// a publish is written after it. See `CanonStore.sentBack`.
+export interface SendBackNotice {
+  /** The approver who sent it back. */
+  byId: string;
+  at: string;
+  /** What they said, in full. The same text the author was emailed. */
+  reason: string;
+  /** The comment `sendBack` filed on the page carrying that text, if any. */
+  commentId: string | null;
+}
+
+// One thing the asking actor may or may not do to a page, and — where they may
+// not — the sentence that says who can.
+//
+// `why` is never a stack trace and never "403". It is written to be read by the
+// person who was about to press the button: "Only Nadia Haddad, the named
+// approver, can approve this."
+export interface PageAbility {
+  can: boolean;
+  /** Null exactly when `can` is true. */
+  why: string | null;
+}
+
+// The asking actor's standing on one page (USER-TESTING.md T4.4): what the
+// server would accept from them right now, so a screen can stop offering what
+// it is about to refuse. See `CanonStore.pageAbilities`, which states the one
+// rule this projection lives under — it MIRRORS the checks, it never makes one.
+export interface PageAbilities {
+  /** The asking actor's effective role on this page's collection. */
+  role: Role | null;
+  edit: PageAbility;
+  comment: PageAbility;
+  submit: PageAbility;
+  approve: PageAbility;
+  sendBack: PageAbility;
+  withdraw: PageAbility;
+  archive: PageAbility;
+}
+
 export interface AuditEvent {
   id: number;
   at: string;

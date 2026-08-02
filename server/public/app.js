@@ -527,6 +527,35 @@ function diffLines(aText, bText) {
   return rows;
 }
 
+function changedLines(rows) {
+  return rows.filter((r) => r.type !== 'same').length;
+}
+
+// The side-by-side table itself, over rows from diffLines. Extracted because
+// the diff an approver is shown BEFORE deciding (USER-TESTING.md T4.2) has to
+// be the same diff History shows afterwards — the same function, not a second
+// one that resembles it and drifts.
+//
+// `headA` and `headB` are HTML: the callers assemble them out of escaped
+// pieces, exactly as the compare view always did.
+function diffTableHTML(rows, headA, headB) {
+  const cell = (text, cls) =>
+    `<td class="diff-cell ${cls}">${text === undefined ? '' : `<span>${esc(text) || '&nbsp;'}</span>`}</td>`;
+  return `
+    <div class="diff-scroll">
+      <table class="diff-table">
+        <thead><tr><th>${headA}</th><th>${headB}</th></tr></thead>
+        <tbody>
+          ${rows.map((r) => {
+            if (r.type === 'same') return `<tr>${cell(r.a, '')}${cell(r.b, '')}</tr>`;
+            if (r.type === 'del') return `<tr>${cell(r.a, 'del')}${cell(undefined, 'void')}</tr>`;
+            return `<tr>${cell(undefined, 'void')}${cell(r.b, 'add')}</tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
 // ---------------------------------------------------------------------------
 // Chrome: top bar, identity chip, search (feature-detected)
 
@@ -1578,6 +1607,126 @@ function pendingFieldCell(published, pending, render, hasPublished) {
   return `${render(published)} <span class="muted">· in review: ${render(pending)}</span>`;
 }
 
+// The structured fields an approval publishes alongside the body. The field
+// block already marks a pending change in place; these are gathered again where
+// the DECISION is taken, because "the approver changed" and "the effective date
+// moved" are exactly the kind of material change that got lost in a header.
+const REVIEW_FIELDS = [
+  { key: 'ownerId', label: 'Owner', render: (v) => (v == null ? '<span class="muted">none</span>' : actorLabel(v)) },
+  { key: 'approverId', label: 'Approver', render: (v) => (v == null ? '<span class="muted">none</span>' : actorLabel(v)) },
+  { key: 'effectiveDate', label: 'Effective date', render: (v) => esc(fmtDate(v)) },
+  { key: 'reviewDate', label: 'Review date', render: (v) => esc(fmtDate(v)) },
+];
+
+// What this draft would change if it were approved: the body diff, the title,
+// and the four fields. Computed once per render, because the panel below and
+// the Approve modal must not be able to disagree about it.
+function summarizeChange(page, draft) {
+  const current = page.current ?? null;
+  const rows = diffLines(current?.body ?? '', draft.body ?? '');
+  const published = current?.fields ?? {};
+  const proposed = draft.fields ?? {};
+  return {
+    hasPublished: Boolean(current),
+    baseVersion: page.currentVersion ?? null,
+    nextVersion: (page.currentVersion ?? 0) + 1,
+    rows,
+    changed: current ? changedLines(rows) : null,
+    titleFrom: current ? current.title : null,
+    titleTo: draft.title ?? page.title,
+    titleChanged: Boolean(current) && current.title !== (draft.title ?? page.title),
+    fields: REVIEW_FIELDS.filter((f) => (published[f.key] ?? null) !== (proposed[f.key] ?? null)).map((f) => ({
+      label: f.label,
+      from: current ? f.render(published[f.key] ?? null) : null,
+      to: f.render(proposed[f.key] ?? null),
+    })),
+  };
+}
+
+// One sentence for the extent of a change, used in the panel and again in the
+// modal so both say the same number.
+function changeSentence(change) {
+  if (!change.hasPublished) return 'Nothing has been published yet, so all of it is new.';
+  const body = change.changed
+    ? `${change.changed} changed line${change.changed === 1 ? '' : 's'}`
+    : 'no change to the body';
+  const fields = change.fields.length
+    ? `, and ${change.fields.length} changed field${change.fields.length === 1 ? '' : 's'}`
+    : '';
+  return `${body[0].toUpperCase()}${body.slice(1)}${fields} against the published v${change.baseVersion}.`;
+}
+
+// USER-TESTING.md T4.2 — THE DIFF BELONGS ON THIS SIDE OF THE DECISION.
+//
+// "I approved blind. The page body shows the published version; there's no
+// preview or diff of the pending draft. The excellent side-by-side diff is only
+// reachable AFTER approval, via History. The change added a whole section about
+// a missing escalation path. Material, and unseen."
+//
+// Nothing here is new machinery. It is `diffLines` and `diffTableHTML`, the
+// same two functions the compare view uses, against the published version the
+// draft would replace — moved to where somebody is standing when they press
+// Approve, and above the published body rather than below it, because the
+// published body is the one thing on this screen that is NOT what is being
+// decided.
+//
+// It is drawn for anyone who can read the draft, not only for the approver:
+// the author wants to see what they submitted, and a second approver deciding
+// whether to send it back needs it just as much. A reader holding only `view`
+// cannot fetch the draft body and gets nothing, which is the same rule as
+// everywhere else and not a special case here.
+function reviewChangeHTML(change) {
+  if (!change) return '';
+  const fields = change.fields.length
+    ? `<ul class="review-change-fields">${change.fields
+        .map((f) => `<li><span class="review-change-field">${esc(f.label)}</span>
+          ${f.from === null ? f.to : `<del>${f.from}</del> → <ins>${f.to}</ins>`}</li>`)
+        .join('')}</ul>`
+    : '';
+  const title = change.titleChanged
+    ? `<p class="review-change-title">Title: <del>${esc(change.titleFrom)}</del> → <ins>${esc(change.titleTo)}</ins></p>`
+    : '';
+  const body = !change.hasPublished
+    ? '<p class="muted">There is no published version to compare against; the whole of the text below is new.</p>'
+    : change.changed
+      ? diffTableHTML(change.rows, `Published v${change.baseVersion}`, `Proposed v${change.nextVersion}`)
+      : '<p class="muted">The body is unchanged.</p>';
+  return `
+    <section class="panel review-change" id="review-change">
+      <h2 class="h-small">What is being approved</h2>
+      <p class="muted">${esc(changeSentence(change))} Approving publishes exactly this, as
+        v${change.nextVersion}.</p>
+      ${title}
+      ${fields}
+      ${body}
+    </section>`;
+}
+
+// USER-TESTING.md T4.3 — the approver's refusal, in front of the author.
+//
+// It went to the outbox and to the audit log and to nowhere the author would
+// look: they saw a Draft with a green Submit button, no banner, no reason and
+// no rejector. The text is now a comment on the page as well (store.ts,
+// `sendBack`), and this is the banner that puts it at the top: who sent it
+// back, when, and what they said, in their words and in full.
+//
+// Shown to everyone who can read the page, not only to the author: "why is this
+// a Draft rather than Canonical" is a fact about the page.
+function sentBackNoticeHTML(sentBack) {
+  if (!sentBack) return '';
+  return `
+    <div class="notice notice-sentback">
+      <div><strong>${esc(actorName(sentBack.byId))}</strong> sent this back${
+        sentBack.at ? ` on ${fmtDateTime(sentBack.at)}` : ''
+      }. It is a Draft again — edit it and submit it again when it is ready.</div>
+      ${sentBack.reason ? `<blockquote class="sentback-reason">${esc(sentBack.reason)}</blockquote>` : ''}
+      ${sentBack.commentId
+        ? `<div class="muted">It is on the page as a comment too, where it can be replied to and resolved.
+           <button class="btn subtle" id="goto-sentback-comment">Show it in comments</button></div>`
+        : ''}
+    </div>`;
+}
+
 function reviewBannerHTML(review, typeNamesApprover) {
   // No `review` means a server older than this page, or a draft that has gone
   // missing under review. Say only what is still true rather than naming
@@ -1630,8 +1779,20 @@ async function viewPage(id) {
   const pendingOf = (key) => (pendingFields ? pendingFields[key] ?? null : undefined);
   const hasPublished = Boolean(current);
   const isApprover = Boolean(review && review.namesApprover && review.approverId === state.actor.id);
+  // What the server says this actor may do here (USER-TESTING.md T4.4). Absent
+  // on a server older than this page, in which case every action falls back to
+  // what it offered before — nothing below turns an offer ON that the old code
+  // withheld.
+  const can = page.abilities ?? null;
+  const ability = (name, fallback) => can?.[name] ?? fallback ?? { can: true, why: null };
+  // The diff of the draft under review against what it would replace (T4.2).
+  const change = inReview && draft ? summarizeChange(page, draft) : null;
 
-  const draftBanner = draft ? `
+  // The page lock, but not while the page is In Review: nobody is editing it
+  // then — the review is what holds it, the banner below says so and names who
+  // it is waiting on, and "being edited by Marc Ellis" beside that is a second
+  // explanation that is not the true one.
+  const draftBanner = draft && !inReview ? `
     <div class="notice ${draft.editorId === state.actor.id ? 'notice-mine' : 'notice-locked'}">
       ${draft.editorId === state.actor.id
         ? `You have a draft in progress (last saved ${fmtDateTime(draft.updatedAt)}).
@@ -1639,34 +1800,66 @@ async function viewPage(id) {
         : `This page is being edited by <strong>${esc(actorName(draft.editorId))}</strong>. Canon keeps drafts to one editor at a time.`}
     </div>` : '';
 
+  // USER-TESTING.md T4.4: "Every action is offered then refused." An action the
+  // server would refuse is now GREYED and carries the server's own sentence,
+  // and that sentence is repeated as text under the row — a `title` attribute
+  // is invisible to a keyboard and to a phone, and "who can do this instead" is
+  // the half of the answer that was missing.
+  //
+  // What is NOT done here: deciding anything. Every one of these is
+  // `page.abilities`, which store.ts computes beside the checks it mirrors, and
+  // the button being enabled has never been what makes the act legal.
+  const refusals = [];
+  const offer = (ability, label, enabledHTML) => {
+    if (ability.can) return enabledHTML;
+    if (ability.why) refusals.push(ability.why);
+    return `<button class="btn" disabled aria-disabled="true" title="${esc(ability.why ?? '')}">${label}</button>`;
+  };
+
   const actions = ['<span id="attestation-affordance"></span>', '<span id="ask-affordance"></span>'];
-  if (!isArchived && !inReview) actions.push(`<a class="btn" href="#/pages/${esc(id)}/edit">Edit</a>`);
+  if (!isArchived && !inReview) {
+    actions.push(offer(ability('edit'), 'Edit', `<a class="btn" href="#/pages/${esc(id)}/edit">Edit</a>`));
+  }
   actions.push(`<a class="btn" href="#/pages/${esc(id)}/history">History</a>`);
   // Needs Update submits like a Draft: the way back to Canonical is the review
-  // workflow, not a separate re-certify button (FEATURES.md §3).
+  // workflow, not a separate re-certify button (FEATURES.md §3). Offered
+  // wherever there is a draft to submit — including where it is not yet ready,
+  // which is the case somebody most needs the reason for.
   if (reviewed && (page.status === 'draft' || page.status === 'needs_update') && draft) {
-    actions.push('<button class="btn primary" id="act-submit">Submit for review</button>');
+    actions.push(
+      offer(ability('submit'), 'Submit for review', '<button class="btn primary" id="act-submit">Submit for review</button>'),
+    );
   }
   if (inReview) {
     // Offered to the one person the server will accept, and to nobody else.
     // Where the type names an approver, a green Approve button in anybody
-    // else's hands is the same wrong claim the header used to make.
-    const canApprove = !review || !review.namesApprover || isApprover;
-    actions.push(
-      canApprove
-        ? '<button class="btn primary" id="act-approve">Approve</button>'
-        : `<button class="btn primary" disabled title="Only ${esc(actorName(review.approverId))}, the named approver, can approve this.">Approve</button>`,
+    // else's hands is the same wrong claim the header used to make (T1.3). The
+    // fallback keeps that fix on a server that serves no abilities.
+    const approve = ability(
+      'approve',
+      review && review.namesApprover && !isApprover
+        ? { can: false, why: `Only ${actorName(review.approverId)}, the named approver, can approve this.` }
+        : null,
     );
-    actions.push('<button class="btn" id="act-sendback">Send back</button>');
+    actions.push(offer(approve, 'Approve', '<button class="btn primary" id="act-approve">Approve</button>'));
+    actions.push(offer(ability('sendBack'), 'Send back', '<button class="btn" id="act-sendback">Send back</button>'));
     // The author's way out of a submission nobody has acted on yet
-    // (USER-TESTING.md T4.5). Offered only where the server will accept it:
-    // `canWithdraw` is the server's own answer, and it means "you submitted
-    // this, and it is still waiting".
-    if (review?.canWithdraw) {
+    // (USER-TESTING.md T4.5). Offered only where the server will accept it, and
+    // hidden rather than greyed everywhere else: it is not an act anybody but
+    // its author has any business being shown.
+    if (can ? can.withdraw.can : review?.canWithdraw) {
       actions.push('<button class="btn" id="act-withdraw">Withdraw submission</button>');
     }
   }
-  if (!isArchived) actions.push('<button class="btn subtle" id="act-archive">Archive</button>');
+  if (!isArchived) {
+    actions.push(offer(ability('archive'), 'Archive', '<button class="btn subtle" id="act-archive">Archive</button>'));
+  }
+  // One line per refusal rather than a paragraph of them: somebody holding
+  // `view` on a page in review is refused three separate things, and three
+  // sentences run together read as a wall rather than as three answers.
+  const refusalNote = refusals.length
+    ? `<ul class="muted action-refusals">${[...new Set(refusals)].map((why) => `<li>${esc(why)}</li>`).join('')}</ul>`
+    : '';
 
   app.innerHTML = `
     <div class="layout">
@@ -1677,11 +1870,14 @@ async function viewPage(id) {
           <h1 class="doc-title">${esc(page.title)} ${badge(page.status)}</h1>
           <div class="actions">${actions.join('')}</div>
         </div>
+        ${refusalNote}
+        ${sentBackNoticeHTML(page.sentBack)}
         ${draftBanner}
         ${isArchived ? '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>' : ''}
         ${page.status === 'needs_update' ? `<div class="notice notice-stale">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed, so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review date, and submit it for review to return it to Canonical.</div>` : ''}
         ${overdueNoticeHTML(page)}
         ${inReview ? reviewBannerHTML(review, Boolean(rules.approver)) : ''}
+        ${reviewChangeHTML(change)}
 
         <dl class="field-block">
           <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
@@ -1723,18 +1919,41 @@ async function viewPage(id) {
       route();
     } catch (err) { toastError(err); }
   });
-  app.querySelector('#act-approve')?.addEventListener('click', () => openModal({
+  app.querySelector('#act-approve')?.addEventListener('click', () => {
+    const modal = openModal({
     title: 'Approve as Canonical',
     submitLabel: 'Approve',
+    // The extent of the change is restated here, from the same summary the
+    // panel behind this modal is drawn from, so the last thing read before the
+    // button is what the button does.
+    //
+    // The note stays optional, and says why. Send back requires a comment
+    // because a refusal without one is unperformable — the author is told "no"
+    // and nothing else. An approval writes its own record: the version, the
+    // approver's name, the instant, and the diff above. A required box here
+    // would fill forty rows a quarter with "ok", which is not evidence of
+    // consideration but a convincing imitation of it.
     body: `
-      <p class="muted">Approving publishes the reviewed draft and grants the Canonical mark.</p>
-      <label>Note <input name="note" placeholder="optional, kept in version history"></label>`,
+      <p class="muted">Approving publishes the reviewed draft and grants the Canonical mark.
+        ${change ? esc(changeSentence(change)) : ''}</p>
+      ${change ? '<p><button type="button" class="btn subtle" id="approve-see-diff">Show me the changes</button></p>' : ''}
+      <label>Note <input name="note" placeholder="optional, kept in version history"></label>
+      <p class="muted">Optional on purpose: what you approved is the version itself, with your name and the
+        time on it. A note is worth reading when somebody chose to write one.</p>`,
     onSubmit: async (form) => {
       await api('POST', `/pages/${id}/approve`, form.note.value.trim() ? { note: form.note.value.trim() } : {});
       toast('Approved. This page is now Canonical.', 'ok');
       route();
     },
-  }));
+    });
+    // The Approve button sits above the diff, so somebody can reach this modal
+    // without having scrolled past what it is about. This closes the modal and
+    // puts them in front of it — the one thing T4.2 says must not be optional.
+    document.getElementById('approve-see-diff')?.addEventListener('click', () => {
+      modal.close();
+      document.getElementById('review-change')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
   app.querySelector('#act-sendback')?.addEventListener('click', () => openModal({
     title: 'Send back to the author',
     submitLabel: 'Send back',
@@ -1773,6 +1992,17 @@ async function viewPage(id) {
     },
   }));
 
+  // The send-back reason is a comment as well as a banner; this walks somebody
+  // from one to the other. A plain `#comment-…` link cannot be used — the hash
+  // is the router — so it scrolls, and marks the comment it landed on.
+  app.querySelector('#goto-sentback-comment')?.addEventListener('click', () => {
+    const target = document.getElementById(`comment-${page.sentBack?.commentId}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('comment-flash');
+    setTimeout(() => target.classList.remove('comment-flash'), 2000);
+  });
+
   renderReferences(id, references);
   // Where the record disagrees with itself (DATA-BACKBONE.md §7). Two separate
   // pieces of server, feature-detected separately: neither one's absence hides
@@ -1780,7 +2010,7 @@ async function viewPage(id) {
   renderDivergencesPanel(id);
   renderRelationsPanel(id, page);
   renderRelatedPanel(id);
-  renderCommentsPanel(id);
+  renderCommentsPanel(id, can?.comment ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -2545,10 +2775,19 @@ function normalizeComment(c) {
     authorId: c.authorId ?? c.actorId ?? c.author ?? null,
     createdAt: c.createdAt ?? c.at ?? null,
     resolved: c.resolved ?? c.resolvedAt ?? false,
+    // An approver's send-back reason is a comment (USER-TESTING.md T4.3), and
+    // the most consequential sentence on the page should not read as an
+    // ordinary remark. The server derives it from the event that recorded the
+    // send-back; an older server says nothing and every comment reads plain.
+    sentBack: c.sentBack === true,
   };
 }
 
-async function renderCommentsPanel(pageId) {
+// `ability` is the server's answer about whether this actor may comment here,
+// in `page.abilities.comment` shape, or null on a server that serves none. A
+// refusal replaces the box with the reason rather than leaving a form that
+// 403s at the last click (T4.4).
+async function renderCommentsPanel(pageId, ability = null) {
   const host = document.getElementById('comments-host');
   if (!host || state.features.comments === false) return;
   let comments;
@@ -2568,25 +2807,29 @@ async function renderCommentsPanel(pageId) {
       ${comments.length ? `
         <ul class="comment-list">
           ${comments.map((c) => `
-            <li class="comment ${c.resolved ? 'resolved' : ''}">
+            <li class="comment ${c.resolved ? 'resolved' : ''} ${c.sentBack ? 'comment-sentback' : ''}"
+                id="comment-${esc(c.id)}">
               <div class="comment-meta">${actorLabel(c.authorId)}
                 <span class="muted">${fmtDateTime(c.createdAt)}</span>
+                ${c.sentBack ? '<span class="role-tag">sent this back</span>' : ''}
                 ${c.resolved ? '<span class="role-tag">resolved</span>' : ''}</div>
               <div class="comment-body">${esc(c.body)}</div>
             </li>`).join('')}
         </ul>` : '<p class="muted">No comments yet.</p>'}
-      <form id="comment-form" class="stack">
-        <textarea name="body" rows="2" required placeholder="Add a comment…"></textarea>
-        <div><button class="btn" type="submit">Comment</button></div>
-      </form>
+      ${ability && !ability.can
+        ? `<p class="muted">${esc(ability.why ?? 'You cannot comment on this page.')}</p>`
+        : `<form id="comment-form" class="stack">
+             <textarea name="body" rows="2" required placeholder="Add a comment…"></textarea>
+             <div><button class="btn" type="submit">Comment</button></div>
+           </form>`}
     </section>`;
-  host.querySelector('#comment-form').addEventListener('submit', async (e) => {
+  host.querySelector('#comment-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = e.target.body.value.trim();
     if (!body) return;
     try {
       await api('POST', `/pages/${pageId}/comments`, { body });
-      renderCommentsPanel(pageId);
+      renderCommentsPanel(pageId, ability);
     } catch (err) {
       if (err.status === 404 || err.status === 405) {
         state.features.comments = false;
@@ -3044,8 +3287,7 @@ async function viewCompare(id, a, b) {
     loadActors().catch(() => null),
   ]);
   const rows = diffLines(va.body, vb.body);
-  const changed = rows.filter((r) => r.type !== 'same').length;
-  const cell = (text, cls) => `<td class="diff-cell ${cls}">${text === undefined ? '' : `<span>${esc(text) || '&nbsp;'}</span>`}</td>`;
+  const changed = changedLines(rows);
   app.innerHTML = `
     <div class="page-wide">
       <p class="breadcrumb"><a href="#/pages/${esc(id)}/history">← Version history</a></p>
@@ -3055,23 +3297,11 @@ async function viewCompare(id, a, b) {
       ${va.title !== vb.title ? `<p class="notice">Title changed:
         <del>${esc(va.title)}</del> → <ins>${esc(vb.title)}</ins></p>` : ''}
       <p class="muted">${changed ? `${changed} changed line${changed === 1 ? '' : 's'}.` : 'The two versions have identical bodies.'}</p>
-      <div class="diff-scroll">
-        <table class="diff-table">
-          <thead>
-            <tr>
-              <th>v${a} · ${fmtDateTime(va.createdAt)} · ${esc(actorName(va.authorId))}</th>
-              <th>v${b} · ${fmtDateTime(vb.createdAt)} · ${esc(actorName(vb.authorId))}</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map((r) => {
-              if (r.type === 'same') return `<tr>${cell(r.a, '')}${cell(r.b, '')}</tr>`;
-              if (r.type === 'del') return `<tr>${cell(r.a, 'del')}${cell(undefined, 'void')}</tr>`;
-              return `<tr>${cell(undefined, 'void')}${cell(r.b, 'add')}</tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
+      ${diffTableHTML(
+        rows,
+        `v${a} · ${fmtDateTime(va.createdAt)} · ${esc(actorName(va.authorId))}`,
+        `v${b} · ${fmtDateTime(vb.createdAt)} · ${esc(actorName(vb.authorId))}`,
+      )}
     </div>`;
 }
 
