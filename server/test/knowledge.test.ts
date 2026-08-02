@@ -16,6 +16,7 @@ import { RegistryStore } from '../../registry-stub/src/store.js';
 import { AgentAuth } from '../src/agentauth.js';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
+import { RateLimiter } from '../src/ratelimit.js';
 import { RegistryClient } from '../src/registry.js';
 import { CanonStore } from '../src/store.js';
 
@@ -39,7 +40,7 @@ interface Rig {
   close: () => void;
 }
 
-async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promise<Rig> {
+async function rig(opts: { ttlMs?: number; withRegistry?: boolean; limiter?: RateLimiter } = {}): Promise<Rig> {
   const registry = new RegistryStore();
   const registryServer = createRegistryApi(registry);
   await new Promise<void>((resolve) => registryServer.listen(0, resolve));
@@ -55,7 +56,7 @@ async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promi
           store,
           registry: new RegistryClient({ baseUrl: registryUrl, cacheTtlMs: opts.ttlMs ?? 0, requestTimeoutMs: 500 }),
         });
-  const canon = createApi(store, auth);
+  const canon = createApi(store, auth, opts.limiter ?? new RateLimiter({}));
   await new Promise<void>((resolve) => canon.listen(0, resolve));
   const base = `http://127.0.0.1:${(canon.address() as AddressInfo).port}`;
 
@@ -527,6 +528,151 @@ test('grounded answers through the Knowledge API stay Canonical-only, cited, and
   }
 });
 
+// USER-TESTING.md T3.7. Four situations used to answer byte for byte alike:
+// the Registry withholding the collection, the person not holding it, the app
+// not holding it, and the record simply having nothing to say. The contract
+// told apps not to render those the same way while giving them no way to tell
+// them apart.
+//
+// The distinction is drawn ONLY for an ask that names a collection — an asker
+// who names one already knows it exists, because the Registry limit that let
+// the name through was written by an administrator. The test below asserts
+// both halves: that a scoped ask separates all four, and that an unscoped one
+// still separates NONE of them, which is the property the leakage probing
+// depended on.
+test('a scoped ask tells its four refusals apart; an unscoped one deliberately does not', async () => {
+  const r = await rig();
+  try {
+    const { admin, jo, benefits, legal, coverage } = await seed(r);
+    const app = await studioApp(r);
+    // The app may read Benefits; Jo may read both. Nobody's Canon role touches
+    // the Registry, which permits everything for now.
+    r.store.setMember(admin.id, benefits.id, app.actorId, 'view');
+    r.store.setMember(admin.id, benefits.id, jo.id, 'view');
+    r.store.setMember(admin.id, legal.id, jo.id, 'view');
+
+    const question = 'How are generic prescriptions covered?';
+    const ask = (body: unknown) => r.call('POST', '/knowledge/ask', { passport: app.passport, onBehalfOf: jo.id }, body);
+
+    // 1. The APP is not permitted the collection in Canon. This is the one
+    //    T3.7 found silent: the person's gate passed, the candidate SQL
+    //    returned nothing, and the response was "the record does not say".
+    const appGate = await ask({ question, collectionId: legal.id });
+    assert.equal(appGate.status, 403);
+    assert.equal(appGate.json.reason, 'app_not_permitted');
+    assert.equal(appGate.json.refusedBy, 'app');
+    assert.equal(appGate.json.collectionId, legal.id);
+    assert.equal(appGate.json.held, null, 'a collection the app holds no role in discloses no role');
+
+    // 2. The PERSON is not permitted it. Unchanged, and it refuses first: the
+    //    gates run Registry, person, app, and each one narrows.
+    r.store.removeMember(admin.id, legal.id, jo.id);
+    const personGate = await ask({ question, collectionId: legal.id });
+    assert.equal(personGate.status, 403);
+    assert.equal(personGate.json.reason, 'person_not_permitted');
+    assert.equal(personGate.json.refusedBy, 'person');
+
+    // 3. The record is silent inside a collection all three gates opened. This
+    //    is now the ONLY thing a scoped `no_canonical_match` can mean.
+    const silent = await ask({ question: 'What is our policy on submarine procurement?', collectionId: benefits.id });
+    assert.equal(silent.status, 200);
+    assert.deepEqual(silent.json, { answer: null, citations: [], refused: true, reason: 'no_canonical_match' });
+
+    // 4. The REGISTRY withholds it, before the handler runs at all.
+    r.registry.setPermissions(app.agentId, { permittedCollections: [benefits.id] });
+    const registryGate = await ask({ question, collectionId: legal.id });
+    assert.equal(registryGate.status, 403);
+    assert.equal(registryGate.json.reason, 'collection_not_permitted');
+
+    // And the answer still comes back where every gate is open.
+    const answered = await ask({ question, collectionId: benefits.id });
+    assert.equal(answered.status, 200);
+    assert.equal(answered.json.refused, false);
+    assert.ok(answered.json.citations.every((c: any) => c.pageId === coverage.id));
+
+    // ---- what stays indistinguishable, on purpose ------------------------
+    //
+    // The same four situations, asked as an OPEN question, must produce one
+    // response. Saying anything else would tell an app that a collection it
+    // was never told about exists and holds material on its subject.
+    r.registry.setPermissions(app.agentId, { permittedCollections: ['*'] });
+    r.store.setMember(admin.id, legal.id, jo.id, 'view'); // Jo can see Legal; the app cannot
+    const openSilent = await ask({ question: 'What is our policy on submarine procurement?' });
+    assert.deepEqual(openSilent.json, { answer: null, citations: [], refused: true, reason: 'no_canonical_match' });
+
+    // Legal holds a Canonical page answering this question and Jo may read it,
+    // but the app may not — so the pair is answered from Benefits only, and
+    // the refusal that would have named Legal is never composed. Ask about
+    // something ONLY Legal answers and the response is the one above, to the
+    // byte, with nothing in it to say a Legal exists. (The pair still reads
+    // Benefits, so this is the record's silence, not an empty intersection.)
+    const hidden = await ask({ question: 'What does the disputed settlement say?' });
+    assert.deepEqual(
+      hidden.json,
+      openSilent.json,
+      'an open question is never told that material it may not read exists',
+    );
+  } finally {
+    r.close();
+  }
+});
+
+// The one thing an open question MAY be told: that the pair asking it can read
+// nothing at all. That is the caller's own standing, not the record's
+// contents — the same fact whoami hands the same caller in full — and it is
+// the commonest way a Studio integration fails on its first afternoon.
+test('an ask by a pair that can read nothing says so, rather than blaming the record', async () => {
+  const r = await rig();
+  try {
+    const { admin, jo, benefits } = await seed(r);
+    const app = await studioApp(r);
+    const ask = (body: unknown) => r.call('POST', '/knowledge/ask', { passport: app.passport, onBehalfOf: jo.id }, body);
+    const question = 'How are generic prescriptions covered?';
+
+    // Certified, permitted every collection by the Registry, a member of none
+    // in Canon: the app reads nothing, and the honest answer says which of the
+    // two silences this is.
+    const unconfigured = await ask({ question });
+    assert.equal(unconfigured.status, 200, 'this is not a refusal of the call: it succeeded and had nowhere to look');
+    assert.equal(unconfigured.json.refused, true);
+    assert.equal(unconfigured.json.reason, 'nothing_readable');
+    assert.deepEqual(unconfigured.json.citations, []);
+
+    // whoami says the same thing, from the same computation, so an app that
+    // renders "we can read nothing for you" can prove it before asking.
+    const who = await r.call('GET', '/knowledge/whoami', { passport: app.passport, onBehalfOf: jo.id });
+    assert.deepEqual(who.json.collections, []);
+
+    // The person alone is not enough, and neither is the app alone: the reason
+    // holds until BOTH hold a role, which is the intersection restated.
+    r.store.setMember(admin.id, benefits.id, jo.id, 'view');
+    assert.equal((await ask({ question })).json.reason, 'nothing_readable');
+    r.store.setMember(admin.id, benefits.id, app.actorId, 'view');
+    const now = await ask({ question });
+    assert.equal(now.json.refused, false);
+
+    // An empty Registry limit is nowhere, not anywhere — and now says so.
+    r.registry.setPermissions(app.agentId, { permittedCollections: [] });
+    const withheld = await ask({ question });
+    assert.equal(withheld.json.refused, true);
+    assert.equal(withheld.json.reason, 'nothing_readable');
+
+    // Back inside the limit, a question the record cannot answer is the
+    // record's silence again, and says the other thing.
+    r.registry.setPermissions(app.agentId, { permittedCollections: ['*'] });
+    const quiet = await ask({ question: 'What is our policy on submarine procurement?' });
+    assert.equal(quiet.json.reason, 'no_canonical_match');
+
+    // The audit log carries which silence it was, so an operator reading a
+    // week of refusals can tell a misconfigured app from a thin corpus.
+    const asks = (await r.call('GET', '/audit?action=knowledge.ask', { actor: admin.id })).json;
+    const reasons = asks.filter((e: any) => e.details.refused).map((e: any) => e.details.reason);
+    assert.deepEqual(reasons.slice().sort(), ['no_canonical_match', 'nothing_readable', 'nothing_readable', 'nothing_readable']);
+  } finally {
+    r.close();
+  }
+});
+
 test('the Registry’s collection limit bounds an answer that names no collection', async () => {
   const r = await rig();
   try {
@@ -732,6 +878,114 @@ test('the write surface lands under Canon’s workflow: no app grants the Canoni
       { body: 'Checked against the handbook.' },
     );
     assert.equal(commented.status, 200);
+  } finally {
+    r.close();
+  }
+});
+
+// USER-TESTING.md T3.8. The `ask` bucket keyed on the actor, and on this
+// surface the actor is the APP — so a whole company got twelve questions a
+// minute between them, and one impatient person could spend the lot.
+//
+// The key is now the pair, and there is a second bucket keyed on the app alone.
+// That second one is why keying the first on an app-asserted header is safe:
+// forging person identifiers subdivides a budget, it does not enlarge one.
+test('the ask bucket is keyed by the person, and the app’s own ceiling is what makes that safe', async () => {
+  // Two questions each per person; six for the app across everybody. No refill
+  // inside the test, so every number below is exact.
+  const limiter = new RateLimiter({ ask: { burst: 2, perMinute: 0 }, askApp: { burst: 6, perMinute: 0 } });
+  const r = await rig({ limiter });
+  try {
+    const { admin, jo, approver: iris, benefits } = await seed(r);
+    const app = await studioApp(r);
+    r.store.setMember(admin.id, benefits.id, app.actorId, 'view');
+    r.store.setMember(admin.id, benefits.id, jo.id, 'view');
+    r.store.setMember(admin.id, benefits.id, iris.id, 'view');
+
+    const ask = (person: string) =>
+      r.call(
+        'POST',
+        '/knowledge/ask',
+        { passport: app.passport, onBehalfOf: person },
+        { question: 'How are generic prescriptions covered?' },
+      );
+
+    // Jo spends Jo's two and is refused the third.
+    assert.equal((await ask(jo.id)).status, 200);
+    assert.equal((await ask(jo.id)).status, 200);
+    const spent = await ask(jo.id);
+    assert.equal(spent.status, 429);
+    assert.equal(spent.json.bucket, 'ask');
+
+    // THE FINDING: Iris asks through the same app, and Jo's exhaustion is not
+    // hers. Before this, the company shared one bucket and this was a 429.
+    assert.equal((await ask(iris.id)).status, 200, 'one person’s questions are not the company’s');
+    assert.equal((await ask(iris.id)).status, 200);
+    assert.equal((await ask(iris.id)).status, 429);
+
+    // AND THE FORGERY BOUND. `X-On-Behalf-Of` is asserted by the app and Canon
+    // does not verify it, so an app could name a fresh person per request. It
+    // buys two more questions and then meets the ceiling it cannot forge: its
+    // own actor, resolved from its passport by the Registry. Six spent, six
+    // allowed, and the seventh is refused however it is addressed.
+    const alva = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Alva' })).json;
+    r.store.setMember(admin.id, benefits.id, alva.id, 'view');
+    assert.equal((await ask(alva.id)).status, 200);
+    assert.equal((await ask(alva.id)).status, 200);
+    const ceiling = await ask(alva.id);
+    assert.equal(ceiling.status, 429);
+    assert.equal(ceiling.json.bucket, 'ask', 'Alva’s own bucket empties first');
+
+    const nobody = (await r.call('POST', '/actors', {}, { kind: 'person', name: 'Invented' })).json;
+    const forged = await ask(nobody.id);
+    assert.equal(forged.status, 429, 'a fresh person id does not mint a fresh budget');
+    assert.equal(forged.json.bucket, 'askApp');
+
+    // A person's own bucket is per (app, person): a SECOND app acting for Jo
+    // is a different caller, with its own budget, because it is a different
+    // party to the call with its own Registry limits and its own Canon role.
+    const second = await studioApp(r, { name: 'Second Assistant' });
+    r.store.setMember(admin.id, benefits.id, second.actorId, 'view');
+    const throughSecond = await r.call(
+      'POST',
+      '/knowledge/ask',
+      { passport: second.passport, onBehalfOf: jo.id },
+      { question: 'How are generic prescriptions covered?' },
+    );
+    assert.equal(throughSecond.status, 200);
+  } finally {
+    r.close();
+  }
+});
+
+// The other half of T3.8 on this surface: a Studio call refused at a gate, or
+// sent malformed, reaches no retrieval and so spends nothing.
+test('a Studio ask refused before the work costs the person nothing', async () => {
+  const limiter = new RateLimiter({ ask: { burst: 2, perMinute: 0 }, askApp: { burst: 20, perMinute: 0 } });
+  const r = await rig({ limiter });
+  try {
+    const { admin, jo, benefits, legal } = await seed(r);
+    const app = await studioApp(r);
+    r.store.setMember(admin.id, benefits.id, app.actorId, 'view');
+    r.store.setMember(admin.id, benefits.id, jo.id, 'view');
+    r.store.setMember(admin.id, legal.id, jo.id, 'view');
+
+    const question = 'How are generic prescriptions covered?';
+    const headers = { passport: app.passport, onBehalfOf: jo.id };
+
+    // A question Canon will not accept, a person Canon has never heard of, and
+    // a collection the app may not read: 400, 403, 403, and no tokens spent.
+    assert.equal((await r.call('POST', '/knowledge/ask', headers, { question: '' })).status, 400);
+    assert.equal(
+      (await r.call('POST', '/knowledge/ask', { passport: app.passport, onBehalfOf: 'nobody' }, { question })).status,
+      403,
+    );
+    assert.equal((await r.call('POST', '/knowledge/ask', headers, { question, collectionId: legal.id })).status, 403);
+
+    // The two questions Jo actually has are still there.
+    assert.equal((await r.call('POST', '/knowledge/ask', headers, { question })).status, 200);
+    assert.equal((await r.call('POST', '/knowledge/ask', headers, { question })).status, 200);
+    assert.equal((await r.call('POST', '/knowledge/ask', headers, { question })).status, 429);
   } finally {
     r.close();
   }

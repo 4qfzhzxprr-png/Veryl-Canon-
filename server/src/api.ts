@@ -523,7 +523,8 @@ const routes: Route[] = [
 // Knowledge read surface are unlimited by design: a limiter that can lock a
 // person out of a policy at the moment they need it has cost more than it saved.
 const RATE_LIMITED: { method: string; pattern: RegExp; bucket: BucketName }[] = [
-  // Retrieval over the visible corpus, then generation. Both doors to it.
+  // Retrieval over the visible corpus, then generation. Both doors to it, and
+  // the Studio door carries a second bucket as well — see `chargesFor`.
   { method: 'POST', pattern: /^\/ask$/, bucket: 'ask' },
   { method: 'POST', pattern: new RegExp(`^${KNOWLEDGE_PREFIX}/ask$`), bucket: 'ask' },
   // Reaches an external system, once per reference on the page. Listing the
@@ -562,6 +563,52 @@ function auditFilterFrom(query: URLSearchParams) {
 
 function bucketFor(method: string, pathname: string): BucketName | null {
   return RATE_LIMITED.find((r) => r.method === method && r.pattern.test(pathname))?.bucket ?? null;
+}
+
+/** One bucket this request draws on, and the key it draws on it under. */
+interface Charge {
+  bucket: BucketName;
+  key: string;
+}
+
+/**
+ * Which buckets this request spends from, and under what key.
+ *
+ * Everywhere but Veryl Studio the answer is "one bucket, keyed by the actor",
+ * because there the actor IS the caller. On the Knowledge API it is not: the
+ * actor is the app, and one app is a whole company (USER-TESTING.md T3.8). So
+ * a Studio ask draws on two buckets and needs a token from each —
+ *
+ *   `ask`, keyed by the app AND the person it names, so one person's questions
+ *   cannot exhaust everybody else's share;
+ *   `askApp`, keyed by the app alone, so the total an app can spend does not
+ *   depend on how many people it claims to be acting for.
+ *
+ * The second is what makes it safe to key the first on `X-On-Behalf-Of`, which
+ * the app asserts and Canon does not verify (STUDIO-CONTRACT.md §3). An app
+ * inventing a person per request mints itself as many `ask` buckets as it
+ * likes and gets no further, because every one of those calls also spends from
+ * the one bucket whose key it cannot choose: its own actor, resolved from its
+ * passport by the Registry. Assertion is used only to SUBDIVIDE a budget, never
+ * to enlarge one. See ratelimit.ts for the argument at length.
+ *
+ * The person is taken verbatim rather than resolved. A limiter that looked
+ * actors up would be a second place that decides who a caller is, running
+ * before the handler that actually decides it, and the two would drift; and it
+ * would buy nothing, because a forged key is already bounded by `askApp`. An
+ * unresolvable person is refused by knowledge.ts a moment later, and — being a
+ * refusal that reaches no retrieval — spends nothing at all.
+ */
+function chargesFor(method: string, pathname: string, actorId: string, headers: IncomingHttpHeaders): Charge[] {
+  const bucket = bucketFor(method, pathname);
+  if (!bucket) return [];
+  if (bucket !== 'ask' || !pathname.startsWith(`${KNOWLEDGE_PREFIX}/`)) return [{ bucket, key: actorId }];
+  const raw = headers['x-on-behalf-of'];
+  const person = (Array.isArray(raw) ? raw[0] : raw)?.trim() ?? '';
+  return [
+    { bucket: 'ask', key: person ? `${actorId}/${person}` : actorId },
+    { bucket: 'askApp', key: actorId },
+  ];
 }
 
 /**
@@ -646,6 +693,13 @@ export function createApi(
 ): Server {
   const devAuth = personAuth ? personAuth.devAuth : devAuthEnabled();
   return createServer(async (req, res) => {
+    // What this request will owe if it does the work. Declared out here so the
+    // failure path can decide whether to charge it: a CanonError is a refusal
+    // Canon reached without doing the work the bucket bounds — a malformed
+    // body, a missing header, a closed gate — and none of those spends a
+    // token. Anything else is a bug that got far enough to cost something, and
+    // it pays.
+    let charges: Charge[] = [];
     try {
       const url = new URL(req.url ?? '/', 'http://canon');
       // The door's own routes, before the record's route table: sign in, sign
@@ -715,11 +769,15 @@ export function createApi(
         });
         return;
       }
-      // Rate limiting, once identity is settled so the bucket is per actor
-      // (SECURITY.md R8). Before the body is read and long before any work is
-      // done: refusing after the expensive part would bound nothing.
-      const bucket = bucketFor(req.method ?? '', url.pathname);
-      if (bucket) limiter.take(bucket, actorId);
+      // Rate limiting, once identity is settled so the buckets can be keyed by
+      // who is asking (SECURITY.md R8). CHECKED here — before the body is read
+      // and long before any work is done, because an empty bucket must refuse
+      // without first buffering eight megabytes — and CHARGED after the
+      // handler returns, so a malformed body or a refusal at a gate costs
+      // nobody a question (USER-TESTING.md T3.8). See `chargesFor` for why a
+      // Studio ask draws on two buckets.
+      charges = chargesFor(req.method ?? '', url.pathname, actorId, req.headers);
+      for (const c of charges) limiter.check(c.bucket, c.key);
       const groups = url.pathname.match(match.pattern)!.slice(1);
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
@@ -747,6 +805,11 @@ export function createApi(
       const result = await runInAgentRequestScope(agentAuth, session, () =>
         match.handler({ store, actorId, params, query: url.searchParams, body, agent: session, headers: req.headers }),
       );
+      // The work happened, so it is paid for. `charge` never refuses: a
+      // concurrent request may have emptied the bucket while this one was
+      // running, and an answer that has already been retrieved, generated and
+      // cited must not be thrown away over an accounting race.
+      for (const c of charges) limiter.charge(c.bucket, c.key);
       // Almost everything here is JSON; a handler that needs another content
       // type (the audit CSV download) returns a RawResponse and writes itself.
       // An agent's narrowing never applies to it: the CSV routes are not in
@@ -776,6 +839,7 @@ export function createApi(
         // the whole error — stack included — go to the server's log, where an
         // operator holding the id from a bug report can find the one line that
         // explains it. Correlatable, not disclosed.
+        for (const c of charges) limiter.charge(c.bucket, c.key);
         const errorId = randomUUID();
         noteRequest(res, { errorId });
         // Through the logger rather than `console.error`, for two reasons. The

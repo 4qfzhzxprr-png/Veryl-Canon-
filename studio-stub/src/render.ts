@@ -25,6 +25,24 @@ export function renderAnswer(input: RenderInput): string {
   const asked = `Q: ${input.question}`;
 
   if (input.answer.refused || !input.answer.answer) {
+    // Two silences, and they are not the same sentence (USER-TESTING.md T3.7).
+    // `nothing_readable` says the app and the person between them hold no
+    // readable collection at all — that is a statement about this app's
+    // configuration, and rendering it as "the record does not say" would be
+    // this app telling somebody something false about their company's record.
+    // `whoami` is the follow-up, and it is where the fix will be visible.
+    if (input.answer.reason === 'nothing_readable') {
+      return [
+        header,
+        asked,
+        '',
+        'No answer: this app can read nothing for you.',
+        '',
+        `That is not the record being silent — ${input.appName} and ${input.personName} between them hold no ` +
+          'readable collection, so there was nowhere to look. Someone with administrator access needs to grant ' +
+          'one, in Canon or in the Veryl Agent Registry. "Who am I" reports exactly which of the two is missing.',
+      ].join('\n');
+    }
     const reason = input.answer.reason ? ` (${input.answer.reason})` : '';
     return [
       header,

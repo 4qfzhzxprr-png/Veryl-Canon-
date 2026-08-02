@@ -20,6 +20,8 @@ import { createStudioApi } from '../src/api.js';
 import { BenefitsApp } from '../src/app.js';
 import { KnowledgeClient } from '../src/client.js';
 
+const TODAY = new Date().toISOString().slice(0, 10);
+
 interface Rig {
   registry: RegistryStore;
   store: CanonStore;
@@ -135,12 +137,24 @@ async function seedCanon(canon: Rig['canon'], store: CanonStore) {
 
   const canonical = async (collectionId: string, title: string, body: string) => {
     const page = (await canon('POST', '/pages', admin.id, { collectionId, type: 'policy', title })).json;
-    await canon('PUT', `/pages/${page.id}/draft`, admin.id, {
+    const drafted = await canon('PUT', `/pages/${page.id}/draft`, admin.id, {
       body,
-      fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01' },
+      // A Policy states an effective date before it can publish
+      // (USER-TESTING.md T1.5). These fixtures are written and published in the
+      // same breath, so today's date is the honest one: it claims nothing about
+      // a time before the record, and so needs no basis.
+      fields: { ownerId: admin.id, approverId: approver.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
     });
-    await canon('POST', `/pages/${page.id}/submit`, admin.id, {});
-    await canon('POST', `/pages/${page.id}/approve`, approver.id, {});
+    const submitted = await canon('POST', `/pages/${page.id}/submit`, admin.id, {});
+    const approved = await canon('POST', `/pages/${page.id}/approve`, approver.id, {});
+    // Assert the fixture rather than assume it. Every test in this file rests
+    // on these two pages being Canonical, and a workflow rule added later
+    // otherwise turns into eight failures that all look like the Knowledge API
+    // — which is exactly what a missing effective date did.
+    assert.equal(drafted.status, 200, JSON.stringify(drafted.json));
+    assert.equal(submitted.status, 200, JSON.stringify(submitted.json));
+    assert.equal(approved.status, 200, JSON.stringify(approved.json));
+    assert.equal(approved.json.status, 'canonical');
     return page;
   };
 
@@ -250,7 +264,14 @@ test('the app cannot answer from what the app cannot read', async () => {
     });
     assert.equal(asked.json.refused, true, 'a person cannot lend the app access the app does not have');
     assert.deepEqual(asked.json.citations, []);
-    assert.match(asked.json.rendered, /The record does not say/);
+    // And it says WHICH silence this is. The app is a member of nothing, so
+    // the honest sentence is "this app can read nothing for you" — rendering
+    // "the record does not say" here would be the app making a false claim
+    // about the company's record on the strength of its own misconfiguration
+    // (USER-TESTING.md T3.7).
+    assert.equal(asked.json.reason, 'nothing_readable');
+    assert.match(asked.json.rendered, /this app can read nothing for you/);
+    assert.equal(asked.json.rendered.includes('The record does not say'), false);
 
     // And whoami says exactly why: the intersection is empty.
     const who = await r.studio('GET', `/whoami?person=${seed.jo.id}`);

@@ -36,10 +36,13 @@ There are exactly three outcomes of `POST /ask`, and the app is honest about whi
 | | `refused` | `citations` | `error` | Rendered as |
 |---|---|---|---|---|
 | A cited answer | `false` | one or more | absent | the answer, then its sources |
-| The record is silent | `true` | empty | absent | "The record does not say (no_canonical_match)." |
+| The record is silent | `true` | empty | absent (`reason: no_canonical_match`) | "The record does not say (no_canonical_match)." |
+| This app can read nothing | `true` | empty | absent (`reason: nothing_readable`) | "No answer: this app can read nothing for you." |
 | Canon refused the call | `true` | empty | present | "No answer: *who* does not have access…" |
 
-The third row is the one that matters for trust. A refusal is *information* — the person is entitled to know that something exists which they, or the app, may not read — and it is never softened into "I could not find much, but generally…".
+The last row is the one that matters for trust. A refusal is *information* — the person is entitled to know that something exists which they, or the app, may not read — and it is never softened into "I could not find much, but generally…".
+
+The third row exists because of the row above it. "The record does not say" is a claim about the company's record, and an app that made it because *its own* administrator never granted it a collection would be telling somebody something false about their employer's policies (USER-TESTING.md T3.7). Canon distinguishes the two, and so does this app: `nothing_readable` names a configuration problem, points at `whoami`, and never blames the record.
 
 Honest liberties of a test double, the same ones registry-stub and source-stub take: state is in-memory (there is none), and the app's own caller is unauthenticated — a real Studio deployment authenticates its users and derives `person` from the session. The liberty is stated rather than hidden: an app that lied about who it was acting for would be lying to Canon, and Canon's audit log would faithfully record the lie against the app's own name.
 
@@ -145,12 +148,19 @@ curl -s :3300/ask -d '{
 Benefits Assistant — answering for Ada
 Q: How are generic prescriptions covered?
 
-The record does not say.
+No answer: this app can read nothing for you.
 
-Nothing was answered from outside the record, and nothing was guessed.
+That is not the record being silent — Benefits Assistant and Ada between them hold no
+readable collection, so there was nowhere to look. Someone with administrator access
+needs to grant one, in Canon or in the Veryl Agent Registry. "Who am I" reports exactly
+which of the two is missing.
 ```
 
 Same app, same passport, same question, same second. The app did not choose to withhold anything, and could not have chosen otherwise: Canon filtered the candidates by Ada's permissions before anything was ranked, so the policy never entered the context the answer was composed from.
+
+Note what is *not* said. Canon did not tell this app that a Benefits collection exists, that it holds a prescription policy, or that Ada is one grant away from reading it — an app that named none of the record's containers is told nothing about them. What it is told is a fact about **Ada and this app**: between them they hold nothing readable, which is the same fact `whoami` hands the same caller in full, and which is the difference between a misconfigured app and a thin corpus.
+
+Ask the same question for a person who *does* hold Benefits but about something nobody has written down, and the answer is the other sentence — "The record does not say (no_canonical_match)."
 
 **6. Ask why.**
 

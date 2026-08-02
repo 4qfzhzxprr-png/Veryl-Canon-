@@ -64,6 +64,8 @@ Three gates, in series, no union among them. Concretely, for a call needing role
 
 Where a call spans collections — a listing, a search, a grounded answer — the three gates become three narrowings of the candidate set rather than three refusals, following the rule REGISTRY-CONTRACT.md section 4.2 already established: nothing outside the limits reaches the caller, and narrowing keeps that guarantee without refusing a search because the record holds a collection somebody may not see.
 
+A call that *names* a collection is not spanning, whatever else it does. `POST /knowledge/ask` with a `collectionId` is a question about one named collection: all three gates refuse it out loud, exactly as they do for a page or a tree, rather than narrowing it to an empty candidate set and answering "the record does not say". The same request without a `collectionId` spans, and narrows, and is told nothing about what the narrowing removed. Section 10's `ask` argues that line at length; it is the one place where naming a thing changes what Canon will say about it, and it is drawn there deliberately.
+
 `refusedBy` is in the response body for a reason. "My app cannot read this" and "the person my app is acting for cannot read this" are different problems with different fixes — one is an administrator's job in Canon or the Registry, the other is the person's own access request — and an operator who cannot tell them apart will guess.
 
 ### 4.1 Where the narrowing is applied, and why it matters
@@ -109,7 +111,9 @@ Everything a Studio app may read, permission-filtered per call by all three gate
 
 Grounded answers through this API obey DATA-BACKBONE.md section 5 **unchanged**: Canonical pages only, never a Draft and never a Note; every claim cites page and version; an answer with no citations is never returned; and when the filtered, expanded context does not answer the question, the answer is that the record does not say. Refusal is a correct answer, and an app that softened it into plausible prose would be the confident wrong answer the whole design is against.
 
-What the read surface deliberately does **not** carry: drafts and the working layer, the audit log, notifications, import runs, the source register, and reference resolution. Some of those are governance surfaces that belong to an administrator rather than to an app; the rest are open questions (section 10), and the Knowledge API being an allow-list means none of them leaks in by accident.
+With one addition this surface makes, because it has a second identity that Canon's own question box does not: *the record does not say* and *this app and this person can read nothing at all* are different sentences, and section 10 keeps them apart. The second is a misconfiguration, not a fact about the record, and an app that reported it as one would be making a false claim about somebody's company on the strength of its own missing grant.
+
+What the read surface deliberately does **not** carry: drafts and the working layer, the audit log, notifications, import runs, the source register, and reference resolution. Some of those are governance surfaces that belong to an administrator rather than to an app; the rest are open questions (section 12), and the Knowledge API being an allow-list means none of them leaks in by accident.
 
 ## 7. The write surface
 
@@ -180,9 +184,17 @@ Refusals decided inside the call, by the two Canon gates:
 | 403 | `forbidden` | `person_not_permitted` | `person` | The person does not hold the needed role here |
 | 403 | `forbidden` | `app_not_permitted` | `app` | The app does not hold the needed role here |
 
-Both carry `collectionId`, `needed` and `held` so the fix is obvious, and `person_not_permitted` carries `onBehalfOf`.
+Both carry `collectionId`, `needed` and `held` so the fix is obvious, and `person_not_permitted` carries `onBehalfOf`. Both are reached by every route that names one collection, **including `POST /knowledge/ask` when the request names a `collectionId`** — a scoped ask is a request about one named collection and is refused like one, rather than narrowed to nothing and answered as silence. See section 10's `ask` for the whole of that argument and for what an *unscoped* ask deliberately will not tell you.
 
 Canon's ordinary codes reach an app unchanged where the call got that far: `404 not_found`, `400 invalid`, `409 conflict`, `423 locked`, `422 workflow`. An app meets the workflow it would have met as a person.
+
+One more, which is not a permission refusal and should not be handled like one:
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 429 | `rate_limited` | Too many questions too quickly. Carries `bucket` and `retryAfterSeconds` |
+
+Only `POST /knowledge/ask` is limited on this surface; reading the record is not, deliberately, because a limiter that can stop somebody reading a policy at the moment they need it has cost more than it saved. The limit is per **person through this app**, keyed on `X-On-Behalf-Of`, so one impatient person cannot spend the company's budget — and there is a second, larger ceiling on the app across everybody it names, so an app cannot enlarge its own budget by naming people it invented. Two consequences for an integrator: `retryAfterSeconds` is worth obeying rather than retrying blind, and `bucket` says which limit was hit (`ask` is this person's, `askApp` is your whole app's — the second means your app is busy, not that this person is). A refused or malformed request costs nothing, so a retry after fixing a `400` is not charged twice.
 
 Two rules sharpen all of this. First, Canon never converts "no answer" into a definitive refusal or, worse, into an allowance. Second, a refusal is *information* and never an empty result: a Studio app that renders "no results" where Canon said "you may not read this" is telling the person something false about the record, and the reference app in `studio-stub` renders the two differently on purpose.
 
@@ -296,13 +308,20 @@ Request:
 }
 ```
 
-Three fields on that response are optional, present only when they have something to say, and were being returned before they were written down here. They are documented now because an integrator who cannot see them in the contract will either ignore them or, worse, invent a default for them:
+The ids above are illustrative, as everywhere in this section: a collection id and a page id are UUIDs belonging to one record, and `col-benefits` is not one of them. An app discovers the collection it works in from `GET /knowledge/collections` or `GET /knowledge/whoami` and holds onto nothing else. Section 11 works the whole thing through against a record you can seed yourself.
 
 **`citations[].status`** — the standing of the page the snippet was quoted from: `canonical`, or `needs_update` when that page is past its review date. Those are the only two values an answer can cite (a Draft, a Note and an archived page are never cited at all), and both are official record. Show it. **Absent means this response cannot say, never `canonical`.** An app that fills a missing status in with the mark that means "approved and current" is making the single most trust-bearing claim in the product on no evidence; render nothing and let the reader click through instead. Canon's own Ask view shipped that default for a while and printed CANONICAL over pages its own answer text was calling past review.
 
-**`pastReview`** — `[{ "pageId": "pg-1", "title": "…" }]`, the cited pages that are past their review date, omitted entirely when there are none. It is the same fact as a `needs_update` status, pre-filtered so an app can flag the answer as a whole without walking the citations. The answer prose says it too, in words; this is the machine-readable half, and an app that renders only the prose is still correct.
+**Four further optional fields may accompany an answer.** Each is present only when it applies, so the shape above is what an ordinary answer looks like and an app that has never heard of these reads exactly what it always read. Each is also stated in the `answer` prose verbatim, so an app that renders only the text still shows the warning — these fields are the machine-readable half, for an app that wants to render it as something other than a paragraph. **None of them may be dropped in rendering.** DATA-BACKBONE.md section 7 is explicit that an answer must never smooth a contradiction, and an app that showed the citations while discarding the warning attached to them would be doing exactly that, with Canon's name on it.
 
-**`disagreement`** — `{ "pageIds": ["pg-1", "pg-4"], "note": "…" }`, present when the cited passages contradict each other (DATA-BACKBONE.md section 7). `pageIds` names every page whose passage took part, always at least two and always a subset of this answer's citations. `note` is one reader-facing paragraph naming the pages and quoting the parts that differ, and it is **also embedded verbatim in `answer`** — so an app that renders only the prose still shows the warning and an app that renders only this field still shows it too. Canon has not chosen between the pages and an app must not either: showing one side and dropping the other is the smoothing that section forbids, and it does not become acceptable because it reads better.
+| Field | Shape | Present when |
+|---|---|---|
+| `pastReview` | `[{ pageId, title }]` | a cited page is past the review date its owner set. It is still the official record; it has not been re-approved recently. It is the same fact as a `needs_update` status, pre-filtered so an app can flag the answer as a whole without walking the citations. |
+| `disagreement` | `{ pageIds, note, asserted? }` | two cited pages give different answers — because their text does, or because a **person asserted** a `conflicts_with` relation between them. `pageIds` is always at least two and always cited. `note` is one reader-facing paragraph naming the pages and quoting the parts that differ. `asserted` is present only when a person is behind it, and carries who said so, when, and in what words. Canon does not choose between the pages, and neither should an app: showing one side and dropping the other is the smoothing section 7 forbids, and it does not become acceptable because it reads better. |
+| `supersession` | `{ pageIds, asserted, note }` | the answer quotes a page the record says was **replaced**, beside the page that replaced it. The superseded page stays cited: a supersession does not archive it or change its status, so dropping the quotation would hide the change rather than show it. |
+| `sourceDisagreement` | `{ pageIds, open, note }` | a cited page carries an **open divergence** between its authoritative source and a corroborating one. This is two systems disagreeing about one page's federated values, which is not the same thing as two pages contradicting each other — it is a separate field so that an app never has to guess which of the two it is showing. |
+
+#### When there is no answer
 
 Response `200`, refused — the honest response to a silent record, and the one we would rather ship than a plausible guess:
 
@@ -310,16 +329,37 @@ Response `200`, refused — the honest response to a silent record, and the one 
 { "answer": null, "citations": [], "refused": true, "reason": "no_canonical_match" }
 ```
 
-A refusal is `200`: the call succeeded and the record had nothing to say. A `403` here means something else entirely — one of the three gates closed — and an app must not render the two the same way.
+A refusal is `200`: the call succeeded and there was nothing to answer with. A `403` here means something else entirely — one of the three gates closed — and an app must not render the two the same way.
 
-**Four optional fields may accompany an answer.** Each is present only when it applies, so the shape above is what an ordinary answer looks like and an app that has never heard of these reads exactly what it always read. Each is also stated in the `answer` prose verbatim, so an app that renders only the text still shows the warning — these fields are the machine-readable half, for an app that wants to render it as something other than a paragraph. **None of them may be dropped in rendering.** DATA-BACKBONE.md section 7 is explicit that an answer must never smooth a contradiction, and an app that showed the citations while discarding the warning attached to them would be doing exactly that, with Canon's name on it.
+`reason` has two values, and they are two different problems for two different people:
 
-| Field | Shape | Present when |
+| `reason` | What is true | Whose problem |
 |---|---|---|
-| `pastReview` | `[{ pageId, title }]` | a cited page is past the review date its owner set. It is still the official record; it has not been re-approved recently. |
-| `disagreement` | `{ pageIds, note, asserted? }` | two cited pages give different answers — because their text does, or because a **person asserted** a `conflicts_with` relation between them. `pageIds` is always at least two and always cited. `asserted` is present only when a person is behind it, and carries who said so, when, and in what words. Canon does not choose between the pages, and neither should an app. |
-| `supersession` | `{ pageIds, asserted, note }` | the answer quotes a page the record says was **replaced**, beside the page that replaced it. The superseded page stays cited: a supersession does not archive it or change its status, so dropping the quotation would hide the change rather than show it. |
-| `sourceDisagreement` | `{ pageIds, open, note }` | a cited page carries an **open divergence** between its authoritative source and a corroborating one. This is two systems disagreeing about one page's federated values, which is not the same thing as two pages contradicting each other — it is a separate field so that an app never has to guess which of the two it is showing. |
+| `no_canonical_match` | Everything the app and the person may read between them was searched, and none of it answers the question. | Nobody's. The record is silent, and saying so is the correct answer. |
+| `nothing_readable` | The app and the person **hold no readable collection at all**, so there was nowhere to look. Nothing was searched. | An administrator's, in Canon or in the Registry. |
+
+`nothing_readable` exists because "the record does not say" is a false statement about a company's record when the truth is that this app was never granted anything to read — an app certified, permitted every collection by the Registry, and given a Canon role in none is the commonest way a Studio integration fails on its first afternoon, and it used to be indistinguishable from a thin corpus. It discloses nothing: it is a fact about the caller's own standing, and it is exactly what `GET /knowledge/whoami` already hands the same caller in full — an empty `collections` there and a `nothing_readable` here are the same sentence. **Render it as a configuration problem and point at `whoami`. Never render it as the record being silent.**
+
+#### What a refusal deliberately does not tell you
+
+Between them, `refused` and `403` now separate every case an app can act on. One case is deliberately left indistinguishable, and this paragraph is the decision rather than an omission:
+
+> **An ask that names no `collectionId` is never told that material it may not read exists.** If the record holds a Canonical page that answers the question, in a collection the Registry withheld or the person cannot see, the response is `no_canonical_match` — byte for byte the response it would give if no such page existed at all.
+
+The alternative would be a sentence like "something you may not read answers this", and that sentence discloses the existence of a container the asker was never told about, on a subject they chose. Over enough questions it is a map of the record drawn by an app that may read none of it. Canon will not say it, and the indistinguishability is load-bearing: it is why probing an unreadable collection through search, ask, listings and counts returns the same nothing every way round.
+
+**An ask that names a `collectionId` is a different question and gets a different answer.** To have named one, the app must hold a Registry limit that lets that id through — an administrator wrote the name into `permittedCollections`, so the collection's existence was disclosed on purpose, by a person, outside Canon. Nothing is protected by being coy about it afterwards. So a scoped ask refuses out loud at each of the three gates, with the codes in section 9:
+
+| The situation | The response |
+|---|---|
+| The Registry does not permit the app this collection | `403 collection_not_permitted` |
+| The person does not hold `view` on it | `403 person_not_permitted`, `refusedBy: "person"` |
+| The app does not hold `view` on it | `403 app_not_permitted`, `refusedBy: "app"` |
+| All three gates opened, and that collection has nothing to say | `200`, `refused: true`, `no_canonical_match` |
+
+A collection that does not exist at all is refused by the person's gate with `held: null` — the same response as a collection that exists and is not theirs, so naming ids at random still reveals nothing.
+
+So: **name the collection when you know which one you mean.** A scoped ask can tell you which gate closed; an unscoped one cannot, and will not.
 
 ### `POST /knowledge/pages`
 
@@ -356,12 +396,125 @@ Request: `{ "body": "Checked against the handbook.", "anchor": { "quote": "…",
 
 `authorKind: "agent"` is not decoration. An app's comment should read as an app's comment wherever it appears.
 
-## 11. Open questions
+## 11. A worked example, end to end
+
+Every id in section 10 is illustrative. This section is not: it is the sequence an integrator actually runs on their first afternoon, against a record they can build in one command, and it is checked against a running Canon rather than remembered. (An earlier version of this document worked an example that did not run against the seeded corpus, which cost the person who trusted it an hour. Ids are UUIDs and differ per record, so every one below is read out of a response rather than typed in.)
+
+Build the record and start both services. Pick your own ports; these are the defaults.
+
+```sh
+cd server && npm run build && node dist/server/scripts/seed-demo.js --db demo.db
+cd ../registry-stub && npm run build && PORT=3100 node dist/registry-stub/src/index.js &
+cd ../server && CANON_DEV_AUTH=true CANON_DB=demo.db CANON_REGISTRY_URL=http://127.0.0.1:3100 \
+  PORT=3000 node dist/server/src/index.js &
+```
+
+The seeder prints the administrator's actor id. Everything below calls that `$ADMIN`.
+
+**1. Find the collection the app will work in, and the person it will act for.** As an administrator, in Canon — an app is scoped to a real collection, and a Studio app never guesses an id.
+
+```sh
+curl -s :3000/collections -H "X-Actor-Id: $ADMIN"      # → "Member Benefits", id e3622a83-…
+curl -s :3000/actors -H "X-Actor-Id: $ADMIN"           # → Marc Oyelaran, id 366f45b8-…, kind person
+```
+
+**2. Register the app in the Veryl Agent Registry and certify it.** A Studio app is an agent; identity and standing are the Registry's (REGISTRY-CONTRACT.md sections 2 and 3). Note the collection limit: an administrator sets it here, having never seen the app's code.
+
+```sh
+curl -s :3100/agents -d '{"name":"Benefits Assistant",
+  "permittedCollections":["e3622a83-…"],"permittedActions":["read"]}'
+# → { "agentId": "d1d5f250-…", "passport": "vap_…", "certification": { "state": "pending", … } }
+curl -s :3100/agents/d1d5f250-…/certify -X POST -d '{}'
+```
+
+**3. Ask something, before Canon knows the app.** The passport verifies, the Registry permits the collection, the person may read it — and the answer is still nothing, because the app itself holds no Canon role. This is the case section 10 calls `nothing_readable`, and it is the one an integrator meets first:
+
+```sh
+curl -s :3000/knowledge/ask -H 'X-Agent-Passport: vap_…' -H 'X-On-Behalf-Of: 366f45b8-…' \
+  -d '{"question":"What evidence is required for a qualifying life event?"}'
+```
+
+```json
+{ "answer": null, "citations": [], "refused": true, "reason": "nothing_readable" }
+```
+
+`GET /knowledge/whoami` says the same thing with the fix in it — `"collections": []`, under an `app` block showing `permittedCollections` already granted. Registry yes, Canon no.
+
+**4. Give the app a role in Canon.** First contact provisioned its actor; find it by its `registryRef` and grant it `view`. Not `edit`: this app answers questions.
+
+```sh
+curl -s :3000/actors -H "X-Actor-Id: $ADMIN"    # → the agent actor whose registryRef is d1d5f250-…
+curl -s :3000/collections/e3622a83-…/members/090c49e5-… -X PUT \
+  -H "X-Actor-Id: $ADMIN" -d '{"role":"view"}'
+```
+
+`whoami` now reports the intersection standing up:
+
+```json
+"collections": [ { "id": "e3622a83-…", "name": "Member Benefits",
+                   "appRole": "view", "personRole": "view", "role": "view" } ]
+```
+
+**5. Ask again.** Same call as step 3, same second, one grant later:
+
+```json
+{
+  "answer": "The record says:\n\n“This policy sets out the mid-year changes that let a member change plan outside open enrolment…” — Qualifying Life Events (version 1)",
+  "citations": [
+    { "pageId": "116c4043-…", "title": "Qualifying Life Events", "version": 1,
+      "snippet": "This policy sets out the mid-year changes that let a member change plan outside open enrolment…",
+      "status": "canonical" }
+  ],
+  "refused": false
+}
+```
+
+**6. Meet the three gates, one at a time.** Name a collection and each refusal says which gate closed (section 10):
+
+```sh
+# a collection the Registry withheld from this app — the seeded Compliance collection
+… -d '{"question":"What evidence is required?","collectionId":"2eb9d3b3-…"}'
+# → 403 { "error": "forbidden", "reason": "collection_not_permitted",
+#         "permittedCollections": ["e3622a83-…"] }
+
+# a question nobody has written the answer to, inside a collection all three gates opened
+… -d '{"question":"What is our policy on submarine procurement?","collectionId":"e3622a83-…"}'
+# → 200 { "answer": null, "citations": [], "refused": true, "reason": "no_canonical_match" }
+```
+
+Now ask about something only that withheld collection answers, and leave the `collectionId` off:
+
+```sh
+… -d '{"question":"What are the Business Associate Agreement clauses we require?"}'
+# → 200 { "answer": null, "citations": [], "refused": true, "reason": "no_canonical_match" }
+```
+
+The seeded Compliance collection holds a Canonical policy on exactly that, and Marc holds `edit` on it — ask Canon directly as Marc (`POST /ask`, no app involved) and it answers, citing *Business Associate Agreements*. Through this app it does not, because the app's Registry limit withholds that collection, so the page is never a candidate and the response is byte for byte what it would be if nobody had ever written it.
+
+That pair of calls is the whole of section 4 in two commands: the person's breadth lends the app nothing, and the app is not a lens the person looks through. It is also section 10's deliberate silence — the difference between "you named something you may not read" and "there is something out there you may not read". Only the first is safe to say, so only the first is said.
+
+**7. Everything above is in the audit log**, attributed to the app, naming the person, refusals included:
+
+```sh
+curl -s ':3000/audit?action=knowledge.ask' -H "X-Actor-Id: $ADMIN"
+# four events, every one carrying details.onBehalfOf = 366f45b8-… and the app as actorId;
+# three refused, with reason nothing_readable, no_canonical_match, no_canonical_match
+
+curl -s ':3000/audit?action=agent.denied' -H "X-Actor-Id: $ADMIN"
+# step 6a is here rather than in knowledge.denied: the Registry's gate refuses at the
+# door every agent meets, before the handler runs (section 8). It still names the person.
+```
+
+The two Canon gates write `knowledge.denied` instead; the third is what step 6a produced. Reading the log is the fastest way to see that the split in section 8 is real rather than aspirational.
+
+`studio-stub/` runs this same sequence in code, in its own test suite, against the same two services in process — so if this section ever drifts again, that suite is where it shows up first.
+
+## 12. Open questions
 
 - **Non-Canonical material for working tools.** DATA-BACKBONE.md section 9 leans absolute for answers and permitted-with-attribution for working tools, and this contract implements the first half only: the read surface carries no drafts, so an app that helps a team work on drafts cannot yet be built. Resolve with the first Studio design partner who wants one; the shape it would take is a `draft` action in the Registry's vocabulary rather than a widening of `read`, so nothing here forecloses it.
 - **Reference resolution through the Knowledge API.** Federated values are how a benefits app answers "what is my deductible" rather than "what does the policy say about deductibles", so this is the most likely next addition. It arrives as a fourth gate in the same series — `permittedSources` from the Registry, the page's own readability, and the source system's access model resolved with an identity — and the open question is *whose* identity a source sees when an app asks for a person: the person's, the app's, or the deployment's service identity. It is DATA-BACKBONE.md section 9's first open question, one layer further out, and it should be answered the same way.
 - **Whether an app may act for a group rather than a person.** A dashboard shown to a whole team has no single person behind it. The honest answers are "then it is not acting for anyone, and belongs on the agent surface" or "the group is an actor, and Canon's permission model already handles it". Leaning strongly on the first, because the second re-introduces a shared identity, which is the thing attribution exists to prevent.
-- **Rate and volume limits.** Nothing here bounds how much of the record an app may read per person per day. Permission is not the same question as volume, and an app that is entitled to every page is still capable of exfiltrating every page one permitted call at a time. This wants a limit in the Registry alongside `permittedCollections`, not a check in Canon's handlers, and it should be resolved when a design partner asks the question a compliance lead will certainly ask.
+- **Volume limits.** Half of this is now answered and the half that matters is not. `POST /knowledge/ask` is rate limited per person through the app, under a ceiling on the app itself (section 9), so no single caller can spend everybody's questions and no app can enlarge its own budget by inventing people. That is a *rate*, and it bounds a burst. It is not a *volume*: nothing here bounds how much of the record an app may read per person per day, and an app entitled to every page is still capable of exfiltrating every page one permitted call at a time, slowly. Reading is deliberately unlimited, because a limiter that can stop a person reading a policy has cost more than it saved — so the remedy is not a bigger bucket in Canon. It wants a volume limit in the Registry alongside `permittedCollections`, where an administrator sets it per app without reading the app's code, and it should be resolved when a design partner asks the question a compliance lead will certainly ask.
 
 ---
 

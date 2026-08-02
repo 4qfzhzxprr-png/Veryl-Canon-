@@ -798,6 +798,48 @@ test('limits: an expensive route is bucketed per actor, and reading the record n
   }
 });
 
+// USER-TESTING.md T3.8, second half: the limiter used to run before the body
+// was read, so a request that never reached retrieval still spent somebody's
+// question. The bucket is now checked before the body (an empty one must
+// refuse without buffering megabytes first) and charged after the handler, so
+// only work that happened is paid for.
+test('limits: a request that never reaches the work spends no token', async () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const limiter = new RateLimiter({ ask: { burst: 2, perMinute: 0 } });
+  const server = createApi(store, null, limiter);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (body: string) =>
+    fetch(`${base}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': dana.id },
+      body,
+    });
+  try {
+    // Four mistakes in a row: unparseable, not an object, no question, and an
+    // empty one. Every one is a 400, and the bucket still holds its whole burst.
+    for (const bad of ['{not json', '"hello"', '{}', '{"question":"   "}']) {
+      assert.equal((await post(bad)).status, 400, bad);
+    }
+    assert.equal(limiter.remaining('ask', dana.id), 2, 'a malformed request is not somebody’s question');
+
+    // Two real questions spend the burst, and the third is refused — so the
+    // limit is still a limit, it is just spent on work rather than on typos.
+    assert.equal((await post(JSON.stringify({ question: 'Is vault access logged?' }))).status, 200);
+    assert.equal((await post(JSON.stringify({ question: 'Is vault access logged?' }))).status, 200);
+    assert.equal(limiter.remaining('ask', dana.id), 0);
+    assert.equal((await post(JSON.stringify({ question: 'Is vault access logged?' }))).status, 429);
+
+    // And an empty bucket refuses the malformed one too: the check happens
+    // before the body is read, so a caller in the penalty box cannot make Canon
+    // buffer eight megabytes to be told it is in the penalty box.
+    assert.equal((await post('{not json')).status, 429);
+  } finally {
+    server.close();
+  }
+});
+
 test('limits: a failed passport costs a token, a successful one costs nothing', async () => {
   const db = openDb(':memory:');
   const store = new CanonStore(db, quiet);

@@ -178,8 +178,48 @@ function requirePerson(call: KnowledgeCall, collectionId: string, needed: Role):
 }
 
 /**
- * The app's half, which is simply the store call itself — made with the app's
- * actor id, so Canon's own permission model decides it exactly as it does for
+ * The app's half, asked directly rather than as a side effect of a store call.
+ *
+ * Almost everywhere on this surface the app's gate needs no code at all: the
+ * store call is made with the app's actor id, so Canon's own permission model
+ * decides it and `asApp` only has to label the refusal. `ask` is the exception,
+ * and USER-TESTING.md T3.7 is the report of what that exception cost. A
+ * grounded answer does not *refuse* when the asker cannot see a collection —
+ * it narrows the candidate set, which is exactly right for an open question
+ * and exactly wrong for a question that named one collection and got back a
+ * response indistinguishable from "the record is silent". So when the caller
+ * names the collection, the app's role in it is asked as a question of its own,
+ * in the same words the person's gate is asked, and refused in the same shape.
+ *
+ * It cannot widen anything: `requireRoleFor` is the store's own `requireRole`,
+ * and a call that passes it still meets every narrowing it met before.
+ */
+function requireApp(call: KnowledgeCall, collectionId: string, needed: Role): void {
+  try {
+    call.store.requireRoleFor(call.app.actorId, collectionId, needed);
+  } catch (err) {
+    if (err instanceof CanonError && err.code === 'forbidden') {
+      throw new CanonError(
+        'forbidden',
+        `${call.app.name} does not hold ${needed} access to this collection, ` +
+          'so it cannot answer from it for anyone',
+        {
+          ...err.details,
+          reason: 'app_not_permitted',
+          refusedBy: 'app',
+          app: call.app.agentId,
+          needed,
+          collectionId,
+        },
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * The app's half where it IS the store call itself — made with the app's actor
+ * id, so Canon's own permission model decides it exactly as it does for
  * anyone. The wrapper only labels the refusal, so the two halves are told
  * apart in the response and in the log.
  */
@@ -215,6 +255,38 @@ function registryScope(app: AgentSession): string[] | undefined {
 /** The lower of two roles: the effective role of an (app, person) pair. */
 function narrower(a: Role, b: Role): Role {
   return ROLE_RANK[a] <= ROLE_RANK[b] ? a : b;
+}
+
+/** One collection the (app, person) pair may read, and at what role. */
+interface EffectiveCollection {
+  id: string;
+  name: string;
+  appRole: Role;
+  personRole: Role;
+  role: Role;
+}
+
+/**
+ * The intersection as it stands for this call: the collections the Registry
+ * permits, the app is a member of, and the person is a member of, with the
+ * narrower of the two roles. It is `whoami`'s whole answer, and it is also what
+ * `ask` consults when it has refused — one function, so the two can never
+ * disagree about what "this pair can read nothing" means.
+ *
+ * Everything here is the caller's own standing and nothing here is the
+ * record's contents: it names collections both actors already hold a role in,
+ * which is why `whoami` may hand it back in full without disclosing anything.
+ */
+function effectiveCollections(call: KnowledgeCall): EffectiveCollection[] {
+  return call.store
+    .listCollections(call.app.actorId)
+    .filter((c) => permitsCollection(call.app.permittedCollections, c.id))
+    .flatMap((c) => {
+      const appRole = call.store.roleOf(call.app.actorId, c.id);
+      const personRole = call.store.roleOf(call.person.id, c.id);
+      if (!appRole || !personRole) return [];
+      return [{ id: c.id, name: c.name, appRole, personRole, role: narrower(appRole, personRole) }];
+    });
 }
 
 /**
@@ -321,15 +393,7 @@ export const KNOWLEDGE_ROUTES: KnowledgeRouteSpec[] = [
   // derived view of the three gates, not a fourth gate: it reports what the
   // other three would decide, computed from the same data, per call.
   knowledge('GET', `${KNOWLEDGE_PREFIX}/whoami`, 'whoami', (call) => {
-    const effective = call.store
-      .listCollections(call.app.actorId)
-      .filter((c) => permitsCollection(call.app.permittedCollections, c.id))
-      .flatMap((c) => {
-        const appRole = call.store.roleOf(call.app.actorId, c.id);
-        const personRole = call.store.roleOf(call.person.id, c.id);
-        if (!appRole || !personRole) return [];
-        return [{ id: c.id, name: c.name, appRole, personRole, role: narrower(appRole, personRole) }];
-      });
+    const effective = effectiveCollections(call);
     return {
       result: {
         app: {
@@ -423,9 +487,60 @@ export const KNOWLEDGE_ROUTES: KnowledgeRouteSpec[] = [
   // when the record is silent. The only thing added is the narrowing, and it
   // is applied to the candidates before generation — filtering citations
   // afterwards cannot un-leak what the answer text already merged.
+  //
+  // ---- "not permitted" and "the record is silent" (USER-TESTING.md T3.7) ----
+  //
+  // Both used to come back as the same three bytes — `refused: true`,
+  // `no_canonical_match` — and STUDIO-CONTRACT.md §9 tells apps not to render
+  // the two the same way while giving them no way to tell them apart. That is
+  // a real defect and it is in real tension with the other half of the
+  // testing: the same indistinguishability is exactly why an auditor probing
+  // nine routes into a collection she could not see found no leak, in the
+  // count or in the error. Both findings are right, so the fix has to be drawn
+  // narrowly enough to keep the second one true.
+  //
+  // THE LINE THIS DRAWS: a distinction is only ever offered to an asker who
+  // ALREADY KNOWS the collection exists, and never as an answer to an open
+  // question over the whole record.
+  //
+  //   * An ask that NAMES a `collectionId` is such an asker. To have named it,
+  //     the app must hold a Registry limit that lets that id through — an
+  //     administrator wrote the name into the app's `permittedCollections`, so
+  //     the collection's existence is something the app was told on purpose,
+  //     by a person, outside Canon. Answering "you are not permitted to read
+  //     the collection you named" discloses nothing that was not already
+  //     disclosed by the grant. So all three gates refuse a scoped ask out
+  //     loud, with §9's codes: the Registry's in agentauth.ts, the person's
+  //     and — new, and the whole of what T3.7 asked for — the app's, here.
+  //     A scoped ask that comes back `no_canonical_match` now means one thing
+  //     only: all three gates opened, and the record inside that collection
+  //     had nothing to say.
+  //
+  //   * An ask that names NO collection stays exactly as it was, deliberately.
+  //     "Some collection you may not read holds the answer" is a statement
+  //     about the record's contents and about the existence of a container the
+  //     asker was never told about, and it is the one sentence the auditor's
+  //     nine probes were checking for. It is not worth having, so it is not
+  //     said, and STUDIO-CONTRACT.md §9 now says so as a decision rather than
+  //     leaving it to be read as an oversight.
+  //
+  // THE ONE THING AN OPEN QUESTION MAY BE TOLD is that the pair asking it can
+  // read NOTHING AT ALL — `nothing_readable` below. That is a fact about the
+  // caller's own standing rather than about the record: it says "you hold no
+  // readable collection", never "there is something here you are missing", and
+  // it is precisely what `GET /knowledge/whoami` already hands the same caller
+  // in full, computed by the same function. An app whose Registry limit is
+  // empty, or whose actor an administrator never gave a Canon role, is the
+  // commonest way a Studio integration fails on its first afternoon, and
+  // telling it "the record does not say" is a false statement about the record
+  // — the failure DATA-BACKBONE.md §5 spends its length avoiding, pointed the
+  // other way.
   knowledge('POST', `${KNOWLEDGE_PREFIX}/ask`, 'ask', async (call) => {
     const body = (call.body ?? {}) as { question?: string; collectionId?: string; limit?: number };
-    if (body.collectionId) requirePerson(call, body.collectionId, 'view');
+    if (body.collectionId) {
+      requirePerson(call, body.collectionId, 'view');
+      requireApp(call, body.collectionId, 'view');
+    }
     const answer = await asApp(call, () =>
       call.store.ask(call.app.actorId, {
         question: body.question ?? '',
@@ -435,13 +550,21 @@ export const KNOWLEDGE_ROUTES: KnowledgeRouteSpec[] = [
         collectionIds: registryScope(call.app),
       }),
     );
+    // Only for an unscoped ask: a scoped one has already passed all three
+    // gates on the collection it named, so the pair demonstrably reads
+    // something and `nothing_readable` could not be true of it.
+    const result =
+      answer.refused && !body.collectionId && effectiveCollections(call).length === 0
+        ? { ...answer, reason: 'nothing_readable' as const }
+        : answer;
     return {
-      result: answer,
+      result,
       collectionId: body.collectionId ?? null,
       details: {
         question: body.question ?? '',
-        refused: answer.refused,
-        citedPageIds: answer.citations.map((c) => c.pageId),
+        refused: result.refused,
+        ...(result.refused && result.reason ? { reason: result.reason } : {}),
+        citedPageIds: result.citations.map((c) => c.pageId),
       },
     };
   }),

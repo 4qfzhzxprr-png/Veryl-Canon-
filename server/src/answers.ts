@@ -58,7 +58,26 @@ export interface Citation {
   status?: PageStatus;
 }
 
-export type RefusalReason = 'no_canonical_match';
+/**
+ * Why an answer was refused.
+ *
+ * `no_canonical_match` is this module's own and the only one it ever writes:
+ * the filtered, expanded context did not answer the question. It says nothing
+ * about permissions, and that is deliberate — see DATA-BACKBONE.md §5 and the
+ * long note in knowledge.ts's `ask` on why an open question is never told that
+ * material it may not see exists.
+ *
+ * `nothing_readable` is written by the Knowledge API alone (knowledge.ts), and
+ * only where the (app, person) pair asking holds no readable collection at
+ * all. It is a statement about the caller's own standing rather than about the
+ * record — the same fact `GET /knowledge/whoami` hands that caller in full —
+ * and it exists because "the record does not say" is a false statement about
+ * the record when the truth is that the asker was never given anything to read
+ * (USER-TESTING.md T3.7). It is not reachable from Canon's own `POST /ask`,
+ * where the asker is a person whose permissions are their own and whose empty
+ * intersection is a question for their administrator rather than for this API.
+ */
+export type RefusalReason = 'no_canonical_match' | 'nothing_readable';
 
 /**
  * A `conflicts_with` relation standing between two of the pages this answer is

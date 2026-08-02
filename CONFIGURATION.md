@@ -141,13 +141,29 @@ somebody holds what.
 
 ## Rate limiting
 
-Four token buckets, per actor, in process. Nothing that reads the record is
-limited. Each is written `burst/perMinute`, or `off`.
+Five token buckets, in process, keyed by whoever is asking. Nothing that reads
+the record is limited. Each is written `burst/perMinute`, or `off`.
+
+Keyed by *whoever is asking* rather than by the actor, because on Veryl
+Studio's surface those are not the same thing: the actor is the app, and one
+app is a whole company. A Studio ask therefore spends from two buckets and
+needs a token from each — `ASK`, keyed by the app **and** the person named in
+`X-On-Behalf-Of`, so one person cannot exhaust everybody's share; and
+`ASK_APP`, keyed by the app alone, so the total does not depend on how many
+people the app claims to act for. That second bucket is what makes the first
+safe to key on a header the app asserts and Canon does not verify. **Raise
+`ASK_APP` for a large Studio population, not `ASK`.**
+
+A token is spent when the call did the work the bucket bounds. The bucket is
+checked before the body is read and charged after the handler returns, so a
+malformed request, a missing header or a refusal at a permission gate costs
+nobody a question.
 
 | Variable | Required? | Default | Meaning | Safety |
 | --- | --- | --- | --- | --- |
 | `CANON_RATE_LIMIT` | optional | on | `off` turns every bucket off, for a deployment whose front door already limits. | — |
-| `CANON_RATE_LIMIT_ASK` | optional | `12/12` | `POST /ask` and `POST /knowledge/ask`. | Retrieval plus a generator; with a hosted embedding provider it is also a bill. |
+| `CANON_RATE_LIMIT_ASK` | optional | `12/12` | `POST /ask`, keyed by the person; `POST /knowledge/ask`, keyed by the (app, person) pair. | Retrieval plus a generator; with a hosted embedding provider it is also a bill. |
+| `CANON_RATE_LIMIT_ASK_APP` | optional | `120/120` | The ceiling on one Studio app across every person it names. | The forgery bound: `X-On-Behalf-Of` is asserted by the app, so this is the half of the limit whose key the app cannot choose. |
 | `CANON_RATE_LIMIT_REFERENCES` | optional | `60/60` | `GET /pages/:id/references` — the route that reaches an external system. | — |
 | `CANON_RATE_LIMIT_IMPORT` | optional | `2/0.5` | `POST /imports`. | — |
 | `CANON_RATE_LIMIT_AUTH` | optional | `20/20` | **Failed** passport authentications, keyed by connection origin. Only a failure spends a token. | — |

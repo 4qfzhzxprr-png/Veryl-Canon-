@@ -332,9 +332,19 @@ disproportionately because both of them otherwise *trusted* the docs.
 **The configuration half is closed, and closed in a way that stays closed:**
 every `CANON_…` name is present, and a test scans `server/src` and
 `server/scripts` and fails when one is missing, so the page's claim of
-completeness is now checked rather than remembered. **Still open:** the
-contracts' worked example, and `disagreement` / `pastReview` in
-STUDIO-CONTRACT.md.
+completeness is now checked rather than remembered. `disagreement` and
+`pastReview` are written up. **The worked example is now closed too**, and by
+being run rather than by being reread: STUDIO-CONTRACT.md section 11 is the
+whole sequence against a freshly seeded corpus — seed, register, certify, ask
+before any Canon grant, grant, ask again, then meet each of the three gates —
+verified end to end against a running Canon and a running registry-stub, with
+every id read out of a response because they are UUIDs and differ per record.
+Two things surfaced while checking it and are fixed here: the optional answer
+fields were documented twice and the two copies disagreed about how many there
+are (three in prose, four in a table), and `studio-stub`'s own fixture had gone
+stale against the effective-date rule of T1.5 — its two seeded policies never
+became Canonical, so five of its eight tests were failing for a reason that
+looked like the Knowledge API. The fixture now asserts itself.
 
 **T3.6 · Hand-granting cannot scale under SSO.** *(Ade.)* Actors are
 JIT-provisioned on first sign-in and `POST /actors` is 404 under SSO, so an
@@ -346,11 +356,41 @@ STUDIO-CONTRACT.md tells apps not to conflate them. This is in genuine tension
 with Ruth #10, where that same indistinguishability is exactly why she found no
 leakage. It needs a designed answer, not a quick one: probably a distinction
 drawn only where the asker already knows the collection exists.
+**Fixed, narrowly, and the narrowness is the point.** A distinction is offered
+only to an asker who already knows the collection exists — which an ask naming
+a `collectionId` does, because the Registry limit that let the name through was
+written by an administrator, outside Canon, on purpose. A scoped ask now refuses
+out loud at all three gates: the Registry's and the person's already did, and
+the app's own Canon role was the silent one, so it is asked as a question of its
+own rather than left to empty out the candidate SQL. A scoped
+`no_canonical_match` now means exactly one thing. **Deliberately unchanged:** an
+ask that names no collection is never told that material it may not read exists
+— that sentence discloses a container the asker was never told about, on a
+subject they chose, and it is precisely what Ruth's nine probes were looking
+for. The contract now states that as a decision. The one thing an open question
+*may* be told is `nothing_readable`: the pair asking it holds no readable
+collection at all, which is the caller's own standing rather than the record's
+contents, is the same fact `whoami` already hands them in full, and is the
+commonest way a Studio integration fails on its first afternoon — an app
+certified, permitted everything by the Registry, and granted nothing in Canon,
+which used to be answered "the record does not say".
 
 **T3.8 · The rate limit is mis-keyed for Studio and is spent by mistakes.**
 *(Sam; confirmed.)* The `ask` bucket keys on the app, so a Studio app gets ~12
 questions a minute company-wide. Separately, the limiter runs before the body
-is validated, so a malformed request spends a token.
+is validated, so a malformed request spends a token. **Both fixed.** The bucket
+is keyed on the (app, person) pair from `X-On-Behalf-Of`, so one person's
+questions are not the company's. Because that header is asserted by the app and
+Canon does not verify it, it cannot be the whole key — an app would mint budget
+by inventing people — so a second bucket, `askApp`, is keyed on the app's actor,
+which is resolved from its passport by the Registry and cannot be chosen. Both
+are charged. The conclusion, stated in ratelimit.ts: a self-asserted identifier
+is safe as a key where it *subdivides* a budget the caller already holds, and
+never where it sets the total — the same rule the auth bucket follows in the
+other direction. Mistakes: the bucket is now *checked* before the body is read
+(an empty one must refuse without buffering eight megabytes) and *charged* after
+the handler returns, so a malformed body, a missing header, or a refusal at a
+gate costs nobody a question.
 
 ### Tier 4 — the writer's floor
 
