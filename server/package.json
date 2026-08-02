@@ -14,7 +14,8 @@
     "restore": "npm run build && node dist/server/scripts/restore.js",
     "verify:audit": "npm run build && node dist/server/scripts/verify-audit.js",
     "anchor:head": "npm run build && node dist/server/scripts/anchor-head.js",
-    "compare:attestations": "npm run build && node dist/server/scripts/compare-attestations.js"
+    "compare:attestations": "npm run build && node dist/server/scripts/compare-attestations.js",
+    "eval:retrieval": "npm run build && node dist/server/scripts/eval-retrieval.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
