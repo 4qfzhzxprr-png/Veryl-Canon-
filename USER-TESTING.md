@@ -659,6 +659,95 @@ they do — `sourceId` beside `sourceName`, and a relation's stored pair beside
 its asserted pair, which differ only for a symmetric relation and are worth the
 row space only then.
 
+## The second round: where a fact is, not whether it is there
+
+The same compliance director and the same new contributor were given the fixed
+product and asked to do the job again. Both now rate it well, and what they
+found is a different KIND of finding: with two exceptions the record already
+held every fact they wanted, and the defect was where it was drawn, or that
+nobody said it out loud. That is worth naming, because it changes what a fix
+looks like — nothing below adds a field to the record, and most of it moves a
+sentence to where somebody is standing when they need it.
+
+**R1 · A disputed number was disclosed in the basement.** *(Marcus.)* The
+*Records Retention Schedule* says "seven years" in its second sentence, and a
+person has written down that the platform spec contradicts it. The assertion,
+its author, their reasoning and its date were in CONFLICTS AND SUPERSESSIONS,
+below the body, below the federated values, below everything — while "past
+review" got a banner at the top. "Somebody who reads the top of the page and
+stops never learns the number is contested. 'This is out of date' and 'this
+number is disputed' belong in the same place, and it isn't the basement."
+**Fixed**, by his principle rather than by moving one panel: a page's STANDING —
+archived, past review, contested, superseded — is one list now (`pageStandingNotes`
+in `public/app.js`), computed as data and drawn in one block above the text. The
+answer path had already reached this conclusion, since a citation carries
+`disputed` and reads "contested" in the same red: a page's standing must not
+depend on how somebody phrased a question, and it must not depend on how far
+they scrolled either. The panel stays the register — both ends, the note, Assert
+and Withdraw — and the banner points down to it. Relations are now fetched
+before the first paint, because a banner that says "contested" cannot arrive
+after the first paragraph has been read; a read that fails answers null and
+draws nothing, never "no conflicts". `supersedes` is deliberately not a banner:
+it is a caution about the OTHER page.
+
+**R2 · The Publish dialog said what it is not, never what it is.** *(Priya.)*
+"It publishes without review — use 'Submit for review' if this page should earn
+the Canonical mark", and not one word about where the page ends up. "I nearly
+pressed it, and I'd have had no idea what I'd done." **Fixed:** it names the
+version it is about to write, the status the page lands in — Draft, every type
+and every time, because `writeVersion` settles it there unless an approval wrote
+the version — in the same badge the page will wear, carrying the sentence the
+status key already gives that badge. A page holding a mark is told it is giving
+it up; a page holding none is not told about one it never had; a Note is told
+there is no review to send it to rather than pointed at a button it cannot use.
+
+**R3 · Federated values sat outside what was approved, and only the editor said
+so.** *(Marcus.)* He praised the provenance line — HEADCOUNT (ENGINEERING) · 41
+· service-resolved · People System · resolved 30 minutes ago — and then found
+that the only place saying those values "are page-level and take effect
+immediately: they are not part of this draft" is the editor, which an approver
+never opens. So a figure on a page he had approved could change afterwards,
+without a version and without him. **Fixed:** *What is being approved* now says
+what is not — the values by name and source, with the mode that decides who can
+see them, and the three facts that matter: Canon stores none of it, it asks the
+source again on every read, and it can read differently tomorrow with nobody to
+come back to. His own sentence, near enough: *your approval covers the text.* It
+sits above the diff, because an approver who has scrolled a hundred lines has
+already decided, and the Approve modal restates the count from the same summary.
+
+**R4 · Below about 500px the sidebar buried the work.** *(Marcus, on a phone.)*
+One column, sidebar first in the source, 82 pages of tree: at 420px the page
+under review, the diff and the Approve button began 4,830 pixels down. "On a
+phone I'd approve without scrolling back up to read anything." **Fixed** by
+deciding what a narrow viewport shows first — the thing somebody navigated to.
+The tree is neither dropped nor moved below the page: it collapses to the
+collection's name and one button saying how many pages are behind it, and opens
+in place. The control ships hidden and is revealed only where the media query
+matches, so a browser running no JavaScript gets what it always got. Measured:
+the content now starts 4,400px higher, with the title, the badge, Approve, the
+review banner and the top of the approval panel all in the first screen.
+
+**R5 · Search covered unpublished drafts by title only, and did not say so.**
+*(Priya.)* "Portal claim intake" found her draft; "unreadable member id", a
+phrase inside it, returned "Nothing in the record matches" — the same sentence
+Canon uses when the record genuinely holds nothing. The rule is deliberate and
+stays (a draft body is work in progress; see `src/search.ts`). What was missing
+is anybody saying it. **Fixed:** the dropdown states the boundary under the hits,
+where it explains why a page she can see did not match, and under the empty
+line, where it is the likeliest reason there is nothing there, with the one
+thing to try instead. The statuses in that sentence are drawn as badges rather
+than written as words, so the dropdown names a status in the product's own
+vocabulary and casing.
+
+**R6 · Two small ones, taken while we were there.** The collection tree was a
+fixed-height scroll box — a sticky column has to be told a height — which
+clipped an entry mid-word and hid a newly created page below the fold of a box
+inside a page, where nobody looks. It is only a box while everything fits in it
+now; a taller tree scrolls with the page, whole. And the version-history table,
+found while measuring, pushed a 420px page 121 pixels sideways: it is in its own
+scroll container, like the collection's contents table, because nothing in this
+product may scroll horizontally.
+
 ## What we are deliberately not doing
 
 The subject / entity-join work — a primary key that links facts about the same

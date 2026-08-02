@@ -1006,6 +1006,33 @@ async function renderAskAffordance(hostId, collectionId) {
     title="Ask a question answered only from this collection's Canonical pages">Ask this collection</a>`;
 }
 
+// WHAT SEARCH COVERS, SAID WHERE SOMEBODY IS SEARCHING.
+//
+// A page's title is indexed from the moment the page exists; a page's body only
+// when a version publishes, because a draft body is work in progress and
+// readers search the record rather than each other's half-finished sentences
+// (src/search.ts, and USER-TESTING.md T4.6 bug E for how the rule got its
+// present shape). The rule is right. Nothing said it.
+//
+// A new contributor found her own unpublished draft by typing its title, and
+// then typed a phrase out of its first paragraph and got "Nothing in the record
+// matches" — the same sentence Canon uses when the record genuinely holds
+// nothing on a subject. Two different facts, one sentence, and the difference
+// between them is whether she should go on looking.
+//
+// So the dropdown states the boundary in both states: under the hits, where it
+// explains why a page she can see did not match, and under the empty line,
+// where it is the likeliest reason there is nothing there. The statuses are
+// drawn as their own badges rather than written out as words, so the dropdown
+// says DRAFT exactly as the tree, the page header and the collection front page
+// say it — one vocabulary, one casing, wherever a status is named.
+function searchScopeHTML(empty) {
+  return `
+    <p class="search-scope">Titles are searched for every page you can see. Bodies are searched only where a
+      version has published, so a ${badge('draft', 'sm')} or ${badge('in_review', 'sm')} page is matched on its
+      title alone${empty ? ' — if you are looking for words inside one, try its title' : ''}.</p>`;
+}
+
 function wireSearch() {
   const input = document.getElementById('search-input');
   const results = document.getElementById('search-results');
@@ -1020,7 +1047,7 @@ function wireSearch() {
         const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
         const items = Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
         if (!items.length) {
-          results.innerHTML = '<div class="search-empty">Nothing in the record matches.</div>';
+          results.innerHTML = `<div class="search-empty">Nothing in the record matches.</div>${searchScopeHTML(true)}`;
         } else {
           results.innerHTML = items.slice(0, 12).map((it) => {
             const id = it.pageId ?? it.id;
@@ -1032,7 +1059,7 @@ function wireSearch() {
               <span class="search-hit-title">${esc(title)}</span> ${status} ${type}
               ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
             </a>`;
-          }).join('');
+          }).join('') + searchScopeHTML(false);
         }
         results.hidden = false;
       } catch (err) {
@@ -1647,18 +1674,101 @@ function treeHTML(nodes, currentPageId) {
   return `<ul class="tree">${nodes.map(item).join('')}</ul>`;
 }
 
+// WHAT A NARROW VIEWPORT SHOWS FIRST.
+//
+// The thing somebody navigated to. That is the whole of the rule, and the
+// layout broke it: below about 900px the two columns become one, the sidebar
+// is first in the source, and an 82-page tree therefore rendered 4,500 pixels
+// of navigation above the page itself. A compliance director, at 420px: "on a
+// phone I'd approve without scrolling back up to read anything." The page under
+// review, the diff of what it would change and the Approve button were all a
+// long scroll below a list he had not asked for.
+//
+// The fix is not to drop the tree — the tree is the only navigation there is —
+// and it is not to move it below the page, which would put it a full document's
+// scroll away from the one place a reader looks for navigation. It collapses:
+// at a narrow width the sidebar is the collection's name and one button reading
+// how many pages are behind it, and the content starts under that. One tap
+// opens the tree in place, where it has always been.
+//
+// The button ships hidden and is revealed by `wireSidebar` only where the
+// media query matches, so a browser that runs no JavaScript gets exactly what
+// it got before: the whole tree, open, with no control that does nothing.
 function sidebarHTML(collection, tree, currentPageId) {
+  const count = flattenTree(tree).length;
   return `
     <aside class="sidebar">
       <a class="sidebar-collection" href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a>
       ${collection.restricted ? '<span class="restricted-tag">restricted</span>' : ''}
-      <button class="btn subtle sidebar-new" id="sidebar-new-page">+ New page</button>
-      <nav class="tree-nav">${treeHTML(tree, currentPageId)}</nav>
+      <button class="btn subtle tree-toggle" id="tree-toggle" type="button" hidden
+        aria-expanded="true" aria-controls="sidebar-tools"></button>
+      <div id="sidebar-tools">
+        <button class="btn subtle sidebar-new" id="sidebar-new-page">+ New page</button>
+        <nav class="tree-nav">${treeHTML(tree, currentPageId)}</nav>
+      </div>
     </aside>`;
+}
+
+/** How the collapsed control reads. The count is the point: it says what is behind it. */
+function treeToggleLabel(count, open) {
+  if (open) return 'Hide the page list';
+  return count === 1 ? 'Show the 1 page in this collection' : `Show the ${count} pages in this collection`;
 }
 
 function wireSidebar(collection, tree) {
   app.querySelector('#sidebar-new-page')?.addEventListener('click', () => openNewPageModal(collection, tree));
+
+  const aside = app.querySelector('.sidebar');
+  const toggle = app.querySelector('#tree-toggle');
+  const tools = app.querySelector('#sidebar-tools');
+  if (!aside || !toggle || !tools) return;
+  const count = flattenTree(tree).length;
+
+  // The same breakpoint the stylesheet folds the grid at, asked here rather
+  // than duplicated as a number: one column is exactly the case where the tree
+  // sits on top of the page instead of beside it.
+  const narrow = window.matchMedia('(max-width: 900px)');
+  // What the reader last asked for at this width. Null means they have not
+  // asked, and the default applies; a resize clears it, because a choice made
+  // about a phone-shaped screen is not a choice about a desktop one.
+  let chosen = null;
+  const sync = () => {
+    const collapsible = narrow.matches;
+    toggle.hidden = !collapsible;
+    const open = !collapsible || (chosen ?? false);
+    tools.hidden = !open;
+    toggle.textContent = treeToggleLabel(count, open);
+    toggle.setAttribute('aria-expanded', String(open));
+  };
+  toggle.addEventListener('click', () => { chosen = tools.hidden; sync(); });
+  // A media query outlives the view: every render puts a new sidebar in the
+  // page and this listener would otherwise pile up, one per navigation, each
+  // holding a sidebar that is no longer in the document. It retires itself the
+  // first time it fires after its own sidebar has gone.
+  const onWidthChange = () => {
+    if (!aside.isConnected) { narrow.removeEventListener('change', onWidthChange); return; }
+    chosen = null;
+    sync();
+  };
+  narrow.addEventListener('change', onWidthChange);
+  sync();
+
+  // AND THE TREE IS NOT KEPT IN A BOX OF ITS OWN.
+  //
+  // The sidebar is sticky, and a sticky column has to be told a height, so it
+  // was a scroll region: max-height, overflow: auto. On a corpus of any size
+  // that is a short window onto a long list — it clipped an entry mid-word, and
+  // a page somebody had just created sat below the fold of a box inside a page,
+  // which is the one place nobody thinks to look. A reader concluded the page
+  // had not been created.
+  //
+  // So the box is only a box while everything fits in it. Where the tree is
+  // taller than the space a sticky column can have, the column stops being
+  // sticky and the whole of it scrolls with the page: nothing is clipped,
+  // nothing is hidden behind an inner scrollbar, and the last page in the
+  // collection is reachable by the gesture the reader is already using.
+  const fits = aside.scrollHeight <= window.innerHeight - 96;
+  aside.classList.toggle('is-long', !fits);
 }
 
 function openNewPageModal(collection, tree, presetParentId = null) {
@@ -2024,7 +2134,56 @@ function summarizeChange(page, draft) {
       from: current ? f.render(published[f.key] ?? null) : null,
       to: f.render(proposed[f.key] ?? null),
     })),
+    // What this approval will NOT freeze (see federatedScopeHTML). The
+    // descriptors ride inside the page payload, so this costs no call.
+    references: Array.isArray(page.references) ? page.references : [],
   };
+}
+
+// WHAT AN APPROVAL COVERS, AND WHAT IT CANNOT.
+//
+// A federated value is not in the version. Canon holds a reference and asks the
+// source for the value every time the page is read (DATA-BACKBONE.md §6), so a
+// page approved this morning can show a different number this afternoon —
+// without a new version, without an approval, and without the approver hearing
+// about it. That is the design and it is the right design: Canon does not copy
+// facts it does not own.
+//
+// It was disclosed in exactly one place, the editor: "they are page-level and
+// take effect immediately — they are not part of this draft". The compliance
+// director praising the provenance line on HEADCOUNT (ENGINEERING) — 41 —
+// service-resolved — People System · resolved 30 minutes ago — was reading it
+// as a reader. As an APPROVER he was never told, and he is the one person for
+// whom it changes what his signature means. His words for what he wanted:
+// *your approval covers the text; this value is live.*
+//
+// So the panel where the decision is taken says it, in front of the diff rather
+// than after it, and the Approve modal restates the count. It is not a warning
+// and it is not phrased as one: the value being live is why it is worth having.
+// What is wrong is an approver who does not know.
+function federatedScopeHTML(references, nextVersion) {
+  if (!references.length) return '';
+  const rows = references.map((raw) => {
+    const r = normalizeReference(raw);
+    const service = r.authMode === 'service';
+    return `<li><span class="review-fed-label">${esc(referenceLabel(r))}</span>
+      <span class="muted">${esc(clip(r.sourceName || r.sourceId || 'unknown source', 48))}${
+        service ? ' · service-resolved' : ''
+      }</span></li>`;
+  });
+  const one = references.length === 1;
+  return `
+    <div class="review-fed">
+      <h3 class="review-fed-head">${one ? 'One value on this page is live' : `${references.length} values on this page are live`}</h3>
+      <p>Approving publishes the text as v${nextVersion}. It does not fix ${one ? 'this value' : 'these values'}:
+        Canon stores ${one ? 'it' : 'them'} nowhere and asks ${one ? 'its source' : 'their sources'} again every
+        time somebody reads the page. ${one ? 'It is' : 'They are'} page-level and live, so
+        ${one ? 'it' : 'they'} can read differently tomorrow — no new version, no approval, and nothing that
+        would come back to you. <strong>Your approval covers the text.</strong></p>
+      <ul class="review-fed-list">${rows.join('')}</ul>
+      <p class="muted">Where the value comes from, when it was last resolved and whether a second system disagrees
+        are on the page beside it. Adding or removing one is an edit to the page, not part of any review.</p>
+    </div>`;
 }
 
 // One sentence for the extent of a change, used in the panel and again in the
@@ -2084,6 +2243,10 @@ function reviewChangeHTML(change) {
       <h2 class="h-small">What is being approved</h2>
       <p class="muted">${esc(changeSentence(change))} Approving publishes exactly this, as
         v${change.nextVersion}.</p>
+      ${/* Before the diff, not after it: the extent of an approval is part of
+            reading the diff, and an approver who has scrolled a hundred lines
+            of text has already decided by the time they reach a footnote. */ ''}
+      ${federatedScopeHTML(change.references, change.nextVersion)}
       ${title}
       ${fields}
       ${body}
@@ -2115,6 +2278,109 @@ function sentBackNoticeHTML(sentBack) {
     </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// A PAGE'S STANDING GOES WHERE A READER MEETS THE PAGE.
+//
+// "Somebody who reads the top of the page and stops never learns the number is
+// contested. 'This is out of date' and 'this number is disputed' belong in the
+// same place, and it isn't the basement." — a compliance director, second round
+// of user testing, on the Records Retention Schedule: its second sentence says
+// claims records are kept for seven years, a person has written down that the
+// platform spec contradicts it, and that assertion was rendered below the body,
+// below the federated values, below everything — while "past review" got a
+// banner above the fold.
+//
+// The answer path had already learned this lesson: a citation carries
+// `disputed` and reads "contested" beside the page's own badge, because a
+// page's standing must not depend on how somebody phrased a question
+// (answers.ts, `disputedAmong`). It must not depend on how far somebody
+// scrolled either. So every reason to hesitate over this page — it is
+// archived, it is past its review date, a person says it contradicts another
+// page, a person says another page replaced it — is one list, drawn in one
+// place, at the top.
+//
+// This is NOT a move of the Conflicts and supersessions panel. The panel is
+// the register: every relation at both ends, with Withdraw and Assert, and the
+// two-sided detail. What moves up is the STANDING — the fact, its author, their
+// reasoning and the date — and the notice points down to the panel for the
+// rest. Saying it twice is the right amount for something a reader must not be
+// able to miss.
+//
+// The notes are computed as data rather than as HTML so the ordering rule can
+// be asserted without a DOM (test/pageview.test.ts).
+function pageStandingNotes(page, relations) {
+  const notes = [];
+  if (page.status === 'archived') notes.push({ kind: 'archived' });
+  if (page.status === 'needs_update') notes.push({ kind: 'needs_update' });
+  // Read from the DATE, not from the status: a Canonical page whose review date
+  // passed since the last sweep is already stale (USER-TESTING.md T1.4).
+  if (page.status === 'canonical' && isPastReview(page.reviewDate)) notes.push({ kind: 'overdue' });
+  for (const rel of relations ?? []) {
+    // Both ends of a conflict are contested, because the assertion is that the
+    // two pages cannot both be right and it names no favourite.
+    if (rel.reads === 'conflicts_with') notes.push({ kind: 'contested', relation: rel });
+    // `superseded_by` is a caution about THIS page; `supersedes` is not — it
+    // says something about the other one, and belongs in the panel with the
+    // rest of the register rather than in a banner warning a reader off a page
+    // that is perfectly good.
+    if (rel.reads === 'superseded_by') notes.push({ kind: 'superseded', relation: rel });
+  }
+  return notes;
+}
+
+/** The other page in a relation, as a link where the reader may open it. */
+function standingTargetHTML(rel) {
+  const title = esc(rel.other.title);
+  const badgeHTML = rel.other.status ? ` ${badge(rel.other.status, 'sm')}` : '';
+  return rel.other.id ? `<a href="#/pages/${esc(rel.other.id)}">${title}</a>${badgeHTML}` : `${title}${badgeHTML}`;
+}
+
+/** Who asserted it and when, with the way down to the whole register. */
+function standingAttributionHTML(rel) {
+  const when = rel.assertedAt ? ` on ${fmtDateTime(rel.assertedAt)}` : '';
+  return `<div class="muted standing-meta">Asserted by ${actorLabel(rel.assertedBy)}${when}.
+    <button class="btn subtle" type="button" data-scroll-to="relations-panel">Show it with the others</button></div>`;
+}
+
+function standingNoticeHTML(note, page) {
+  if (note.kind === 'archived') {
+    return '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>';
+  }
+  if (note.kind === 'needs_update') {
+    return `<div class="notice notice-stale">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed,
+      so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review
+      date, and submit it for review to return it to Canonical.</div>`;
+  }
+  if (note.kind === 'overdue') return overdueNoticeHTML(page);
+  const rel = note.relation;
+  if (note.kind === 'contested') {
+    return `
+      <div class="notice notice-contested">
+        <div><strong>Contested.</strong> A person has recorded that this page and ${standingTargetHTML(rel)}
+          contradict each other. Both are still the record and both may still be cited: Canon draws a contradiction
+          and does not settle it, so what this page says about the disputed point is not agreed.</div>
+        ${rel.note
+          ? `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`
+          : '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>'}
+        ${standingAttributionHTML(rel)}
+      </div>`;
+  }
+  return `
+    <div class="notice notice-contested">
+      <div><strong>Superseded.</strong> A person has recorded that ${standingTargetHTML(rel)} replaces this page.
+        Saying so archives nothing: this page keeps its standing, its text and its history, and the page named is
+        where that person says the current answer is.</div>
+      ${rel.note
+        ? `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`
+        : '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>'}
+      ${standingAttributionHTML(rel)}
+    </div>`;
+}
+
+function pageStandingHTML(page, relations) {
+  return pageStandingNotes(page, relations).map((n) => standingNoticeHTML(n, page)).join('');
+}
+
 function reviewBannerHTML(review, typeNamesApprover) {
   // No `review` means a server older than this page, or a draft that has gone
   // missing under review. Say only what is still true rather than naming
@@ -2137,7 +2403,7 @@ function reviewBannerHTML(review, typeNamesApprover) {
 
 async function viewPage(id) {
   const page = await api('GET', `/pages/${id}`);
-  const [collection, tree] = await Promise.all([
+  const [collection, tree, , , relations] = await Promise.all([
     api('GET', `/collections/${page.collectionId}`),
     api('GET', `/collections/${page.collectionId}/tree`),
     loadActors().catch(() => null),
@@ -2145,6 +2411,14 @@ async function viewPage(id) {
     // something different depending on whether this deployment sweeps, and a
     // notice that changes its mind a moment after paint is worse than either.
     detectFreshness().catch(() => null),
+    // The relations, in hand BEFORE the first paint, because part of this
+    // page's standing is made of them and standing is drawn at the top. The
+    // panel used to be the only reader of this call and could afford to arrive
+    // late; a banner that says "contested" cannot appear a second after
+    // somebody has read the first paragraph and moved on. Still
+    // feature-detected: a Canon that does not serve relations draws no banner
+    // and no panel, exactly as before.
+    loadRelations(id),
   ]);
   let draft = null;
   try {
@@ -2261,9 +2535,10 @@ async function viewPage(id) {
         ${refusalNote}
         ${sentBackNoticeHTML(page.sentBack)}
         ${draftBanner}
-        ${isArchived ? '<div class="notice">This page is archived and read-only. It is preserved with its full history.</div>' : ''}
-        ${page.status === 'needs_update' ? `<div class="notice notice-stale">Past review. Its review date (${fmtDate(page.reviewDate)}) has passed, so it is marked Needs Update. It is still the official record and can still be cited — edit it, set a new review date, and submit it for review to return it to Canonical.</div>` : ''}
-        ${overdueNoticeHTML(page)}
+        ${/* Everything this page's standing consists of, in one block, before
+              the body: archived, past review, contested, superseded. See
+              pageStandingNotes. */ ''}
+        ${pageStandingHTML(page, relations)}
         ${inReview ? reviewBannerHTML(review, Boolean(rules.approver)) : ''}
         ${reviewChangeHTML(change)}
 
@@ -2301,8 +2576,13 @@ async function viewPage(id) {
                   here invited the approver to overwrite the very draft they
                   were reviewing, and it is the one action that is wrong for
                   everybody standing on this page right now. */ ''}
-            <p>The text waiting for approval is under <a href="#review-change">What is being approved</a>, above.
-              It becomes v1 of this page when it is approved.</p>
+            ${/* A button, not an anchor to `#review-change`: the hash IS the
+                  router, so a fragment link here navigates away from the page
+                  it is trying to point at. See the delegated [data-scroll-to]
+                  handler below. */ ''}
+            <p>The text waiting for approval is under
+              <button class="btn subtle" type="button" data-scroll-to="review-change">What is being approved</button>,
+              above. It becomes v1 of this page when it is approved.</p>
           </div>` : `
           <div class="empty-state">
             <h2>Nothing published yet</h2>
@@ -2345,6 +2625,16 @@ async function viewPage(id) {
     body: `
       <p class="muted">Approving publishes the reviewed draft and grants the Canonical mark.
         ${change ? esc(changeSentence(change)) : ''}</p>
+      ${/* And the extent in the other direction: what the Canonical mark will
+            NOT be covering. Same count, same source, same words as the panel —
+            the last thing read before the button should not be narrower than
+            what the button does. */ ''}
+      ${change && change.references.length ? `<p class="muted approve-fed">The
+        ${change.references.length === 1 ? 'federated value' : `${change.references.length} federated values`} on this
+        page ${change.references.length === 1 ? 'is' : 'are'} live and page-level:
+        ${change.references.length === 1 ? 'it is' : 'they are'} resolved from
+        ${change.references.length === 1 ? 'its source' : 'their sources'} on every read and can change afterwards
+        without a version and without you. Your approval covers the text.</p>` : ''}
       ${change ? '<p><button type="button" class="btn subtle" id="approve-see-diff">Show me the changes</button></p>' : ''}
       <label>Note <input name="note" placeholder="optional, kept in version history"></label>
       <p class="muted">Optional on purpose: what you approved is the version itself, with your name and the
@@ -2417,7 +2707,7 @@ async function viewPage(id) {
   // pieces of server, feature-detected separately: neither one's absence hides
   // the other, and a Canon that serves neither shows a page exactly as before.
   renderDivergencesPanel(id);
-  renderRelationsPanel(id, page);
+  renderRelationsPanel(id, page, relations);
   renderRelatedPanel(id);
   renderCommentsPanel(id, can?.comment ?? null);
 }
@@ -2988,18 +3278,34 @@ function relationEntryHTML(rel) {
     </li>`;
 }
 
-async function renderRelationsPanel(pageId, page) {
-  const host = document.getElementById('relations-host');
-  if (!host || state.features.relations === false) return;
-  let rows;
+/**
+ * The relations for one page, normalised, or null where this Canon does not
+ * serve them or the read failed.
+ *
+ * Null is not "there are none": the standing banner and the panel both draw
+ * nothing on a null, because a read that failed must never be rendered as the
+ * record saying a page is uncontested.
+ */
+async function loadRelations(pageId) {
+  if (state.features.relations === false) return null;
   try {
     const r = await api('GET', `/pages/${pageId}/relations`);
     state.features.relations = true;
-    rows = (Array.isArray(r) ? r : (r?.relations ?? [])).map(normalizeRelation);
+    return (Array.isArray(r) ? r : (r?.relations ?? [])).map(normalizeRelation);
   } catch (err) {
-    if (err.status === 404 || err.status === 405) { state.features.relations = false; return; }
-    return; // a read that failed is not a claim that there are none
+    if (err.status === 404 || err.status === 405) state.features.relations = false;
+    return null;
   }
+}
+
+async function renderRelationsPanel(pageId, page, preloaded = undefined) {
+  const host = document.getElementById('relations-host');
+  if (!host || state.features.relations === false) return;
+  // The page view already holds these — it needs them above the fold — so the
+  // panel is drawn from the same rows rather than asking again and risking a
+  // panel that disagrees with the banner over it.
+  const rows = preloaded === undefined ? await loadRelations(pageId) : preloaded;
+  if (!rows) return;
   if (!host.isConnected) return;
 
   const archived = page?.status === 'archived';
@@ -3028,7 +3334,11 @@ async function renderRelationsPanel(pageId, page) {
       onSubmit: async () => {
         await api('DELETE', `/relations/${btn.dataset.withdraw}`);
         toast('Withdrawn.', 'ok');
-        renderRelationsPanel(pageId, page);
+        // The whole view, not just this panel: withdrawing a conflict changes
+        // the page's standing, and the banner that states it is at the top.
+        // Redrawing the register under a banner that still says "contested"
+        // would leave the two halves of one fact disagreeing on screen.
+        route();
       },
     }));
   });
@@ -3084,7 +3394,9 @@ function openRelationModal(pageId, page) {
         : { path: `/pages/${pageId}/relations`, payload: { toPageId, kind: reads, note: note || null } };
       await api('POST', body.path, body.payload);
       toast('Asserted. It is on the page and on the map.', 'ok');
-      renderRelationsPanel(pageId, page);
+      // The view, not the panel: a conflict asserted here is this page's
+      // standing from now on, and standing is stated at the top.
+      route();
     },
   });
 
@@ -3358,6 +3670,51 @@ function mdEditorTools(ta) {
   };
 }
 
+// WHAT THE PAGE WILL BE WHEN THIS IS DONE.
+//
+// The Publish dialog used to say what publishing is NOT — "it publishes
+// without review — use 'Submit for review' if this page should earn the
+// Canonical mark" — and never once said where the page ends up. A new
+// contributor, second round of user testing: "I nearly pressed it, and I'd
+// have had no idea what I'd done."
+//
+// It ends up a Draft. Every type, every time: `writeVersion` in store.ts
+// settles the status to `draft` unless an approval is what wrote the version,
+// because the Canonical mark applies to reviewed content and nothing here has
+// been reviewed. So that is the first sentence, in the same word and the same
+// badge the page will wear afterwards, carrying the sentence the status key
+// gives that badge everywhere else — somebody who has learned what DRAFT means
+// in this product must not have to learn it again from a dialog.
+//
+// The version number is named too. "The current version for every reader" was
+// true and abstract; "v4, and that is what every reader then sees" is the same
+// fact somebody can check on the History screen afterwards.
+//
+// Giving up a mark the page already holds is the third sentence and only
+// appears when there is one to give up. The editor says this at the top of the
+// screen as well; it is repeated here because this is where the decision is
+// taken, and a warning somebody scrolled past on the way in is not a warning.
+function publishDialogBodyHTML(page, reviewed) {
+  const nextVersion = (page.currentVersion ?? 0) + 1;
+  const heldMark = page.status === 'canonical' || page.status === 'needs_update';
+  const noReview = reviewed
+    ? 'Publishing is not review, and it grants no standing: nobody has agreed to what this says. Use ' +
+      '<strong>Submit for review</strong> instead if this page should carry the Canonical mark.'
+    : 'A Note publishes directly and never carries the Canonical mark, so this is as far as it goes — there ' +
+      'is no review to send it to.';
+  const giveUp = heldMark
+    ? `<p class="notice notice-stale">This page is ${esc(STATUS_LABELS[page.status] ?? page.status)} today, and
+       publishing gives that up. The mark applies to reviewed content; it is granted again through review.</p>`
+    : '';
+  return `
+    <p>Publishing writes <strong>v${nextVersion}</strong> and makes it the version every reader of this page
+      sees. The page is then a ${badge('draft')}:
+      <span class="muted">${esc(STATUS_MEANINGS.draft)}</span></p>
+    <p class="muted">${noReview}</p>
+    ${giveUp}
+    <label>Version note <input name="note" placeholder="optional, kept in version history"></label>`;
+}
+
 async function viewEditor(id) {
   const page = await api('GET', `/pages/${id}`);
   await loadActors().catch(() => null);
@@ -3557,10 +3914,7 @@ async function viewEditor(id) {
     openModal({
       title: 'Publish this draft',
       submitLabel: 'Publish',
-      body: `
-        <p class="muted">Publishing makes this draft the current version for every reader.
-        ${reviewed ? 'It publishes without review — use "Submit for review" if this page should earn the Canonical mark.' : ''}</p>
-        <label>Version note <input name="note" placeholder="optional, kept in version history"></label>`,
+      body: publishDialogBodyHTML(page, reviewed),
       onSubmit: async (mform) => {
         await save();
         await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
@@ -3741,7 +4095,12 @@ async function viewHistory(id) {
       <p class="muted">Versions are what was published. For everything that happened to this page —
       views of restricted material, submissions, send-backs, approvals —
       <a href="#/audit?page=${encodeURIComponent(id)}">see its audit log</a>.</p>
+      ${/* Six columns, so the table scrolls inside its own container on a narrow
+            screen rather than pushing the page sideways — the same treatment
+            the collection's contents table has, for the same reason: nothing in
+            this product may scroll horizontally. */ ''}
       ${versions.length ? `
+        <div class="table-scroll">
         <table class="table">
           <thead><tr><th></th><th>Version</th><th>Published</th><th>Author</th><th>Note</th><th></th></tr></thead>
           <tbody>
@@ -3759,7 +4118,8 @@ async function viewHistory(id) {
                 </td>
               </tr>`).join('')}
           </tbody>
-        </table>` : `
+        </table>
+        </div>` : `
         <div class="empty-state">
           <h2>No published versions yet</h2>
           <p>History begins with the first publish.</p>
@@ -7230,6 +7590,20 @@ document.addEventListener('click', (e) => {
     e.preventDefault();
     location.hash = link.getAttribute('href');
   }
+});
+
+// Moving down a page without touching the address bar. Every "show me the rest
+// of this" goes through here — a standing banner down to the conflicts
+// register, the in-review empty state up to the diff — because `location.hash`
+// IS the router and an `href="#panel"` navigates away from the page it is
+// pointing into. Delegated from the document and registered once: it reaches
+// panels that render after their view, and views that render many times over a
+// session do not each leave a listener behind.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-scroll-to]');
+  if (!btn) return;
+  const target = document.getElementById(btn.dataset.scrollTo);
+  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 window.addEventListener('hashchange', route);
