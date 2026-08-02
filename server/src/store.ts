@@ -573,6 +573,12 @@ export class CanonStore {
          VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
       )
       .run(id, input.collectionId, input.parentId ?? null, position, input.type, input.title.trim(), actorId, now());
+    // A page is findable by its title from the moment it has one. Search used
+    // to be built from published versions alone, so a page that had been
+    // written and sent for review — visible in the tree, visible in the audit
+    // log — could not be found by its own name (USER-TESTING.md T4.6, bug E).
+    // Its BODY still waits for publication; see the note in search.ts.
+    this.searchIndex.indexPage(id);
     this.audit(actorId, 'page.create', {
       collectionId: input.collectionId,
       pageId: id,

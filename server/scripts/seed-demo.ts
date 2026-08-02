@@ -112,15 +112,20 @@ interface PersonSpec {
 const PEOPLE: PersonSpec[] = [
   { key: 'dana', name: 'Dana Whitfield', email: 'dana.whitfield@example.com', title: 'Head of Compliance' },
   { key: 'marc', name: 'Marc Oyelaran', email: 'marc.oyelaran@example.com', title: 'Compliance Analyst' },
+  { key: 'yusuf', name: 'Yusuf Adeyemi', email: 'yusuf.adeyemi@example.com', title: 'Records Manager' },
   { key: 'nadia', name: 'Nadia Haddad', email: 'nadia.haddad@example.com', title: 'General Counsel' },
+  { key: 'helena', name: 'Helena Vardy', email: 'helena.vardy@example.com', title: 'Audit Committee Chair' },
   { key: 'priya', name: 'Priya Raman', email: 'priya.raman@example.com', title: 'Benefits Manager' },
   { key: 'iris', name: 'Iris Cho', email: 'iris.cho@example.com', title: 'Member Services Lead' },
+  { key: 'lena', name: 'Lena Fischer', email: 'lena.fischer@example.com', title: 'VP Member Operations' },
   { key: 'tomas', name: 'Tomas Lindqvist', email: 'tomas.lindqvist@example.com', title: 'Clinical Policy Director' },
   { key: 'grace', name: 'Grace Abara', email: 'grace.abara@example.com', title: 'Pharmacy Director' },
+  { key: 'omar', name: 'Omar Sedky', email: 'omar.sedky@example.com', title: 'Chief Medical Officer' },
   { key: 'ada', name: 'Ada Okonkwo', email: 'ada.okonkwo@example.com', title: 'People Partner' },
   { key: 'ruth', name: 'Ruth Beaumont', email: 'ruth.beaumont@example.com', title: 'Head of People' },
   { key: 'sam', name: 'Sam Ferreira', email: 'sam.ferreira@example.com', title: 'Engineering Lead' },
   { key: 'joel', name: 'Joel Brennan', email: 'joel.brennan@example.com', title: 'Staff Engineer' },
+  { key: 'bo', name: 'Bo Ferrante', email: 'bo.ferrante@example.com', title: 'Chief Technology Officer' },
 ];
 
 /** By key, for the "who owns this" line every page body carries. */
@@ -154,7 +159,26 @@ interface CollectionSpec {
   /** Who administers, who writes, who approves, who only reads. */
   admin: string;
   authors: string[];
-  approver: string;
+  /**
+   * MORE THAN ONE, EVERYWHERE, ON PURPOSE.
+   *
+   * Every collection used to name one approver, so all sixteen Canonical
+   * clinical policies in the demo were granted the mark by the same person. An
+   * external auditor reviewing the corpus could not tell that from a real
+   * concentration of duty and said the client should not assume it was a
+   * fixture artefact (USER-TESTING.md T4.8). It was — and a demo that
+   * accidentally depicts a control failure is teaching the wrong lesson about
+   * the product that exists to find control failures.
+   *
+   * So each collection names two, both plausible for what it holds, and each
+   * page's approver is drawn deterministically from the pair. The seeder
+   * counts and prints the split, so nobody has to take this comment's word for
+   * it. Approvers are disjoint from authors — checked at seed time — because
+   * the server refuses a draft submitted by its own named approver, and a
+   * corpus that quietly depended on the overlap not happening would be a
+   * corpus with a landmine in it.
+   */
+  approvers: string[];
   viewers?: string[];
   /** Left off the roster on purpose, so the record has something to withhold. */
   restricted?: boolean;
@@ -166,9 +190,9 @@ const COMPLIANCE: CollectionSpec = {
   name: 'Compliance',
   description: 'Regulatory obligations, the controls that meet them, and the evidence that they worked.',
   admin: 'dana',
-  authors: ['dana', 'marc'],
-  approver: 'nadia',
-  viewers: ['priya', 'tomas', 'ada', 'sam'],
+  authors: ['dana', 'marc', 'yusuf'],
+  approvers: ['nadia', 'helena'],
+  viewers: ['priya', 'tomas', 'ada', 'sam', 'lena'],
   roots: [
     {
       title: 'Regulatory Compliance Program',
@@ -346,8 +370,8 @@ const MEMBER_BENEFITS: CollectionSpec = {
   description: 'What members are entitled to, how eligibility is decided, and how disputes are handled.',
   admin: 'dana',
   authors: ['priya', 'iris', 'dana'],
-  approver: 'nadia',
-  viewers: ['marc', 'tomas', 'sam'],
+  approvers: ['lena', 'nadia'],
+  viewers: ['marc', 'tomas', 'sam', 'yusuf'],
   roots: [
     {
       title: 'Plan Documents',
@@ -478,8 +502,8 @@ const CLINICAL_POLICY: CollectionSpec = {
   description: 'Coverage criteria, medical necessity, and the evidence each decision rests on.',
   admin: 'dana',
   authors: ['tomas', 'grace'],
-  approver: 'nadia',
-  viewers: ['priya', 'iris', 'marc'],
+  approvers: ['omar', 'nadia'],
+  viewers: ['priya', 'iris', 'marc', 'lena'],
   roots: [
     {
       title: 'Medical Necessity Criteria',
@@ -595,8 +619,8 @@ const HR: CollectionSpec = {
   name: 'People and Workplace',
   description: 'Employment policy, the handbook, and how the people team runs its own processes.',
   admin: 'dana',
-  authors: ['ada', 'ruth'],
-  approver: 'nadia',
+  authors: ['ada'],
+  approvers: ['ruth', 'nadia'],
   // Deliberately narrow: the whole-record map has to have something it can
   // withhold, or the permission rule is untested by looking at it.
   restricted: true,
@@ -678,8 +702,8 @@ const ENGINEERING: CollectionSpec = {
   description: 'How the platform is built and operated, and the specifications the record depends on.',
   admin: 'dana',
   authors: ['sam', 'joel'],
-  approver: 'nadia',
-  viewers: ['marc', 'priya'],
+  approvers: ['bo', 'nadia'],
+  viewers: ['marc', 'priya', 'lena'],
   roots: [
     {
       title: 'Platform Architecture',
@@ -873,12 +897,14 @@ const RULE_LINES: Record<string, string[]> = {
   ],
 };
 
-const CLOSINGS: string[] = [
-  'Questions about this page go to its owner in the first instance.',
-  'If this page is wrong, say so on the page rather than working around it — a correction is cheaper than a workaround.',
-  'This page is reviewed on the date in its review field. If that date has passed, treat what follows with care.',
-  'Related material sits under the parent page; the record is deliberately shallow where it can be.',
-];
+// There used to be a CLOSINGS list here — four sentences appended to the foot
+// of every page, about where to send questions and what a review date means.
+// They were furniture, and furniture is what an extractive answer quotes when
+// the page has nothing better in it: a reviewer watched Ask return a page
+// footer as what "the record says" (USER-TESTING.md T4.8). Pages carry their
+// subject and nothing else now; what the product does with a review date is
+// the product's job to say, on the page, not the page's job to say about
+// itself.
 
 // ---------------------------------------------------------------------------
 // Reference fields (DATA-BACKBONE.md §6): facts other systems own
@@ -1120,6 +1146,8 @@ interface SeededPage {
   depth: number;
   parentId: string | null;
   ownerKey: string;
+  /** Which of the collection's approvers this page names. */
+  approverKey: string;
   /** Where this page is meant to end up. `archived` is applied last. */
   target: PageStatus;
   links: string[]; // page ids, filled in before the body is written
@@ -1142,6 +1170,14 @@ export interface SeedReport {
   edges: Record<GraphEdgeKind, number>;
   /** Asserted page relations: conflicts with, supersedes (DATA-BACKBONE.md §7). */
   relations: number;
+  /**
+   * Who granted the Canonical mark, and to how many pages, per collection.
+   * Printed rather than merely recorded: a reviewer looking at the demo has to
+   * be able to see that its approvals are spread, because a corpus in which
+   * one person approved everything looks exactly like a concentration-of-duty
+   * finding (USER-TESTING.md T4.8).
+   */
+  approvals: { collection: string; approver: string; pages: number }[];
   crossCollectionLinks: number;
   maxDepth: number;
   sources: number;
@@ -1160,11 +1196,23 @@ function isoDate(offsetDays: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-/** The fixtures the test suite already ships, reused as an import to migrate. */
-function findFixtures(): string | null {
+/**
+ * The demo's own migration material (scripts/demo-corpus/), found by walking
+ * up from wherever this module was compiled to.
+ *
+ * It used to be `server/test/fixtures/`, and that was the wrong directory to
+ * borrow. Those fixtures exist to exercise the importer against material that
+ * is broken, and their pages are NAMED after the defect each one carries — so
+ * the demo record ended up holding pages called "Orphan Note" and "Messy
+ * Legacy Page", plus three titles that collided with seeded ones, and a
+ * reviewer read the whole lot as the product's own carelessness
+ * (USER-TESTING.md T4.8). The demo now ships its own export, with the same
+ * awkward shapes and plausible documents in them. See demo-corpus/README.md.
+ */
+function findDemoCorpus(): string | null {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let up = 0; up < 8; up += 1) {
-    const candidate = join(dir, 'test', 'fixtures');
+    const candidate = join(dir, 'scripts', 'demo-corpus');
     if (existsSync(candidate)) return candidate;
     dir = dirname(dir);
   }
@@ -1220,9 +1268,20 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
       restricted: spec.restricted ?? false,
     });
     collectionIds.set(spec.key, collection.id);
+    // The server refuses a draft submitted by its own named approver, so a
+    // person who both writes and approves here would make some page in this
+    // collection unseedable. Said out loud rather than left to a confusing
+    // failure four hundred pages later.
+    const overlap = spec.approvers.filter((key) => spec.authors.includes(key));
+    if (overlap.length) {
+      throw new Error(
+        `${spec.name}: ${overlap.join(', ')} is listed as both an author and an approver, and ` +
+          'the approver cannot submit their own draft for review',
+      );
+    }
     const roles: [string, Role][] = [
       ...spec.authors.map((key): [string, Role] => [key, 'edit']),
-      [spec.approver, 'approve'],
+      ...spec.approvers.map((key): [string, Role] => [key, 'approve']),
       ...(spec.viewers ?? []).map((key): [string, Role] => [key, 'view']),
     ];
     let members = 1; // the admin, who created it
@@ -1240,7 +1299,7 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
   // whole point and is impossible if bodies are written as pages are made.
   const pages: SeededPage[] = [];
   const byTitle = new Map<string, SeededPage>(); // `${collectionKey}\u0000${title}`
-  const key = (collectionKey: string, title: string): string => `${collectionKey}\u0000${title}`;
+  const key = pageKey;
 
   const create = (
     spec: CollectionSpec,
@@ -1251,10 +1310,15 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     depth: number,
   ): SeededPage => {
     const ownerKey = spec.authors[rng.int(0, spec.authors.length - 1)]!;
+    const approverKey = spec.approvers[rng.int(0, spec.approvers.length - 1)]!;
+    // A page the corpus is expected to ANSWER FROM does not get its type or
+    // its standing from a dice roll; see PINNED_PAGES.
+    const pinned = PINNED_PAGES[key(spec.key, title)];
+    const finalType = pinned?.type ?? type;
     const page = store.createPage(actors.get(ownerKey)!, {
       collectionId: collectionIds.get(spec.key)!,
       parentId: parent?.id ?? null,
-      type,
+      type: finalType,
       title,
     });
     const seeded: SeededPage = {
@@ -1262,12 +1326,13 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
       collectionKey: spec.key,
       collectionId: collectionIds.get(spec.key)!,
       title,
-      type,
+      type: finalType,
       purpose,
       depth,
       parentId: parent?.id ?? null,
       ownerKey,
-      target: targetStatus(type, depth, rng),
+      approverKey,
+      target: pinned?.status ?? targetStatus(finalType, depth, rng),
       links: [],
     };
     pages.push(seeded);
@@ -1324,10 +1389,12 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
 
   // ---- bodies, publication, review --------------------------------------
   const byId = new Map(pages.map((page) => [page.id, page]));
+  // Who granted the mark, and where. Counted as it happens rather than
+  // reconstructed afterwards, so the printed split is the split that occurred.
+  const approvalsBy = new Map<string, number>(); // `${collectionKey}\u0000${personKey}`
   for (const page of pages) {
     const author = actors.get(page.ownerKey)!;
-    const spec = COLLECTIONS.find((c) => c.key === page.collectionKey)!;
-    const approver = actors.get(spec.approver)!;
+    const approver = actors.get(page.approverKey)!;
     const body = bodyFor(page, rng, byId);
 
     if (page.target === 'draft' && page.type === 'note' && !page.links.length && rng.chance(0.3)) {
@@ -1379,15 +1446,22 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     // in a running deployment.
     store.submitForReview(author, page.id);
     store.approve(approver, page.id, { note: 'Approved as Canonical' });
+    const tally = pageKey(page.collectionKey, page.approverKey);
+    approvalsBy.set(tally, (approvalsBy.get(tally) ?? 0) + 1);
   }
 
   // ---- migration: material that came from somewhere else -----------------
   const imports: SeedReport['imports'] = [];
-  const fixtures = findFixtures();
-  if (fixtures) {
+  const migration = findDemoCorpus();
+  if (migration) {
+    // The benefits team's old wiki goes to Member Benefits, and the clinical
+    // team's loose Google Docs go to Clinical Policy — each to the collection
+    // whose material it actually is. The google-docs run used to land benefits
+    // documents in Clinical Policy, which was one more thing in the demo that
+    // did not survive being read carefully.
     const runs: { source: 'confluence' | 'google-docs'; path: string; collection: string }[] = [
-      { source: 'confluence', path: join(fixtures, 'confluence-space'), collection: 'benefits' },
-      { source: 'google-docs', path: join(fixtures, 'google-docs'), collection: 'clinical' },
+      { source: 'confluence', path: join(migration, 'confluence-space'), collection: 'benefits' },
+      { source: 'google-docs', path: join(migration, 'google-docs'), collection: 'clinical' },
     ];
     for (const run of runs) {
       if (!existsSync(run.path)) continue;
@@ -1535,6 +1609,13 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     sources: SOURCES.length,
     references,
     relations,
+    approvals: COLLECTIONS.flatMap((spec) =>
+      spec.approvers.map((personKey) => ({
+        collection: spec.name,
+        approver: PERSON_BY_KEY.get(personKey)?.name ?? personKey,
+        pages: approvalsBy.get(pageKey(spec.key, personKey)) ?? 0,
+      })),
+    ),
     imports,
     archived,
     graph: { collections: graph.collections.length, nodes: graph.nodes.length, edges: graph.edges.length },
@@ -1557,6 +1638,18 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     `  disagreement  ${relations} asserted relations ` +
       `(${edgeCounts.conflicts_with} conflicts with, ${edgeCounts.supersedes} supersedes)`,
   );
+  // Also said out loud, and for the same reason the sweep's timestamps are. An
+  // external auditor read the old corpus's sixteen clinical policies, all
+  // approved by one person, and could not tell a fixture artefact from a real
+  // concentration of duty (USER-TESTING.md T4.8). Two approvers per collection
+  // now, and here is the count, so nobody has to infer it.
+  say('  approvals     spread across two named approvers in every collection:');
+  for (const spec of COLLECTIONS) {
+    const split = spec.approvers
+      .map((personKey) => `${PERSON_BY_KEY.get(personKey)?.name ?? personKey} ${approvalsBy.get(pageKey(spec.key, personKey)) ?? 0}`)
+      .join(', ');
+    say(`                ${spec.name}: ${split}`);
+  }
   return report;
 }
 
@@ -1611,28 +1704,115 @@ const REVISION_NOTES: string[] = [
   'This revision reflects the rule change flagged by horizon scanning last quarter.',
 ];
 
+/**
+ * Lower-case a title so it reads as the middle of a sentence — UNLESS its
+ * first word is not an ordinary word.
+ *
+ * "PLAN-7 deductible and out-of-pocket maximum" came back as "pLAN-7
+ * deductible…" on five pages, and a reviewer read the result as a typo in the
+ * record itself (USER-TESTING.md T4.8). It was not a typo; it was this
+ * function applied to an identifier. A first token carrying another capital or
+ * a digit is an identifier or an acronym — PLAN-7, MRI, PIA, P&T — and neither
+ * of those is ever lower-cased.
+ */
 function lowerFirst(text: string): string {
+  const first = text.split(/\s+/, 1)[0] ?? '';
+  if (/[A-Z0-9]/.test(first.slice(1))) return text;
   return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
+/** How a page is addressed in every by-title table in this file. */
+function pageKey(collectionKey: string, title: string): string {
+  return `${collectionKey}\u0000${title}`;
+}
+
+/**
+ * The pages this corpus is expected to ANSWER FROM, and their standing.
+ *
+ * Everything else in the demo gets its type and its status from the seeded
+ * PRNG, which is what makes the corpus look like a company's record rather
+ * than a uniform lawn. These do not. The first question a new contributor asks
+ * a knowledge base about a health plan is how long claims records are kept
+ * (USER-TESTING.md T4.8) — and a schedule that rolled up as a Draft Note that
+ * run, or a conflict whose two ends were not both Canonical, would answer it
+ * differently on different seeds. A demo whose central demonstration depends
+ * on a dice roll is not a demo.
+ *
+ * So: the retention chain, both ends of each asserted conflict, and the two
+ * pages the claims answer rests on are pinned. Nothing here invents a status
+ * the workflow could not produce — each of these still goes through submit and
+ * approve, by a named approver, exactly like every other Canonical page.
+ */
+const PINNED_PAGES: Record<string, { type?: DocType; status?: PageStatus }> = {
+  // The retention chain, end to end. This is the question the corpus must be
+  // able to answer about itself.
+  [pageKey('compliance', 'Records and Retention')]: { type: 'policy', status: 'canonical' },
+  [pageKey('compliance', 'Records Retention Schedule')]: { type: 'policy', status: 'canonical' },
+  [pageKey('compliance', 'Retention periods: claims and appeals')]: { type: 'policy', status: 'canonical' },
+  [pageKey('compliance', 'Retention periods: clinical criteria')]: { type: 'policy', status: 'canonical' },
+  [pageKey('compliance', 'Retention periods: employment records')]: { type: 'policy', status: 'canonical' },
+  [pageKey('compliance', 'Retention periods: vendor contracts')]: { type: 'policy', status: 'canonical' },
+  // The other end of the retention conflict: the system's behaviour, against
+  // the schedule's obligation.
+  [pageKey('engineering', 'Data Retention in the Platform')]: { type: 'spec', status: 'canonical' },
+  [pageKey('engineering', 'Retention jobs and their schedule')]: { type: 'spec', status: 'canonical' },
+  // The second conflict — a figure restated in prose against the same figure
+  // resolved from the system that owns it — needs both ends official too.
+  [pageKey('benefits', 'Standard Plan (PLAN-7)')]: { type: 'policy', status: 'canonical' },
+  [pageKey('benefits', 'PLAN-7 deductible and out-of-pocket maximum')]: { type: 'spec', status: 'canonical' },
+  // Named by the retention pages, and the pages a claims question reaches next.
+  [pageKey('benefits', 'Claims Processing Standard')]: { type: 'spec', status: 'canonical' },
+  [pageKey('benefits', 'Appeals Process')]: { type: 'policy', status: 'canonical' },
+};
+
+/**
+ * WHAT A PAGE'S BODY SAYS.
+ *
+ * Two kinds, and the split matters. Most pages are assembled from real
+ * sentences about their own subject, which is what keeps three hundred pages
+ * from reading as filler. The pages a reader will actually ASK the corpus
+ * about are written out by hand, in WRITTEN_BODIES, and they carry the figures
+ * — the retention periods, the deadlines, the deductibles. A page titled
+ * "Records Retention Schedule" that contained no retention period was the
+ * demo's worst defect (USER-TESTING.md T4.8): the first question a new
+ * contributor naturally asks could not be answered, by a product whose whole
+ * claim is that it answers from the record.
+ *
+ * THREE THINGS THAT USED TO BE HERE AND ARE NOT ANY MORE.
+ *
+ * The owner footer — "Owner: Dana Whitfield, Head of Compliance." — restated a
+ * structured field as prose, and prose is what an answer quotes. So Ask cited
+ * a page footer as what the record says. The owner is a field on the page and
+ * is on the page's own header; it does not need saying twice, and the second
+ * saying is the one that leaks.
+ *
+ * The closing lines — "Questions about this page go to its owner in the first
+ * instance" — were furniture, and they leaked the same way.
+ *
+ * And the Related list wrote raw `/pages/<uuid>` into the body, so an answer
+ * that landed on it quoted a UUID at the reader. The links are still there —
+ * they are the graph's `link` edges and the map's whole point — but as
+ * markdown to the page's own address, so the words are the page's title and
+ * the address is behind them.
+ */
 function bodyFor(page: SeededPage, rng: Rng, byId: Map<string, SeededPage>): string {
-  const opening = rng.pick(OPENINGS[page.type]).replace('{purpose}', page.purpose);
-  const scope = rng.pick(SCOPE_LINES[page.collectionKey] ?? SCOPE_LINES.compliance!);
-  const rules = RULE_LINES[page.collectionKey] ?? RULE_LINES.compliance!;
-  const chosen: string[] = [];
-  for (let i = 0; i < 3 && chosen.length < rules.length; i += 1) {
-    const line = rules[rng.int(0, rules.length - 1)]!;
-    if (!chosen.includes(line)) chosen.push(line);
-  }
-  const parts: string[] = [
-    opening,
-    '## Scope',
-    scope,
-    '## What this requires',
-    chosen.map((line) => `- ${line}`).join('\n'),
-  ];
-  if (page.depth >= 3) {
-    parts.push('## In practice', rng.pick(PRACTICE_LINES).replace('{title}', page.title));
+  const written = WRITTEN_BODIES[pageKey(page.collectionKey, page.title)];
+  const parts: string[] = [];
+  if (written) {
+    parts.push(written.trim());
+  } else {
+    const opening = rng.pick(OPENINGS[page.type]).replace('{purpose}', page.purpose);
+    const scope = rng.pick(SCOPE_LINES[page.collectionKey] ?? SCOPE_LINES.compliance!);
+    const rules = RULE_LINES[page.collectionKey] ?? RULE_LINES.compliance!;
+    const chosen: string[] = [];
+    for (let i = 0; i < 3 && chosen.length < rules.length; i += 1) {
+      const line = rules[rng.int(0, rules.length - 1)]!;
+      if (!chosen.includes(line)) chosen.push(line);
+    }
+    parts.push(opening, '## Scope', scope, '## What this requires', chosen.map((line) => `- ${line}`).join('\n'));
+    if (page.depth >= 3) {
+      parts.push('## In practice', rng.pick(PRACTICE_LINES).replace('{title}', page.title));
+    }
   }
   if (page.links.length) {
     const seen = new Set<string>();
@@ -1641,15 +1821,254 @@ function bodyFor(page: SeededPage, rng: Rng, byId: Map<string, SeededPage>): str
       if (seen.has(id)) continue;
       seen.add(id);
       const target = byId.get(id);
-      lines.push(target ? `- ${target.title}: /pages/${id}` : `- /pages/${id}`);
+      // `#/pages/<id>` is the address this product hands out, it renders as a
+      // link in the page body, and `parsePageLinks` reads it as the edge it is.
+      lines.push(target ? `- [${target.title}](#/pages/${id})` : `- [A page in this record](#/pages/${id})`);
     }
     parts.push('## Related', lines.join('\n'));
   }
-  const owner = PERSON_BY_KEY.get(page.ownerKey);
-  if (owner) parts.push(`Owner: ${owner.name}, ${owner.title}.`);
-  parts.push(rng.pick(CLOSINGS));
   return parts.join('\n\n');
 }
+
+/**
+ * The pages that carry figures, written out.
+ *
+ * These are the corpus's load-bearing documents: the retention chain, the two
+ * sides of each asserted conflict, and the claims and appeals pages a question
+ * about either reaches next. They are prose a person could have written,
+ * because a demo of a knowledge product is a demo of its knowledge.
+ *
+ * THE CONFLICT IN HERE IS DELIBERATE AND MUST SURVIVE. The schedule keeps
+ * claims records for SEVEN YEARS. The platform spec deletes them at
+ * TWENTY-FOUR MONTHS. Both pages are Canonical, both say so in their own
+ * words, each names the other, and a person has asserted a `conflicts_with`
+ * relation between them (RELATION_PLAN). That is the product's best feature
+ * shown on the product's most ordinary question — and it is why neither page
+ * may be "fixed" to agree with the other.
+ */
+const WRITTEN_BODIES: Record<string, string> = {
+  [pageKey('compliance', 'Records and Retention')]: `
+This policy states how long the company keeps each class of record, who decides that, and what happens at the end of the period. The periods themselves are in the Records Retention Schedule beneath this page; this page is the rule the schedule implements.
+
+## Scope
+
+It applies to every record the company holds, in any system and in any format, including records a vendor holds on our behalf.
+
+## What this requires
+
+- Every class of record has exactly one retention period. It is stated in the Records Retention Schedule, in years or months, running from a named starting event rather than from the date a file happened to be created.
+- A record is kept for the whole of its period and disposed of at the end of it. Keeping a record longer than its period is a breach of this policy, not a cautious default.
+- A legal hold suspends retention for the records it names, and outranks every period on the schedule until it is released in writing.
+- Where a system deletes records automatically, its setting must match the schedule. Where it does not, the schedule is the obligation and the difference is a finding, raised against both.
+- Disposal is evidenced. A class disposed of without a disposal certificate is treated as still held.
+
+## Who decides
+
+Compliance owns the schedule and is the only function that may change a period on it. Legal owns holds. The system owners implement what the schedule says and report where they cannot.
+`,
+
+  [pageKey('compliance', 'Records Retention Schedule')]: `
+This schedule states how long we keep each class of record. **Claims and appeals records are kept for seven years.** The other classes are below, each with the event its period runs from — the starting event named beside it, never the date a file happened to be created.
+
+## How long we keep each class of record
+
+- **Claims and appeals records — seven years**, running from the date the claim is finally determined. The class covers the claim as submitted, every reprocessed version of it, the explanation of benefits sent to the member, and the whole of any appeal.
+- **Clinical criteria, and the evidence behind them — ten years** from the date the criterion is retired, because a coverage decision made under a criterion has to be explainable for as long as it can be challenged.
+- **Employment records — six years** from the end of employment, and longer where a statutory period is longer.
+- **Vendor contracts, and the diligence behind them — seven years** from the end of the contract term.
+- **Member communications — three years** from the date sent.
+- **Audit evidence and control testing — seven years** from the end of the audit year.
+
+## Where this record disagrees with itself
+
+**Seven years on this page; twenty-four months in the platform.** The specification *Data Retention in the Platform* describes a deletion job that removes claims records twenty-four months after final determination. Both pages are Canonical and they cannot both be right.
+
+Compliance owns which of the two changes. Until that decision is made and minuted, this schedule is the obligation the company is held to and the deletion job is what the system actually does — and the difference between those two sentences is the finding. It is recorded as a conflict against both pages rather than quietly settled in favour of whichever page a reader opened last.
+`,
+
+  [pageKey('compliance', 'Retention periods: claims and appeals')]: `
+Claims and appeals records are kept for **seven years**. The seven years run from the date the claim is finally determined — the date of the last decision on it, including any external review — and not from the date of service or the date the claim was received.
+
+## What is in the class
+
+- The claim as submitted, and every reprocessed version of it
+- The explanation of benefits sent to the member, in the form it was sent
+- Every appeal, the evidence filed with it, the clinical reviewer's name, and the decision
+- The prior authorisation record, where the service required one
+- Correspondence with the member about any of the above
+
+## When the clock stops
+
+A legal hold suspends the seven years for the records it names, in whole. The period resumes when the hold is released in writing, and the time under hold does not count against it. A claims record under hold is kept for as long as the hold lasts and seven years after it.
+
+## The figure is disputed
+
+**Seven years here; twenty-four months in the claims platform.** How long we keep a claims record is stated as seven years by this page and by the Records Retention Schedule, and the deletion job described in *Data Retention in the Platform* removes it at twenty-four months. Do not resolve this by choosing one. Raise it with Compliance, who own the schedule, and quote both pages when you do.
+`,
+
+  [pageKey('compliance', 'Retention periods: clinical criteria')]: `
+Clinical criteria, and the evidence each criterion rests on, are kept for **ten years** from the date the criterion is retired. A criterion still in force is kept indefinitely; the ten years begin when it is withdrawn or superseded.
+
+## What is in the class
+
+- The criterion as published, in every version it was published in
+- The evidence cited by each version, with its grade
+- The minute of the committee that adopted or retired it
+- The list of coverage decisions made under it, by reference
+
+## Why the period is longer than the claims period
+
+A coverage decision made under a criterion can be challenged for as long as the claim it decided can be reopened, and a criterion has to be readable in the form it had on the day the decision was made. Ten years is the longest of those windows, not an average of them.
+`,
+
+  [pageKey('compliance', 'Retention periods: employment records')]: `
+Employment records are kept for **six years** from the end of employment, except where a statutory period is longer, in which case the statutory period applies and is recorded here beside the class it applies to.
+
+## What is in the class
+
+- The contract and every variation of it
+- Pay, hours and leave records
+- Performance and disciplinary records, including anything relied on in a decision
+- Right-to-work evidence, kept for two years after employment ends and then destroyed, which is shorter than the rest of this class on purpose
+
+## Access requests
+
+An employee may ask for their own record at any time, during or after employment. That request is answered under *Subject Access and Correction Requests*; it does not extend or shorten the retention period.
+`,
+
+  [pageKey('compliance', 'Retention periods: vendor contracts')]: `
+Vendor contracts, and the due diligence behind them, are kept for **seven years** from the end of the contract term — including any extension, and including the wind-down period in which the vendor is still returning or destroying our data.
+
+## What is in the class
+
+- The signed contract, every amendment, and the business associate agreement
+- The pre-contract security questionnaire and its assessment
+- Each annual re-assessment
+- The certificate of return or destruction at the end of the term
+
+## Where a vendor holds our records
+
+The vendor's own retention period does not replace ours. Where the contract lets a vendor keep a record for less time than this schedule requires, the contract is the defect.
+`,
+
+  [pageKey('engineering', 'Data Retention in the Platform')]: `
+This specification describes how long the platform keeps each class of record, and how: which job deletes what, on what schedule, what it leaves behind as evidence, and where what the platform does and what the company is obliged to do are not the same. **The platform keeps a claims record for twenty-four months.**
+
+## The jobs
+
+- **Claims deletion.** The claims store runs a deletion job nightly. It removes a claim record, and the derived rows that reference it, **twenty-four months** after the claim is finally determined.
+- **Member communications.** Sent-message records are removed at thirty-six months, which matches the schedule.
+- **Backups.** Backup sets expire at ninety days. A record deleted by a job is still present in backups until every set that contains it has expired.
+- **Application logs.** Retained for thirteen months, with member identifiers scrubbed at ninety days.
+
+Every job writes a disposal record: the class, the count, the run, and the operator that owns it.
+
+## Where this disagrees with the schedule
+
+**Twenty-four months here; seven years on the schedule.** How long we keep a claims record is stated as seven years by the *Records Retention Schedule*, running from the same starting event this job uses, and this job deletes it at twenty-four months.
+
+One of the two is wrong. Compliance owns the schedule and therefore owns which one changes; engineering owns the job and will change it on a written instruction and not before. Until then this page describes what the platform does, the schedule describes what the company is obliged to do, and the two are recorded as a conflict rather than reconciled by whoever noticed last.
+`,
+
+  [pageKey('engineering', 'Retention jobs and their schedule')]: `
+The jobs that implement retention, when they run, and what they touch.
+
+- **claims-purge** — nightly, 02:10 UTC. Deletes claim records twenty-four months after final determination, with their derived rows. Honours holds by skipping any claim flagged in the hold table.
+- **comms-purge** — weekly, Sunday 03:00 UTC. Deletes sent-message records at thirty-six months.
+- **backup-expiry** — daily. Expires backup sets older than ninety days.
+- **log-scrub** — hourly. Removes member identifiers from application logs older than ninety days; the logs themselves expire at thirteen months.
+
+## What each run leaves behind
+
+A disposal record per class per run: the count deleted, the count skipped for a hold, the job version, and the operator. Nothing is deleted without one, and a run that cannot write its disposal record aborts before it deletes anything.
+
+## Known divergence
+
+The claims period here is twenty-four months. The Records Retention Schedule says seven years. See *Data Retention in the Platform* for the standing conflict; do not change this job to match the schedule without the written instruction that closes it.
+`,
+
+  [pageKey('benefits', 'Claims Processing Standard')]: `
+This specification states how a claim moves from submission to payment: what makes it clean, how fast it must be decided, and what happens when it is not.
+
+## Timeframes
+
+- A **clean claim** is decided within thirty calendar days of receipt.
+- A claim pended for information is decided within fifteen calendar days of the information arriving, and the member is told within three days of pending it what is missing.
+- An **expedited** claim, where delay would jeopardise the member's health, is decided within seventy-two hours.
+
+Every clock runs from the date the member or provider sent the claim, not the date we opened it.
+
+## What makes a claim clean
+
+- The member and the provider are identified and both are eligible on the date of service
+- The service is coded, priced, and does not require an authorisation that is missing
+- No other coverage is in question, or coordination of benefits has already been settled
+
+## After the decision
+
+The explanation of benefits states the reason for the decision in the same letter that gives the decision, and names the appeal route and its deadline. The claim file, the explanation of benefits, and any appeal are retained under the Records Retention Schedule.
+`,
+
+  [pageKey('benefits', 'Appeals Process')]: `
+This policy sets out how a member disputes a decision, who decides each level, and the deadlines that bind both sides.
+
+## The levels
+
+- **First level.** The member has 180 days from the date of the decision to appeal. We decide within thirty days, or seventy-two hours where the case is expedited.
+- **Second level.** The member has sixty days from the first-level decision. A reviewer who took no part in the first decision decides within thirty days.
+- **External review.** The member has four months from the second-level decision. The independent review organisation's decision binds us.
+
+## Who decides
+
+A clinical denial is upheld or overturned by a clinician qualified in the relevant specialty. An administrator may never uphold a clinical denial, at any level.
+
+## What the member is told
+
+Every decision letter states the reason, the evidence relied on, the criterion applied by name, the next level of appeal, and the deadline for it. A letter missing any of those is reissued rather than followed up.
+
+## Records
+
+The appeal, the evidence filed with it, and the decision are part of the claims and appeals record class and are retained for seven years from final determination.
+`,
+
+  [pageKey('benefits', 'Standard Plan (PLAN-7)')]: `
+The standard plan, PLAN-7, is the default medical plan for employees who make no election. This page is the plan document: where it and a summary differ, this page stands.
+
+## Cost sharing
+
+The annual deductible is **$1,200 for an individual and $2,400 for a family**, and the out-of-pocket maximum is $6,000 for an individual. Preventive services listed in the schedule are covered before the deductible.
+
+> These figures are restated here in prose. The authoritative figures are resolved live from Benefits Admin on *PLAN-7 deductible and out-of-pocket maximum*, and when the plan year changed, that page moved and this sentence did not. The two now disagree, and the disagreement is recorded rather than smoothed over. Quote the child page, not this paragraph.
+
+## What is covered
+
+Inpatient and outpatient medical care, prescription drugs at the formulary tier, mental health and substance use care at parity, and maternity care from the first day of coverage.
+
+## What is not
+
+Cosmetic procedures, services not medically necessary under the criteria in Clinical Policy, and care from a provider excluded from the network for cause. Exclusions are listed in full on the exclusions page beneath this one.
+
+## Network
+
+Three tiers: preferred, standard, and out of network. The out-of-network deductible and out-of-pocket maximum are separate from the figures above and are twice them.
+`,
+
+  [pageKey('benefits', 'PLAN-7 deductible and out-of-pocket maximum')]: `
+The deductible and the out-of-pocket maximum for PLAN-7 are owned by Benefits Admin and read from it live by the reference fields on this page. They are not retyped here, and a figure typed into a page is a figure that goes stale silently.
+
+## How to read the fields
+
+Each field on this page shows the value Benefits Admin last returned, the moment it returned it, and whether that moment is inside the freshness window. A stale value is shown as stale, with the error that made it stale, and never replaced by a guess.
+
+## Where it disagrees with the parent
+
+The parent plan document restates the deductible in prose, and its sentence is out of date. Where the two differ, these fields are the figures the plan year actually uses; the conflict is recorded against both pages so that neither is quietly trusted over the other.
+
+## When the plan year changes
+
+Benefits Admin is updated first, the fields here follow within the freshness window with nothing to do by hand, and the prose on the parent page is what somebody has to remember. That is exactly what went wrong last year.
+`,
+};
 
 const PRACTICE_LINES: string[] = [
   'In practice, "{title}" is where most of the questions land, so it is written to be read in a hurry and checked in detail afterwards.',

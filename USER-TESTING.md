@@ -484,9 +484,41 @@ characters ("Regulatory Co…", five rows of "PLAN-7 …") and the tree is the o
 navigation. A page in review is invisible to search by its own title (bug E).
 The knowledge map opens on 244 unlabelled dots with no colour key, while the
 genuinely excellent List view is two clicks away.
+**Fixed**, in four places, because it was four defects wearing one number.
+*The front page.* A collection opens on its **contents** — every page in the
+record's own order, indented by depth, with its type, its standing, its owner
+and the date it is next due to be looked at. Membership is administration and
+moved to `#/collections/:id/members`, one click away and named on the button:
+same table, same rules, same audit, on a screen somebody goes to on purpose.
+*The tree.* Titles wrap and the sidebar is wider, so the badge follows the last
+word of a title rather than competing with it for the row. Nothing is cut.
+*Search (bug E).* The cause was the index, not the query: `page_search` was
+built with an inner join to the page's current version, and a page in review
+has published none, so it had no row at all while sitting in the tree with its
+title on screen. The rule is now applied per field. A page's **body** still
+enters the index only when a version publishes — a draft body is work in
+progress and readers search the record, not each other's half-finished
+sentences. A page's **title** is indexed from the moment the page exists,
+because it is already drawn to every member of the collection and a search
+index that disagrees with the screen is a defect. Permission filtering is
+untouched; a non-member still finds nothing. *The map.* A drawing is the
+default only while it can name every node on it — past about 120 the
+constellation labels the hubs and leaves the rest as dots — so above that the
+**list** opens, and below it nothing changes. The drawing now carries a short
+key in its own corner: what a dot is, what a square is, what the lit core and
+the amber ring and the dotted ring mean, and what the hues stand for, with a
+link down to the full legend. Verified against a running server.
 
 **T4.7 · No status glossary.** *(Priya.)* No key, no tooltips, nothing that
 tells a new contributor which badge means "safe to read to a customer".
+**Fixed**, and fixed by copying the one status that already worked. Needs
+Update explained itself because its two words say what to do about it, so every
+status now answers the same question in the same voice — may a reader act on
+this page, or not, and why. One sentence each, written once in
+`STATUS_MEANINGS` and rendered as a **key on the collection front page**, where
+the badges first appear; again in the map legend; and carried by every badge in
+the product as its own description. Not four tooltips: one sentence, in the
+places a reader actually meets the badge.
 
 **T4.8 · The demo corpus undermines the demo.** *(Priya, Ruth, Marcus.)* The
 page called "Records Retention Schedule" contains no retention periods, and
@@ -496,11 +528,45 @@ and raw `/pages/<uuid>` URLs as what "the record says". Two pages share a
 title; pages are called "Orphan Note" and "Messy Legacy Page"; there is a
 "pLAN-7" typo. All 16 canonical clinical policies were approved by one person,
 which Ruth could not distinguish from a real concentration-of-duty risk.
+**Fixed.** The pages a reader will actually ask about are written out by hand
+and carry their figures — the whole retention chain, both sides of each
+asserted conflict, and the claims and appeals pages a question about either
+reaches next — with their type and standing pinned rather than rolled, because
+a demo whose central demonstration depends on a dice roll is not a demo.
+**The conflict is intact and had to stay intact**: the schedule keeps claims
+records for seven years, the platform spec deletes them at twenty-four months,
+both pages are Canonical, each names the other in its own words, and a person
+has asserted the conflict between them. Asked *"how long do we keep claims
+records"*, the corpus answers with both figures and the conflict note in the
+asserter's own words, and says Canon will not choose between them. The rest
+went with it: the owner footer and the four stock closing lines are gone, since
+a footer is what an extractive answer quotes when a page has nothing better in
+it; the Related links are still links and still the graph's `link` edges, now
+written as markdown so the words are the target's title rather than a UUID;
+`lowerFirst` no longer lower-cases identifiers, which is where "pLAN-7" came
+from; the demo ships **its own** migration material (`scripts/demo-corpus`)
+rather than borrowing the test fixtures, whose pages are named after the defect
+each carries and three of whose titles collided with seeded ones; and every
+collection now names **two** approvers, both of whom actually approve, with the
+split printed by the seeder and a test that fails if any collection's Canonical
+mark is granted by one person alone. Verified against a running server.
 
 **T4.9 · Audit-log privacy and legibility.** *(Priya.)* Typed questions are
 logged verbatim and visible to everyone; rows show raw UUID arrays,
 `generator: extractive-v1`, and a WHERE column whose only value is the word
 "page". Timestamps display to the minute and 1,100+ events share one.
+**The legibility half is fixed** (the WHERE column earlier, the detail column
+now); the privacy half is being closed separately in `store.ts`. The detail
+column printed the event's details object more or less as JSON. It now says the
+key in words, and draws an id whose kind is known as the thing it names — an
+actor by name, a collection by name, a page by its title where some row on the
+same screen carried it — falling back to a shortened, linked id where the
+client was given no name, because a wrong name in an audit log is worse than a
+long one. Objects are spelled out: an import's `counts` reads "found 7,
+imported 6, failed 1". Two keys that said the same thing twice are dropped when
+they do — `sourceId` beside `sourceName`, and a relation's stored pair beside
+its asserted pair, which differ only for a symmetric relation and are worth the
+row space only then.
 
 ## What we are deliberately not doing
 

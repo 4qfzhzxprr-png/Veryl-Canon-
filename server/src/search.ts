@@ -1,13 +1,36 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
 
-// Full-text search over the PUBLISHED record (CORE-PLAN.md Epic A scope,
-// FEATURES.md "Search"). The index is a derived structure per
-// DATA-BACKBONE.md §2: rebuildable from pages and page_versions, never
-// authoritative, and held apart from the record and its history — which is
-// why its schema lives here and not in db.ts. Only published content is
-// indexed: readers search the record, never work in progress, so drafts
-// stay out entirely and archived pages leave search.
+// Full-text search over the record (CORE-PLAN.md Epic A scope, FEATURES.md
+// "Search"). The index is a derived structure per DATA-BACKBONE.md §2:
+// rebuildable from pages and page_versions, never authoritative, and held
+// apart from the record and its history — which is why its schema lives here
+// and not in db.ts.
+//
+// WHAT IS INDEXED, AND WHY IT IS TWO DIFFERENT THINGS.
+//
+// A page's TITLE comes from `pages.title` — the row, not the version. A page's
+// BODY comes from the published version and from nowhere else. That is not an
+// inconsistency; it is the same rule applied to two fields that are visible in
+// two different ways.
+//
+// The body of a draft is work in progress. Nobody but its editor has agreed to
+// it, it can say anything, and readers must search the record rather than each
+// other's half-finished sentences. It stays out.
+//
+// The title is not private in that sense and never was: it is drawn in the
+// sidebar tree to every member of the collection, it is in the audit log, it
+// is on the page's own header. A page whose title is on screen and unfindable
+// by that title is a search index disagreeing with the product around it — and
+// that is exactly what a new contributor hit (USER-TESTING.md T4.6, bug E):
+// she wrote a page, submitted it for review, and could not find by name the
+// thing she had written five minutes earlier, because a page in review has
+// published no version and the index was built from published versions alone.
+//
+// So the index carries every non-archived page's title, and the body of those
+// that have published one. Archived pages leave search entirely, because they
+// have left the record. Permission filtering is unchanged and is where it has
+// always been: the membership join in `search` below.
 const SEARCH_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS page_search USING fts5(
   page_id UNINDEXED,
@@ -66,16 +89,20 @@ export class SearchIndex {
     db.exec(SEARCH_SCHEMA);
   }
 
-  // Re-derives one page's index entry from the record. Called from the
-  // store whenever the published state of a page changes: publish, approve,
-  // restore (all through writeVersion) and archive. Idempotent: an archived
-  // page or one with no published version simply leaves the index.
+  // Re-derives one page's index entry from the record. Called from the store
+  // whenever a page appears (create) or its published state changes: publish,
+  // approve, restore (all through writeVersion) and archive. Idempotent: an
+  // archived page simply leaves the index, and one with no published version
+  // is carried by its title with an empty body.
   indexPage(pageId: string): void {
     this.db.prepare('DELETE FROM page_search WHERE page_id = ?').run(pageId);
     const row = this.db
       .prepare(
-        `SELECT v.title, v.body FROM pages p
-         JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+        // LEFT JOIN, and the title off `pages`: a page in review has published
+        // nothing, and is still a page somebody can see in the tree and must
+        // be able to find by name.
+        `SELECT p.title AS title, COALESCE(v.body, '') AS body FROM pages p
+         LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          WHERE p.id = ? AND p.status != 'archived'`,
       )
       .get(pageId) as { title: string; body: string } | undefined;
@@ -92,8 +119,8 @@ export class SearchIndex {
     this.db
       .prepare(
         `INSERT INTO page_search (page_id, title, body)
-         SELECT p.id, v.title, v.body FROM pages p
-         JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+         SELECT p.id, p.title, COALESCE(v.body, '') FROM pages p
+         LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          WHERE p.status != 'archived'`,
       )
       .run();

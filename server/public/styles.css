@@ -179,7 +179,9 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 
 .layout {
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr);
+  /* Wide enough that a real page title fits on one or two lines rather than
+     being cut to a prefix. See .tree-link. */
+  grid-template-columns: 320px minmax(0, 1fr);
   gap: 2rem;
   align-items: start;
 }
@@ -238,18 +240,22 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 .tree li { margin: 0.1rem 0; }
 .tree summary { cursor: pointer; }
 .tree summary::marker { color: var(--muted); font-size: 0.8em; }
+/* The title wraps and the badge follows it. Nothing here truncates: a page
+   whose title reads "Escal…" is a page nobody can navigate to. */
 .tree-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
+  /* inline-block, not block: inside a <summary> it has to sit beside the
+     disclosure marker, and it still wraps its own text at max-width. */
+  display: inline-block;
+  max-width: 100%;
   padding: 0.22rem 0.45rem;
   border-radius: 6px;
   color: var(--text);
-  max-width: 100%;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
+.tree-link .badge { vertical-align: baseline; margin-left: 0.1rem; }
 .tree-link:hover { background: var(--surface-2); text-decoration: none; }
 .tree-link.active { background: var(--accent-soft); }
-.tree-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-empty { padding: 0.4rem 0.2rem; }
 
 /* ---------- badges & tags --------------------------------------------- */
@@ -662,6 +668,34 @@ label.check input { width: auto; display: inline; margin: 0; }
 }
 .table td { padding: 0.55rem 0.85rem; border-top: 1px solid var(--border); vertical-align: top; }
 .table tbody tr:hover { background: var(--surface-2); }
+
+/* ---------- a collection's contents ------------------------------------- */
+
+/* The record's own order and the record's own shape: depth is an indent on the
+   title, not a separate column, so the table reads as the tree it is. */
+.docs-tally { margin: -0.35rem 0 0.7rem; font-size: 0.86rem; }
+.docs-table { min-width: 40rem; }
+.docs-table .doc-title { overflow-wrap: anywhere; }
+.doc-d2 .doc-title { padding-left: 1.7rem; }
+.doc-d3 .doc-title { padding-left: 2.9rem; }
+.doc-d4 .doc-title { padding-left: 4.1rem; }
+.doc-d2 .doc-title, .doc-d3 .doc-title, .doc-d4 .doc-title { color: var(--muted); }
+.doc-d2 .doc-title a, .doc-d3 .doc-title a, .doc-d4 .doc-title a { color: var(--text); }
+
+/* ---------- the status key ---------------------------------------------- */
+
+.status-key { margin: 0; display: grid; gap: 0.5rem; }
+.status-key-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+.status-key dt { margin: 0; }
+.status-key dd { margin: 0; font-size: 0.92rem; }
+@media (max-width: 640px) {
+  .status-key-row { grid-template-columns: 1fr; gap: 0.2rem; }
+}
 
 .audit-details { font-size: 0.84rem; }
 /* The audit table carries five columns and free-form details; below about
@@ -1493,6 +1527,44 @@ label.check input { width: auto; display: inline; margin: 0; }
   box-shadow: var(--shadow);
 }
 
+/* The short key, drawn on the picture. The long one is still below the stage;
+   this is what stops a reader meeting 244 coloured dots with nothing on screen
+   to say what a colour is. */
+.map-key {
+  position: absolute;
+  top: 0.6rem;
+  left: 0.6rem;
+  z-index: 2;
+  width: min(19rem, calc(100% - 1.2rem));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 0.55rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+/* Chip in its own column, so a line that wraps wraps under its own text and
+   not under the chip. */
+.map-key-row {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.3rem;
+  margin: 0.24rem 0;
+  line-height: 1.35;
+}
+.map-key-hues { display: inline-flex; gap: 0.1rem; }
+@media (max-width: 720px) {
+  /* On a narrow screen the key would cover the picture it explains; the full
+     legend under the stage still says all of it. */
+  .map-key { display: none; }
+}
+
+/* Inside the legend the key stacks: its column is narrower than the page. */
+.map-legend .status-key-row { grid-template-columns: 1fr; gap: 0.15rem; }
+.map-legend .status-key { gap: 0.6rem; }
+
 .map-detail {
   position: absolute;
   left: 0.6rem;
@@ -2034,7 +2106,10 @@ label.check input { width: auto; display: inline; margin: 0; }
 /* ---------- responsive --------------------------------------------------- */
 
 @media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr), not 1fr: a grid item's automatic minimum size is its
+     content, so a one-column layout let the tree's longest title set the
+     page's width and pushed everything else sideways. */
+  .layout { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; max-height: none; }
   .editor-grid { grid-template-columns: 1fr; }
   .search-slot { flex: 1 1 auto; }

@@ -119,6 +119,139 @@ test('seeder: the corpus is a company’s record rather than eleven pages', asyn
   assert.ok(report.archived >= 1, 'and some material that has left the map without leaving the record');
 });
 
+// ---- the corpus can answer its own obvious question ----------------------
+//
+// USER-TESTING.md T4.8. The page called "Records Retention Schedule" contained
+// no retention period, and neither did "Retention periods: claims and
+// appeals" — so the first question a new contributor naturally asks a health
+// plan's knowledge base could not be answered by the demo that exists to show
+// it being answered. These tests are the guard on that, and on the conflict
+// the corpus deliberately holds, which is the harder thing to keep: it would
+// be very easy to "fix" the demo by making the two pages agree, and the
+// disagreement is the product's best feature.
+
+test('seeder: the retention pages state retention periods, and disagree on one', async () => {
+  const store = freshStore();
+  const report = await seedDemo(store, { quiet: true });
+  const graph = store.recordGraph(report.operatorId);
+  const find = (title: string) => {
+    const node = graph.nodes.find((n) => n.kind === 'page' && n.title === title);
+    assert.ok(node, `the corpus has no page called "${title}"`);
+    return store.getPage(report.operatorId, node.id);
+  };
+  const bodyOf = (title: string): string => {
+    const page = find(title);
+    assert.ok(page.currentVersion, `"${title}" has published nothing`);
+    return store.getVersion(report.operatorId, page.id, page.currentVersion).body;
+  };
+
+  // The schedule, and the leaf beneath it, both carry the figure — in words,
+  // because that is how a policy states a period.
+  for (const title of ['Records Retention Schedule', 'Retention periods: claims and appeals']) {
+    const body = bodyOf(title);
+    assert.match(body, /seven years/i, `"${title}" states no retention period for claims`);
+    assert.match(body, /claims/i);
+  }
+  // And the other three classes are real periods too, not headings.
+  assert.match(bodyOf('Retention periods: clinical criteria'), /ten years/i);
+  assert.match(bodyOf('Retention periods: employment records'), /six years/i);
+  assert.match(bodyOf('Retention periods: vendor contracts'), /seven years/i);
+
+  // The conflict, on both sides, in the record's own words.
+  const platform = bodyOf('Data Retention in the Platform');
+  assert.match(platform, /twenty-four months/i, 'the platform spec must state the period it actually implements');
+  assert.match(platform, /seven years/i, 'and must name the figure it disagrees with');
+  assert.match(bodyOf('Records Retention Schedule'), /twenty-four months/i);
+
+  // Both ends Canonical, so the conflict is between two official pages rather
+  // than between the record and somebody's draft — and both cited, which is
+  // what lets an answer report it.
+  assert.equal(find('Records Retention Schedule').status, 'canonical');
+  assert.equal(find('Data Retention in the Platform').status, 'canonical');
+  const conflicts = graph.edges.filter((e) => e.kind === 'conflicts_with');
+  const titles = new Map(graph.nodes.map((n) => [n.id, n.title]));
+  assert.ok(
+    conflicts.some((e) => {
+      const ends = [titles.get(e.from), titles.get(e.to)].sort();
+      return ends[0] === 'Data Retention in the Platform' && ends[1] === 'Records Retention Schedule';
+    }),
+    'the seven-years-against-twenty-four-months conflict must be asserted, not merely implied by the prose',
+  );
+});
+
+test('seeder: page bodies carry their subject and not the demo’s furniture', async () => {
+  const store = freshStore();
+  const report = await seedDemo(store, { quiet: true });
+  const graph = store.recordGraph(report.operatorId);
+
+  let checked = 0;
+  for (const node of graph.nodes) {
+    if (node.kind !== 'page') continue;
+    const page = store.getPage(report.operatorId, node.id);
+    if (!page.currentVersion) continue;
+    const body = store.getVersion(report.operatorId, page.id, page.currentVersion).body;
+    checked += 1;
+    // The owner footer restated a structured field as prose, and prose is what
+    // an extractive answer quotes: Ask cited page footers as what the record
+    // says (T4.8). The owner is a field, and the page header shows it.
+    assert.doesNotMatch(body, /^Owner: .+, .+\.$/m, `"${page.title}" carries an owner footer`);
+    // A raw /pages/<uuid> in a body reads as a UUID when it is quoted. Links
+    // are still links, and still the graph's `link` edges; they are written as
+    // markdown, so the visible words are the target page's title and the
+    // address sits behind them. Strip the link targets and nothing that looks
+    // like a page address may be left.
+    const prose = body.replace(/\]\(#\/pages\/[0-9a-f-]+\)/g, ']');
+    assert.doesNotMatch(prose, /\/pages\//, `"${page.title}" writes a raw page URL into its prose`);
+    // Applying lowerFirst to an identifier produced "pLAN-7", which a reviewer
+    // read as a typo in the record.
+    assert.doesNotMatch(body, /\bpLAN-\d/, `"${page.title}" lower-cased an identifier`);
+  }
+  assert.ok(checked > 100, `expected the whole corpus to be checked, saw ${checked} published pages`);
+});
+
+test('seeder: no two pages in the record share a title', async () => {
+  const store = freshStore();
+  const report = await seedDemo(store, { quiet: true });
+  const graph = store.recordGraph(report.operatorId);
+  const seen = new Map<string, number>();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'page') continue;
+    seen.set(node.title, (seen.get(node.title) ?? 0) + 1);
+  }
+  const shared = [...seen.entries()].filter(([, n]) => n > 1);
+  assert.deepEqual(shared, [], 'two pages with one title is a demo telling a reviewer it was assembled carelessly');
+  // And nothing is named after the defect it was built to exercise. Those are
+  // the test fixtures' job; the demo ships its own migration material.
+  for (const placeholder of ['Orphan Note', 'Messy Legacy Page', 'Truncated Download', 'Broken Export']) {
+    assert.equal(seen.has(placeholder), false, `"${placeholder}" is a fixture name, not a company's page`);
+  }
+});
+
+test('seeder: no collection’s Canonical mark is granted by one person alone', async () => {
+  const store = freshStore();
+  const report = await seedDemo(store, { quiet: true });
+
+  // An external auditor read sixteen Canonical clinical policies all approved
+  // by the same person and could not tell a fixture artefact from a real
+  // concentration of duty (T4.8). She was right not to be able to: it looked
+  // exactly like one. Every collection now names two approvers and both of
+  // them actually approve.
+  const byCollection = new Map<string, { approver: string; pages: number }[]>();
+  for (const row of report.approvals) {
+    byCollection.set(row.collection, [...(byCollection.get(row.collection) ?? []), row]);
+  }
+  assert.equal(byCollection.size, report.collections.length, 'every collection reports its approvals');
+  for (const [collection, rows] of byCollection) {
+    assert.ok(rows.length >= 2, `${collection} names only one approver`);
+    const working = rows.filter((r) => r.pages > 0);
+    assert.ok(
+      working.length >= 2,
+      `${collection}: the Canonical mark was granted by ${working.length} person(s) — ` +
+        `${rows.map((r) => `${r.approver} ${r.pages}`).join(', ')}`,
+    );
+  }
+});
+
 test('seeder: the record view of the corpus really does cross collections', async () => {
   const store = freshStore();
   const report = await seedDemo(store, { quiet: true });

@@ -49,6 +49,30 @@ const STATUS_LABELS = {
   archived: 'Archived',
 };
 
+// WHAT EACH BADGE MEANS, IN THE ONE SENTENCE A READER NEEDS.
+//
+// Needs Update was the only status in the product a new contributor could
+// learn from the interface — "the only status that explains itself, and it
+// does it beautifully" (USER-TESTING.md T4.7) — and it managed that because
+// its two words say what to do about it. Canonical, Draft, In Review and
+// Archived said nothing: no key, no glossary, nothing that told her which
+// badge meant "safe to read to a customer".
+//
+// So every status now answers the same question Needs Update answers, in the
+// same voice, and the answer is about RELIANCE rather than about workflow: may
+// a reader act on this page, or not, and why. One sentence each, written once
+// and rendered wherever badges are — the key on a collection's front page, the
+// key in the map legend, and the description carried by every badge in the
+// product (see `badge` below). Not four tooltips: one sentence, in four
+// places, saying the same thing each time.
+const STATUS_MEANINGS = {
+  draft: 'Working material. Nobody has approved it and it is not the record — do not act on it or quote it to a member.',
+  in_review: 'Written and submitted, waiting on its named approver. What it says is proposed, not agreed.',
+  canonical: 'Approved by its named approver, and inside the review date they set. This is the official record: you may rely on it and quote it.',
+  needs_update: 'Approved, but past the review date its owner set. It is still the official record and nothing has replaced it — nobody has confirmed it recently.',
+  archived: 'Taken out of the record and kept for its history. It is not the answer to anything now.',
+};
+
 const ROLES = ['view', 'comment', 'edit', 'approve', 'admin'];
 
 // Mirrors NotificationKind in src/notify.ts. The outbox has been written to
@@ -336,9 +360,38 @@ function humanizeKey(s) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+// Every badge carries its own meaning. `title` is the hover, and it is NOT the
+// glossary — a sentence nobody can find is not a glossary — it is the same
+// sentence the key states in full, attached to the thing it is about so that
+// the badge is never encountered stripped of it. The key is `statusKeyHTML`,
+// and it is on screen, unfolded, where the badges first appear.
 function badge(status, size = '') {
   const label = STATUS_LABELS[status] ?? status;
-  return `<span class="badge badge-${esc(status)} ${size}">${esc(label)}</span>`;
+  const meaning = STATUS_MEANINGS[status];
+  const title = meaning ? ` title="${esc(`${label} — ${meaning}`)}"` : '';
+  return `<span class="badge badge-${esc(status)} ${size}"${title}>${esc(label)}</span>`;
+}
+
+/**
+ * The key. One row per status, each saying whether a reader may rely on the
+ * page — the treatment Needs Update already got, given to the other four.
+ *
+ * `present` narrows it to the statuses actually on the screen it sits under,
+ * because a key to things that are not there is furniture. Passing nothing
+ * gives the whole set, which is what the map legend wants.
+ */
+function statusKeyHTML(present = null) {
+  const order = ['canonical', 'needs_update', 'in_review', 'draft', 'archived'];
+  const shown = present ? order.filter((s) => present.has(s)) : order;
+  if (!shown.length) return '';
+  return `
+    <dl class="status-key">
+      ${shown.map((s) => `
+        <div class="status-key-row">
+          <dt>${badge(s, 'sm')}</dt>
+          <dd>${esc(STATUS_MEANINGS[s])}</dd>
+        </div>`).join('')}
+    </dl>`;
 }
 
 // Three kinds now, and the third is the point: work Canon does on its own clock
@@ -1034,6 +1087,9 @@ async function route() {
     if (parts[0] === 'collections' && parts[1] && parts[2] === 'map') {
       return await render(() => viewMap(parts[1]));
     }
+    if (parts[0] === 'collections' && parts[1] && parts[2] === 'members') {
+      return await render(() => viewCollectionMembers(parts[1]));
+    }
     if (parts[0] === 'collections' && parts[1]) return await render(() => viewCollection(parts[1]));
     if (parts[0] === 'pages' && parts[1]) {
       const id = parts[1];
@@ -1547,12 +1603,19 @@ function flattenTree(nodes, depth = 0, out = []) {
   return out;
 }
 
+// The tree is the only navigation there is, so a title it cannot show is a
+// page a reader cannot reach. It used to clip at the sidebar's width — five
+// rows reading "PLAN-7 …" and one reading "Escal…" (USER-TESTING.md T4.6) —
+// which is not navigation, it is a list of prefixes. Titles now WRAP: the
+// sidebar is wider, the title takes the lines it needs, and the badge follows
+// the last word of it rather than competing with it for the row. Nothing is
+// ever cut.
 function treeHTML(nodes, currentPageId) {
   if (!nodes.length) return '<p class="muted tree-empty">No pages yet.</p>';
   const item = (n) => {
     const active = n.id === currentPageId ? ' active' : '';
-    const link = `<a class="tree-link${active}" href="#/pages/${esc(n.id)}">
-      <span class="tree-title">${esc(n.title)}</span>${badge(n.status, 'sm')}</a>`;
+    const link = `<a class="tree-link${active}" href="#/pages/${esc(n.id)}"
+      >${esc(n.title)} ${badge(n.status, 'sm')}</a>`;
     if (n.children.length) {
       return `<li><details open><summary>${link}</summary>${treeHTML(n.children, currentPageId)}</details></li>`;
     }
@@ -1614,14 +1677,64 @@ function openNewPageModal(collection, tree, presetParentId = null) {
 // ---------------------------------------------------------------------------
 // Collection view
 
+// WHAT A COLLECTION OPENS ON.
+//
+// Its documents. That sentence should not need writing down, and it does:
+// clicking a folder used to show a staff permissions table with Remove buttons
+// beside every name, while the pages themselves were a side strip whose titles
+// were cut after about eighteen characters (USER-TESTING.md T4.6). A new
+// contributor's first act in the product was reading a roster she had no
+// business in and no use for.
+//
+// Membership is administration. It is real, it is auditable, and it belongs on
+// a screen somebody goes to on purpose — `#/collections/:id/members`, one
+// click from here, named on the button. The front page is the contents: every
+// page in the collection, in the record's own order, with what a reader needs
+// to decide whether to open it — what kind of document it is, whether they may
+// rely on it, who owns it, and when it is next due to be looked at.
+
+/** One row per page, in tree order, indented by depth. */
+function collectionContentsHTML(tree) {
+  const rows = flattenTree(tree).map((n) => {
+    const overdue = n.status === 'canonical' && isPastReview(n.reviewDate);
+    const review = n.reviewDate
+      ? `${fmtDate(n.reviewDate)}${overdue ? ' <span class="muted">· past</span>' : ''}`
+      : '<span class="muted">—</span>';
+    return `
+      <tr class="doc-row doc-d${Math.min(n.depth, 4)}">
+        <td class="doc-title"><a href="#/pages/${esc(n.id)}">${esc(n.title)}</a></td>
+        <td class="nowrap">${esc(TYPE_LABELS[n.type] ?? n.type)}</td>
+        <td class="nowrap">${badge(n.status, 'sm')}</td>
+        <td>${n.ownerId ? actorLabel(n.ownerId) : '<span class="muted">—</span>'}</td>
+        <td class="nowrap">${review}</td>
+      </tr>`;
+  });
+  // Five columns, so on a narrow screen it scrolls inside its own container
+  // rather than pushing the page sideways and taking the status key with it.
+  return `
+    <div class="table-scroll">
+      <table class="table docs-table">
+        <thead><tr><th>Page</th><th>Type</th><th>Status</th><th>Owner</th><th>Review due</th></tr></thead>
+        <tbody>${rows.join('')}</tbody>
+      </table>
+    </div>`;
+}
+
 async function viewCollection(id) {
   const [collection, tree] = await Promise.all([
     api('GET', `/collections/${id}`),
     api('GET', `/collections/${id}/tree`),
   ]);
   await loadActors().catch(() => null);
-  let members = [];
-  try { members = await api('GET', `/collections/${id}/members`); } catch { /* view-only edge */ }
+
+  const flat = flattenTree(tree);
+  const counts = new Map();
+  for (const n of flat) counts.set(n.status, (counts.get(n.status) ?? 0) + 1);
+  const present = new Set(counts.keys());
+  const tally = ['canonical', 'needs_update', 'in_review', 'draft']
+    .filter((s) => counts.has(s))
+    .map((s) => `${counts.get(s)} ${STATUS_LABELS[s]}`)
+    .join(' · ');
 
   app.innerHTML = `
     <div class="layout">
@@ -1637,17 +1750,69 @@ async function viewCollection(id) {
             <span id="attestation-affordance"></span>
             <span id="map-affordance"></span>
             <span id="ask-affordance"></span>
+            <a class="btn subtle" href="#/collections/${esc(collection.id)}/members">Members</a>
             <button class="btn primary" id="main-new-page">New page</button>
           </div>
         </div>
 
-        ${tree.length ? '' : `
+        ${tree.length ? `
+          <section class="panel">
+            <h2 class="h-small">Contents — ${flat.length} page${flat.length === 1 ? '' : 's'}</h2>
+            ${tally ? `<p class="muted docs-tally">${esc(tally)}</p>` : ''}
+            ${collectionContentsHTML(tree)}
+          </section>
+
+          <section class="panel">
+            <h2 class="h-small">What the statuses mean</h2>
+            <p class="muted">Every page in Canon carries one. It is the record's own answer to whether
+              you may act on what the page says.</p>
+            ${statusKeyHTML(present)}
+          </section>` : `
           <div class="empty-state">
             <h2>No pages yet</h2>
             <p>Pages are the unit of knowledge in Canon. Start with a Note for working
             material, or a Policy, Spec, or Plan when there is an owner ready to stand
             behind it.</p>
           </div>`}
+      </section>
+    </div>`;
+
+  wireSidebar(collection, tree);
+  app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
+  renderMapAffordance('map-affordance', collection.id);
+  renderAskAffordance('ask-affordance', collection.id);
+  renderAttestationAffordance('attestation-affordance', {
+    kind: 'collection',
+    id: collection.id,
+    title: collection.name,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Collection members — the administration screen the front page used to be
+
+async function viewCollectionMembers(id) {
+  const [collection, tree] = await Promise.all([
+    api('GET', `/collections/${id}`),
+    api('GET', `/collections/${id}/tree`),
+  ]);
+  await loadActors().catch(() => null);
+  let members = [];
+  try { members = await api('GET', `/collections/${id}/members`); } catch { /* view-only edge */ }
+
+  app.innerHTML = `
+    <div class="layout">
+      ${sidebarHTML(collection, tree, null)}
+      <section class="main">
+        <p class="breadcrumb"><a href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a></p>
+        <div class="page-head">
+          <div>
+            <h1>Members of ${esc(collection.name)}</h1>
+            <p class="muted">Who may read this collection, who may write in it, and who may grant the
+              Canonical mark. Granting and withdrawing here is administration and is audited; a role a
+              directory group grants cannot be withdrawn from this screen, and Canon says so when you try.</p>
+          </div>
+        </div>
 
         <section class="panel">
           <h2 class="h-small">Members</h2>
@@ -1679,15 +1844,6 @@ async function viewCollection(id) {
     </div>`;
 
   wireSidebar(collection, tree);
-  app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
-  renderMapAffordance('map-affordance', collection.id);
-  renderAskAffordance('ask-affordance', collection.id);
-  renderAttestationAffordance('attestation-affordance', {
-    kind: 'collection',
-    id: collection.id,
-    title: collection.name,
-  });
-
   app.querySelector('#add-member-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -3624,6 +3780,118 @@ async function viewCompare(id, a, b) {
 // So three things are load-bearing here and should not be quietly dropped:
 // the population count beside the page count, the walk that can actually reach
 // the end of the log, and the export carrying the filter rather than the page.
+// THE DETAIL COLUMN, IN WORDS (USER-TESTING.md T4.9).
+//
+// It used to print the event's details object more or less as JSON:
+// `assertedToPageId: 3f9c…`, `collectionIds: ["4e19…","a212…"]`,
+// `generator: extractive-v1`. Every one of those is true and none of it is
+// legible, and a log an auditor cannot read at a glance is a log they sample
+// badly. Three changes, all of them client-side and none of them inventing
+// anything the server did not send:
+//
+//   the KEY is said in words;
+//   an id whose kind is known is drawn as the thing it names — an actor by
+//     name, a collection by name, a page by its title where some row on the
+//     same screen carried it, and by a shortened, linked id where none did;
+//   an object is spelled out rather than stringified.
+//
+// A name Canon does not hold stays an id. It is shortened and linked, never
+// guessed at, because a wrong name in an audit log is worse than a long one.
+const AUDIT_DETAIL_LABELS = {
+  actorId: 'Actor', authorId: 'Author', approverId: 'Approver', assertedBy: 'Asserted by',
+  editorId: 'Editor', memberId: 'Member', ownerId: 'Owner', submittedById: 'Submitted by',
+  pageId: 'Page', fromPageId: 'From page', toPageId: 'To page',
+  assertedFromPageId: 'Asserted from', assertedToPageId: 'Asserted to', citedPageIds: 'Pages cited',
+  collectionId: 'Collection', collectionIds: 'Collections', toCollectionId: 'To collection',
+  parentId: 'Parent page', referenceId: 'Reference', relationId: 'Relation',
+  sourceId: 'Source', sourceName: 'Source', runId: 'Import run',
+  // The one that reads as machinery even when it is spelled out, so it is
+  // spelled out AND said: which generator wrote the answer.
+  generator: 'Answered by', from: 'From', to: 'To', via: 'Granted', reason: 'Because',
+  freshnessWindowMs: 'Freshness window', sweptOn: 'Swept on', orgRole: 'Organisation role',
+};
+
+const AUDIT_ACTOR_KEYS = new Set([
+  'actorId', 'authorId', 'approverId', 'assertedBy', 'editorId', 'memberId', 'ownerId', 'submittedById',
+]);
+const AUDIT_PAGE_KEYS = new Set([
+  'pageId', 'parentId', 'fromPageId', 'toPageId', 'assertedFromPageId', 'assertedToPageId', 'citedPageIds',
+]);
+const AUDIT_COLLECTION_KEYS = new Set(['collectionId', 'collectionIds', 'toCollectionId']);
+
+// Keys that say the same thing as another key on the same event, and are
+// dropped when they do.
+//
+// `sourceId` beside `sourceName` printed "Source: 2083de98… Source: People
+// System", which reads as two different sources. And a relation carries both
+// the pair as STORED and the pair as ASSERTED — the stored order can be
+// swapped for a symmetric relation, which is a real distinction and is worth
+// exactly the row space it takes when the two differ, and none when they do
+// not. So the asserted pair appears only where it says something the stored
+// pair does not.
+const AUDIT_REDUNDANT_WHEN = {
+  sourceId: 'sourceName',
+  assertedFromPageId: 'fromPageId',
+  assertedToPageId: 'toPageId',
+};
+
+/** Is `key` saying what a sibling key already said on this event? */
+function auditKeyIsRedundant(key, fields) {
+  const sibling = AUDIT_REDUNDANT_WHEN[key];
+  if (!sibling || fields[sibling] == null) return false;
+  // A name beside an id: the name wins. A pair beside the same pair: drop one.
+  return key === 'sourceId' || fields[sibling] === fields[key];
+}
+
+function auditDetailLabel(key) {
+  return AUDIT_DETAIL_LABELS[key] ?? humanizeKey(key);
+}
+
+/** A bare identifier — a UUID or something shaped like one. */
+function looksLikeId(text) {
+  return /^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(text);
+}
+
+/** An id, shortened but still an id, and linked to what it names. */
+function auditIdLinkHTML(id, href) {
+  const short = id.length > 12 ? `${id.slice(0, 8)}…` : id;
+  return `<a href="${esc(href)}" title="${esc(id)}"><code class="action-code">${esc(short)}</code></a>`;
+}
+
+function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
+  if (value === null || value === undefined) return '<span class="muted">—</span>';
+  if (Array.isArray(value)) {
+    if (!value.length) return '<span class="muted">none</span>';
+    return value.map((v) => auditDetailValueHTML(key, v, pageTitles, collectionNames)).join(', ');
+  }
+  if (typeof value === 'object') {
+    // `counts: {found:7, imported:6, failed:1}` reads as an import summary
+    // rather than as a blob.
+    return esc(Object.entries(value).map(([k, v]) => `${humanizeKey(k).toLowerCase()} ${v}`).join(', '));
+  }
+  const text = String(value);
+  if (AUDIT_ACTOR_KEYS.has(key)) return esc(actorName(text));
+  if (AUDIT_PAGE_KEYS.has(key)) {
+    const title = pageTitles.get(text);
+    return title
+      ? `<a href="#/pages/${esc(text)}">${esc(title)}</a>`
+      : auditIdLinkHTML(text, `#/pages/${encodeURIComponent(text)}`);
+  }
+  if (AUDIT_COLLECTION_KEYS.has(key)) {
+    const name = collectionNames.get(text);
+    return name
+      ? `<a href="#/collections/${esc(text)}">${esc(name)}</a>`
+      : auditIdLinkHTML(text, `#/collections/${encodeURIComponent(text)}`);
+  }
+  if (key === 'freshnessWindowMs') return esc(fmtDuration(Number(text)));
+  // A relation id, a reference id, an import run id: nothing this client can
+  // name and nothing it can link to, so it is shown as what it is — an
+  // identifier — short enough to scan past, with the whole of it on hover and
+  // selectable in the CSV export, which is where an auditor would use it.
+  if (looksLikeId(text)) return `<code class="action-code" title="${esc(text)}">${esc(text.slice(0, 8))}…</code>`;
+  return esc(text);
+}
+
 async function viewAudit(query = {}) {
   await loadActors().catch(() => null);
   let collections = [];
@@ -3702,9 +3970,21 @@ async function viewAudit(query = {}) {
   // page two is how a walk starts disagreeing with itself.
   let shown = [];
 
+  // Names for the ids the log's detail column is full of. Actors and
+  // collections this client already knows; page titles come off the rows
+  // themselves — an event carries the title of the page it is ABOUT, and the
+  // page a relation points at is very often the subject of another row on the
+  // same screen. Nothing here fetches, and nothing invents a name it was not
+  // given: an id with no title stays an id, shortened and linked.
+  const collectionNames = new Map(collections.map((c) => [c.id, c.name]));
+  const pageTitles = new Map();
+
   const rowHtml = (e) => {
-    const details = Object.entries(e.details ?? {})
-      .map(([k, v]) => `<span class="detail-kv"><span class="muted">${esc(k)}:</span> ${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</span>`)
+    const fields = e.details ?? {};
+    const details = Object.entries(fields)
+      .filter(([k]) => !auditKeyIsRedundant(k, fields))
+      .map(([k, v]) => `<span class="detail-kv"><span class="muted">${esc(auditDetailLabel(k))}:</span> ` +
+        `${auditDetailValueHTML(k, v, pageTitles, collectionNames)}</span>`)
       .join(' ');
     // "Where" read the word "page" for every page event, which told an auditor
     // scanning a thousand rows nothing at all. It names the thing now, and the
@@ -3728,6 +4008,9 @@ async function viewAudit(query = {}) {
   };
 
   const render = (matching) => {
+    // Learn every page title on screen before any row is drawn, so a detail
+    // that names another row's page can name it rather than print its id.
+    for (const e of shown) if (e.pageId && e.pageTitle) pageTitles.set(e.pageId, e.pageTitle);
     if (!shown.length) {
       tableHost.innerHTML = `
         <div class="empty-state"><h2>No matching events</h2>
@@ -4581,7 +4864,7 @@ async function viewAsk(collectionId = null) {
 // the first node fades in.
 //
 // And a picture nobody can read is worse than a list, so the same data renders
-// as a nested list on demand, and by default past MAP_GRAPH_CAP nodes.
+// as a nested list on demand, and by default past MAP_LABELLED_CAP nodes.
 
 // --- tree layout geometry ---
 const MAP_NODE_W = 178;
@@ -4598,11 +4881,29 @@ const MAP_ZOOM_MAX = 3.2;
 // constellation has no such floor, because its labels are tiered — zoomed out
 // it shows the hubs' names and the shape, which is a true reading of it.
 const MAP_ZOOM_READABLE = 0.55;
-// Past this many nodes the picture stops being legible at any zoom that still
-// shows a label, so the list — which never stops being legible — is what a
-// reader gets unless they ask for the drawing. The constellation raised this a
-// long way above what the column layout could carry.
+// The size past which the O(n²) charge sum stops being the cheaper answer. It
+// is not a legibility threshold — that is MAP_LABELLED_CAP below, and it is a
+// long way under this — it is the number the force layout's own comments mean.
 const MAP_GRAPH_CAP = 600;
+// WHAT OPENS BY DEFAULT, and why it is not the drawing on a real record.
+//
+// The constellation labels its nodes in tiers — the hubs at every zoom, and
+// another band with each step in — which is a true reading of a big graph and
+// is the wrong first thing to hand somebody. A new contributor opened the map
+// on the demo corpus and got 244 dots, of which about forty were named, and no
+// colour key anywhere on the screen (USER-TESTING.md T4.6). She then found the
+// list view, two clicks away, and called it genuinely excellent.
+//
+// So the rule is now the honest one: a DRAWING is the default only while it
+// can name every node on it. Past that the list opens — the same data, every
+// title written out, every relation spelled — and the picture is one click
+// away with a key drawn on top of it. Below the threshold nothing changes: a
+// forty-node collection is a picture worth opening on.
+//
+// The number is the point at which the tiers start hiding names: `lt-2` and
+// `lt-3` are the bands below roughly 19% of the nodes, so past ~120 nodes an
+// unzoomed constellation is mostly anonymous.
+const MAP_LABELLED_CAP = 120;
 
 // --- constellation geometry and physics ---
 const MAP_R_MIN = 5.5; // a page nothing hangs off
@@ -5032,8 +5333,9 @@ function mapPalette(visible, scope) {
 //             the degree of the sparser endpoint, which is what stops a hub from
 //             dragging its whole neighbourhood into a knot.
 //   CHARGE    every node repels every other, harder the bigger it is. O(n²), and
-//             deliberately so: at the sizes this map draws (the list takes over
-//             past MAP_GRAPH_CAP) a Barnes–Hut tree costs more to build than the
+//             deliberately so: at the sizes this map draws (MAP_GRAPH_CAP, and
+//             the list is already the default well under it) a Barnes–Hut tree
+//             costs more to build than the
 //             pairs cost to walk, and an exact sum is one less approximation to
 //             explain.
 //   CLUSTER   each node is pulled to its community's centre, and the centres
@@ -5873,6 +6175,41 @@ function mapListHTML(visible, collectionNames, grouped) {
 
 // ---- legend and filters ------------------------------------------------------
 
+/**
+ * The key, ON the picture.
+ *
+ * The full legend below the stage has been there since the map shipped and it
+ * is good; it is also below the fold, and a colour key a reader has to scroll
+ * to find is a colour key they do not have (USER-TESTING.md T4.6 — "244
+ * unlabelled dots with no colour key"). This is the short version, drawn in
+ * the corner of the drawing itself: what a dot is, what a square is, what the
+ * ring and the core mean, and what the hues stand for. It links to the long
+ * one rather than repeating it.
+ *
+ * Only over a drawing. The list needs no key: it writes everything out.
+ */
+function mapKeyHTML(palette, scope) {
+  const hues = palette && palette.keys.length
+    ? `<div class="map-key-row"><span class="map-key-hues">${palette.keys.slice(0, 4)
+        .map((_, i) => `<span class="map-chip map-chip-cluster mg-s1" style="--h: ${palette.hueOf(i)}"></span>`)
+        .join('')}</span><span>${scope === 'all' && !palette.byRoot
+          ? 'one hue per collection, one shade per tree root'
+          : 'one hue per tree root'} — the record\'s own structure, never a similarity Canon does not hold</span></div>`
+    : '';
+  const row = (chip, text) => `<div class="map-key-row"><span class="${chip}"></span><span>${text}</span></div>`;
+  return `
+    <div class="map-key" id="map-key">
+      ${row('map-chip map-chip-page', 'a page, drawn as big as it is connected')}
+      ${row('map-chip map-chip-source', 'an external source, drawn square')}
+      ${row('map-chip map-chip-canonical', `${badge('canonical', 'sm')} a lit core`)}
+      ${row('map-chip map-chip-needs', `${badge('needs_update', 'sm')} an amber ring, the only one on the map`)}
+      ${row('map-chip map-chip-review', `${badge('in_review', 'sm')} a dotted ring`)}
+      ${row('map-chip map-chip-draft', `${badge('draft', 'sm')} ${badge('archived', 'sm')} drawn faint`)}
+      ${hues}
+      <div class="map-key-row"><span></span><span><a href="#" id="map-key-more">The full key ↓</a></span></div>
+    </div>`;
+}
+
 function mapLegendHTML(palette, collectionNames, scope) {
   // The swatch carries its own arrowhead rather than borrowing the map's: the
   // legend is shown beside the list too, where the map's <defs> do not exist.
@@ -5942,6 +6279,8 @@ function mapLegendHTML(palette, collectionNames, scope) {
             not any more. In the tree layout, standing is the bar down a node's left edge instead.</p>
           <p class="map-legend-note muted">Sources carry no status: standing belongs to the record, and a source is
             not part of it.</p>
+          <h3 class="map-legend-h">And what each of them means</h3>
+          ${statusKeyHTML()}
         </div>
         ${communities ? `
           <div class="map-legend-wide">
@@ -6114,11 +6453,13 @@ async function viewMap(scopeParam) {
   const rootCount = graph.nodes.filter(
     (n) => n.kind === 'page' && !n.external && !hasParent.has(n.id),
   ).length;
-  const defaultView = graph.nodes.length > MAP_GRAPH_CAP
+  // The list opens wherever a drawing could not name every node on it — see
+  // MAP_LABELLED_CAP. Under that, the constellation is the default wherever
+  // the shape is a web: the whole record, and any collection with more than
+  // one tree in it. A single tree opens as a tree, because that is genuinely
+  // the better reading of it.
+  const defaultView = graph.nodes.length > MAP_LABELLED_CAP
     ? 'list'
-    // The constellation is the default wherever the shape is a web: the whole
-    // record, and any collection with more than one tree in it. A single tree
-    // opens as a tree, because that is genuinely the better reading of it.
     : scope === 'all' || rootCount > 1
       ? 'force'
       : 'tree';
@@ -6180,8 +6521,10 @@ async function viewMap(scopeParam) {
       </div>
 
       ${mapTruncatedNotice(graph.truncated)}
-      ${total > MAP_GRAPH_CAP ? `<div class="notice">${total} nodes is more than a drawing can show legibly, so the
-        list is what opens by default. The picture is still one click away.</div>` : ''}
+      ${total > MAP_LABELLED_CAP ? `<div class="notice">${total} nodes is more than a drawing can name at once — past
+        about ${MAP_LABELLED_CAP} the constellation shows the hubs' titles and leaves the rest as dots — so the
+        <strong>list</strong> is what opens: the same nodes and the same edges, every title written out. The
+        picture is one click away, and carries a key.</div>` : ''}
 
       ${mapFiltersHTML(graph, state.map.filters, collectionNames)}
       <p class="map-summary muted" id="map-summary"></p>
@@ -6276,9 +6619,14 @@ function renderMapStage() {
       <button class="btn subtle" id="map-zoom-in" aria-label="Zoom in">+</button>
       <button class="btn subtle" id="map-fit">Fit</button>
     </div>
+    ${mapKeyHTML(palette, scope)}
     <div class="map-detail" id="map-detail" aria-live="polite"></div>
     ${layout.mode === 'tree' ? mapTreeSvgHTML(visible, layout) : mapForceSvgHTML(visible, layout, palette)}`;
   wireMapStage(visible, layout);
+  stage.querySelector('#map-key-more')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('map-legend-host')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   // The settle-in reveal, played when the picture is new rather than on every
   // filter tick: the layout was already final before the first frame, so what
