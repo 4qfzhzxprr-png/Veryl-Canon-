@@ -3,12 +3,20 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, DocType, DOC_TYPES, PageStatus, Role, ROLE_RANK, TYPE_RULES } from './model.js';
 import { isIsoDate, isPastReview, today } from './freshness.js';
 import { isBackdated, isNotYetInForce, recordAnchorDate } from './effectivedate.js';
+import { ConcentrationOfDuty, concentrationOfDuty, marksStandingIn } from './concentration.js';
+import { isOrgOperator } from './orgrole.js';
 
 // Structured queries (FEATURES.md §6): "Query the record by its fields: 'all
 // Canonical policies owned by Compliance with a review date in the next 60
 // days.' Save queries and pin them to dashboards." And record health
 // (FEATURES.md §8), which is that same query surface pointed at the record
 // itself: pages past review, pages without owners, orphaned pages, stale drafts.
+// One member of that summary is not a count and lives in a file of its own —
+// `approvalConcentration`, which answers "who granted the Canonical marks here,
+// out of how many people could have, and where did their authority come from"
+// (concentration.ts). It is in record health because it is the same kind of
+// thing: a property of the record, measured rather than asserted, with every
+// number in it openable.
 //
 // THE ONE DESIGN DECISION THIS FILE MAKES
 //
@@ -290,6 +298,21 @@ export interface CollectionHealth {
   backdatedWithoutBasis: number;
   /** Pages dated to take effect on a day that has not arrived. Informational. */
   notYetInForce: number;
+  // ---- concentration of duty (USER-TESTING.md T4.8, on re-review) ---------
+  /**
+   * Who granted the Canonical marks standing in this collection, out of how
+   * many people could have, where their authority came from, and whether any
+   * of them also put the work forward.
+   *
+   * It sits inside record health rather than beside it because that is what it
+   * is: a measured property of the record, exactly like `withoutOwner` and
+   * `backdatedWithoutBasis`. And like those, every number in it is a number
+   * somebody can open — `granters` and `dormant` name the people, `selfApproved`
+   * names the pages, and the register attestation carries the same report as
+   * evidence. It is deliberately NOT a score; concentration.ts argues that at
+   * length.
+   */
+  approvalConcentration: ConcentrationOfDuty;
   /** The scan hit HEALTH_SCAN_LIMIT: these counts are a floor, not a total. */
   truncated: boolean;
 }
@@ -611,6 +634,34 @@ export class QueryService {
       if (isNotYetInForce(page.effectiveDate, on)) notYetInForce += 1;
     }
 
+    // Concentration of duty, over its own population and its own SELECT.
+    //
+    // It is not derived from the `pages` scan above, and the reason is the
+    // whole point of the view: that scan carries `approverId`, which is
+    // `pages.approver_id` — the person NAMED to approve — and the question here
+    // is who actually GRANTED the mark. The two are the same person on a Policy
+    // or a Spec, because `approve` enforces it; on a Plan the column is null
+    // while somebody plainly did grant it. Reading the column would have
+    // reported a collection's Plans as approved by nobody.
+    //
+    // Group NAMES follow the reader: an operator can already ask
+    // `explainAccess` for anybody's, and nobody else can, so this surface does
+    // not widen that. The withholding is declared in the report itself.
+    const marked = marksStandingIn(this.db, actorId, collectionId, HEALTH_SCAN_LIMIT);
+    const approvalConcentration = concentrationOfDuty({
+      db: this.db,
+      actorId,
+      collectionId,
+      at: on,
+      pages: marked,
+      population:
+        `The ${marked.length} page(s) in this collection holding the Canonical mark today — Canonical, plus the ` +
+        'pages the freshness sweep has flipped to Needs Update, which held the mark and can still be cited. ' +
+        'Archived pages and pages that have never published are not in it.',
+      namesGroups: isOrgOperator(this.db, actorId),
+      truncated: marked.length >= HEALTH_SCAN_LIMIT,
+    });
+
     return {
       collectionId,
       at: on,
@@ -625,6 +676,7 @@ export class QueryService {
       backdatedEffectiveDate,
       backdatedWithoutBasis,
       notYetInForce,
+      approvalConcentration,
       truncated: pages.length >= HEALTH_SCAN_LIMIT,
     };
   }

@@ -176,6 +176,17 @@ interface ReadRegisterEntry {
   approverId: string | null;
   approverName: string | null;
   approvedAt: string | null;
+  /**
+   * Who actually granted the mark, read from the `page.approve` event rather
+   * than from the version's fields. It is compared separately from
+   * `approverId` because the two move for different reasons and a forgery that
+   * moves one need not move the other: reattributing an approval event changes
+   * this and leaves the NAMED approver, which is a field on the version,
+   * exactly where it was. A register written before this field existed carries
+   * null here, and the comparison says so rather than reporting a change.
+   */
+  grantedById: string | null;
+  grantedByName: string | null;
 }
 
 interface ReadIdentityActor {
@@ -300,6 +311,8 @@ export function readBundle(parsed: unknown, label: string): ReadBundle {
           approverId: str(r.approverId),
           approverName: str(r.approverName),
           approvedAt: str(r.approvedAt),
+          grantedById: str(r.grantedById),
+          grantedByName: str(r.grantedByName),
         },
       ];
     });
@@ -735,6 +748,23 @@ export function compareAttestations(first: unknown, second: unknown, labels?: [s
             `Page ${pageId} ('${then.title}') was approved by ${then.approverName ?? then.approverId ?? 'nobody'} ` +
               `as at ${earlier.at}; the later copy says ${now.approverName ?? now.approverId ?? 'nobody'}. An ` +
               'approval is an event in history and cannot be reassigned.',
+          );
+        }
+        // Who actually granted it. `approverId` above is the NAMED approver, a
+        // field on the version, and the auditor's own forgery — reattribute the
+        // approval, recompute every link — moves this and leaves that alone.
+        // Compared only where both copies carry it: a bundle retained before
+        // the field existed says null, and reporting "nobody, then Nadia" over
+        // an added field would be a false alarm in the one tool whose whole
+        // value is that its alarms are true.
+        if (then.grantedById !== null && now.grantedById !== null && then.grantedById !== now.grantedById) {
+          add(
+            'tamper',
+            'register_granter_changed',
+            `Page ${pageId} ('${then.title}') had its Canonical mark granted by ` +
+              `${then.grantedByName ?? then.grantedById} as at ${earlier.at}; the later copy says ` +
+              `${now.grantedByName ?? now.grantedById}. That is the actor on a page.approve event, and an ` +
+              'append-only log cannot change one.',
           );
         }
         // The approval that granted the mark, matched to the version that

@@ -13,6 +13,12 @@ import {
   linkFor,
   verifyAuditChain,
 } from './auditchain.js';
+import {
+  ApproverStanding,
+  ConcentrationOfDuty,
+  MarkedPage,
+  concentrationOfDuty,
+} from './concentration.js';
 import { RawResponse } from './csv.js';
 import {
   EFFECTIVE_DATE_LIMITS,
@@ -22,6 +28,7 @@ import {
 import { AnchorDisclosure, anchorDisclosure } from './headanchor.js';
 import { renderMarkdownHtml } from './html.js';
 import { IdentityProvenance, identityProvenance } from './identityprovenance.js';
+import { isOrgOperator } from './orgrole.js';
 import {
   Actor,
   ActorKind,
@@ -287,9 +294,29 @@ export interface RegisterEntry {
   publishedAt: string | null;
   ownerId: string | null;
   ownerName: string | null;
+  /**
+   * The approver NAMED on the version standing at `at` — `fields.approverId`,
+   * which is who was meant to approve it. A Plan need not name one, and where
+   * it does not this is null.
+   */
   approverId: string | null;
   approverName: string | null;
   approvedAt: string | null;
+  /**
+   * The actor whose `page.approve` actually granted the standing this row
+   * holds, read from the event rather than from the column.
+   *
+   * On a Policy or a Spec the two agree, because `approve` refuses anybody but
+   * the named approver. On a Plan they need not: `TYPE_RULES.plan` names no
+   * approver, so `approve` accepts ANY holder of the role and a name in the
+   * field is advisory. Where a Plan named nobody, this register used to print
+   * "Approver: —, Approved: 3 March" — a fact with the actor filed off — and
+   * where a Plan named somebody who did not in the end do it, the register
+   * printed the wrong person. This column is the one the concentration-of-duty
+   * section counts, for exactly that reason.
+   */
+  grantedById: string | null;
+  grantedByName: string | null;
   effectiveDate: string | null;
   /** What the author said a backdated effective date rests on, as at `at`. */
   effectiveDateBasis: string | null;
@@ -310,6 +337,19 @@ export interface CollectionAttestation {
   register: RegisterEntry[];
   /** Pages in the collection that did NOT hold the mark, named rather than hidden. */
   notCanonical: RegisterEntry[];
+  /**
+   * Who granted the marks in `register`, out of how many people could have,
+   * where their authority came from, and whether any of them also submitted
+   * the draft they approved (concentration.ts).
+   *
+   * It is in the bundle rather than only on the record-health screen because
+   * an auditor reads the register, not the screen, and because it belongs
+   * INSIDE the content digest: a register that names its approvers and a
+   * separate page that says whether that spread was authorised are two
+   * documents somebody has to be told to ask for both of. The finding this
+   * answers was raised against a bundle, and it is answered in one.
+   */
+  concentration: ConcentrationOfDuty;
   truncated: { limit: number; total: number } | null;
   actors: NamedActor[];
 }
@@ -692,6 +732,9 @@ export class AttestationService {
       if (!asOf.existed) continue; // created after the date asked about
       const owner = asOf.fields?.ownerId ?? null;
       const approver = asOf.fields?.approverId ?? null;
+      // The granter joins the owner and the named approver in the people table.
+      // On a Plan they are the only person on the row, and a bundle that names
+      // a decision without naming who made it is the defect this is fixing.
       actorIds.push(owner, approver, asOf.approval?.approverId ?? null);
       // Judged against the page's own first publication, whenever that was —
       // not against the instant the register is drawn for. "Does this date
@@ -719,6 +762,8 @@ export class AttestationService {
         approverId: approver,
         approverName: approver ? this.actorName(approver) : null,
         approvedAt: asOf.approval?.at ?? null,
+        grantedById: asOf.approval?.approverId ?? null,
+        grantedByName: asOf.approval ? this.actorName(asOf.approval.approverId) : null,
         effectiveDate: standing.effectiveDate,
         effectiveDateBasis: standing.basis,
         firstPublishedAt: standing.firstPublishedAt,
@@ -730,6 +775,37 @@ export class AttestationService {
       (entry.canonical ? register : notCanonical).push(entry);
     }
 
+    // Concentration of duty over EXACTLY the register above — the pages that
+    // held the mark at this instant, not the pages that hold it today. The two
+    // differ on any register drawn for a past date, and a section that silently
+    // counted today's marks under a heading naming an instant would be the same
+    // class of error as a badge that reads the page's status instead of the
+    // version's (USER-TESTING.md T1.1).
+    //
+    // The roster it is measured against is unavoidably today's, because Canon
+    // does not version membership. That is said in the report's own limits
+    // rather than papered over.
+    const concentration = concentrationOfDuty({
+      db: this.db,
+      actorId,
+      collectionId,
+      at: instant,
+      pages: register.map(
+        (e): MarkedPage => ({ pageId: e.pageId, title: e.title, type: e.type, version: e.version }),
+      ),
+      population:
+        `The ${register.length} page(s) listed above as holding the Canonical mark at ${instant}. Pages that did ` +
+        'not hold it then are excluded from this count and are named in their own table.',
+      // Group names follow the reader, exactly as `explainAccess` makes them do
+      // elsewhere: an operator may already ask Canon for anybody's, and this
+      // bundle does not widen that. The bundle already declares that it is
+      // permission-filtered to whoever generated it; this is one more thing that
+      // filtering reaches, and the report says so on its own face.
+      namesGroups: isOrgOperator(this.db, actorId),
+      truncated: total > REGISTER_PAGE_CAP,
+    });
+    for (const person of [...concentration.granters, ...concentration.dormant]) actorIds.push(person.actorId);
+
     const content = {
       collection: {
         id: collectionId,
@@ -739,6 +815,7 @@ export class AttestationService {
       },
       register,
       notCanonical,
+      concentration,
       truncated: total > REGISTER_PAGE_CAP ? { limit: REGISTER_PAGE_CAP, total } : null,
       actors: this.namedActors(actorIds),
     };
@@ -758,6 +835,20 @@ export class AttestationService {
           `That ${backdatedEntries} of these page(s) state an effective date preceding their own first publication, ` +
             `of which ${unexplainedEntries} record no basis for it. Both are named per row rather than left for a ` +
             'reader to spot by comparing columns, which is how USER-TESTING.md T1.5 was missed.',
+          `That the ${concentration.marks} mark(s) in this register were granted by ` +
+            `${concentration.granters.length} person(s) — ` +
+            `${concentration.granters.map((g) => `${g.name} (${g.marks})`).join(', ') || 'nobody'} — out of the ` +
+            `${concentration.eligible} who hold a role permitting approval in this collection today; and for each ` +
+            'of them, whether their role was granted by hand in Canon or follows from a directory group mapping, ' +
+            'and whether they also administer this collection.',
+          `That Canon compared the person who granted each mark against the person who submitted the draft it ` +
+            `published, on ${concentration.separationChecked} of them, and found ${concentration.selfApproved.length} ` +
+            `where they are the same person` +
+            (concentration.separationUnknown
+              ? `; ${concentration.separationUnknown} carry no submission to compare against and are counted as ` +
+                'unknown rather than as passing.'
+              : '.') +
+            ' Canon does NOT score the concentration these counts describe, and this bundle contains no such number.',
         ],
         actorIds: content.actors.map((a) => a.id),
       }),
@@ -1181,10 +1272,14 @@ export const BUNDLE_LIMITS: string[] = [
     'circulated by email before it was entered here, an approval given in a meeting, a version edited elsewhere ' +
     'and pasted in. Where the record’s history begins is stated in this bundle; before that point Canon has ' +
     'nothing and says so rather than inferring.',
-  'Separation of duties is enforced within Canon only, and only as its permission rules define it. That an ' +
-    'approver is not the author is a fact this bundle can support; that the approver was a person the ' +
-    'organization had authorised to approve this material is not — role grants are membership rows, and a bundle ' +
-    'cannot say whether the grant behind one was deliberate.',
+  'Separation of duties is enforced within Canon only, and only as its permission rules define it. That the ' +
+    'person who granted a mark is not the person who submitted the draft it published is a fact this bundle can ' +
+    'support, and a register attestation states how many marks that comparison was made on. That the approver was ' +
+    'a person the ORGANIZATION had authorised to approve this material is not: the concentration-of-duty section ' +
+    'says whether the role behind an approval was granted by hand inside Canon or follows from a directory group ' +
+    'your identity provider maintains — which is a real distinction and is why it is printed — but neither of ' +
+    'those two answers says whether the grant was deliberate, and Canon can see neither the decision behind a ' +
+    'hand grant nor the membership of the group.',
   'Where `manifest.auditChain.unchainedEventsBefore` is greater than zero, this record was chained from its ' +
     'head forward at some point after it was created. Events before that point carry no link and are not ' +
     'attested to by the chain. Their content is still in the log; it simply is not proven unchanged.',
@@ -1387,6 +1482,86 @@ function effectiveDateSection(s: EffectiveDateStanding): string {
     <dt>Precedes the record</dt><dd>${s.backdated ? 'yes' : 'no'}</dd>
   </dl>
   <p class="small muted">${esc(EFFECTIVE_DATE_LIMITS)}</p>`;
+}
+
+/**
+ * Concentration of duty, on the face of the register.
+ *
+ * It is placed ABOVE the two tables it describes, for the same reason the
+ * identity box sits under the title (USER-TESTING.md T3.1): a reader who does
+ * not already suspect there is a question to ask never scrolls to page six to
+ * find it. The auditor could always work out who approved what by reading down
+ * the Granted-by column and counting; what she could not do was see the
+ * denominator, and a denominator nobody reaches is a denominator nobody has.
+ *
+ * The box is never coloured by a verdict. `note warn` is used for exactly two
+ * things — a mark whose approver also submitted it, and a mark with no
+ * approval event behind it — because both are anomalies against a rule Canon
+ * itself states. A concentration of one person out of one is drawn in the same
+ * plain box as a concentration of two out of nine, because Canon has no
+ * opinion about which of those is worse and a colour would be one.
+ */
+function concentrationSection(c: ConcentrationOfDuty): string {
+  const person = (p: ApproverStanding, showMarks: boolean) =>
+    `<tr><td>${esc(p.name)}<div class="muted small">${esc(p.actorId)}</div></td>` +
+    (showMarks
+      ? `<td class="num">${esc(p.marks)}</td><td class="small">${esc(p.firstAt ?? '—')}</td>` +
+        `<td class="small">${esc(p.lastAt ?? '—')}</td>`
+      : '') +
+    `<td>${p.role ? esc(p.role) : '<span class="badge needs_update">none today</span>'}</td>` +
+    `<td>${p.collectionAdmin ? 'yes' : 'no'}</td>` +
+    `<td>${esc(p.origin.replace(/_/g, ' '))}${
+      p.groups.length
+        ? `<div class="muted small">${esc(p.groups.map((g) => `${g.group} → ${g.role}`).join(', '))}</div>`
+        : ''
+    }</td>` +
+    `<td class="small">${esc(p.statement)}</td></tr>`;
+
+  const granters = c.granters.length
+    ? `<table><thead><tr><th>Granted by</th><th class="num">Marks</th><th>First</th><th>Last</th><th>Role today</th>
+       <th>Admin here</th><th>Role came from</th><th>What that means</th></tr></thead>
+       <tbody>${c.granters.map((p) => person(p, true)).join('')}</tbody></table>`
+    : '<p class="muted">No mark in this register has an approval Canon can attribute to a person.</p>';
+
+  const dormant = c.dormant.length
+    ? `<h3>Hold the role here and granted none of these marks (${esc(c.dormant.length)})</h3>
+       <table><thead><tr><th>Person</th><th>Role today</th><th>Admin here</th><th>Role came from</th>
+       <th>What that means</th></tr></thead>
+       <tbody>${c.dormant.map((p) => person(p, false)).join('')}</tbody></table>`
+    : '';
+
+  const selfApproved = c.selfApproved.length
+    ? `<div class="note warn"><h3>Approved by the person who submitted it (${esc(c.selfApproved.length)})</h3>
+       <table><thead><tr><th>Page</th><th>Type</th><th>Approved by</th><th>When</th>
+       <th>Covered by Canon’s submit-time refusal</th></tr></thead>
+       <tbody>${c.selfApproved
+         .map(
+           (s) =>
+             `<tr><td>${esc(s.title)}<div class="muted small">${esc(s.pageId)}</div></td><td>${esc(s.type)}</td>` +
+             `<td>${esc(s.approverName)}</td><td>${esc(s.approvedAt)}</td>` +
+             `<td>${s.refusedAtSubmission ? 'yes — this row should not exist' : 'no — this type names no approver'}</td></tr>`,
+         )
+         .join('')}</tbody></table></div>`
+    : '';
+
+  const anomaly = c.marksWithoutApprovalEvent
+    ? `<div class="note warn"><h3>Marks with no approval behind them (${esc(c.marksWithoutApprovalEvent)})</h3>
+       <p>These pages held the Canonical mark at the instant above and no <code>page.approve</code> event names the
+       version standing on them. They are excluded from every count in this section and named here rather than
+       dropped.</p></div>`
+    : '';
+
+  return `
+  <h2>Concentration of duty</h2>
+  <div class="note"><h3>${esc(c.headline)}</h3>
+  <p class="small">${esc(c.population)}</p></div>
+  ${c.notes.map((n) => `<p class="small">${esc(n)}</p>`).join('')}
+  ${anomaly}
+  ${granters}
+  ${dormant}
+  ${selfApproved}
+  <h3>What these counts do not establish</h3>
+  <ul class="plain small">${c.limits.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>`;
 }
 
 function nameIndex(actors: NamedActor[]): Map<string, string> {
@@ -1692,13 +1867,17 @@ export function renderCollectionAttestationHtml(bundle: CollectionAttestation): 
   const rows = (entries: RegisterEntry[]) =>
     entries.length
       ? `<table><thead><tr><th>Page</th><th>Type</th><th>Status</th><th class="num">Version</th><th>Owner</th>
-         <th>Approver</th><th>Approved</th><th>Effective</th><th>Review due</th></tr></thead>
+         <th>Named approver</th><th>Granted by</th><th>Approved</th><th>Effective</th><th>Review due</th></tr></thead>
          <tbody>${entries
            .map(
              (e) =>
                `<tr><td>${esc(e.title)}<div class="muted small">${esc(e.pageId)}</div></td><td>${esc(e.type)}</td>` +
                `<td>${badge(e.status)}</td><td class="num">${e.version === null ? '—' : `v${esc(e.version)}`}</td>` +
                `<td>${esc(e.ownerName ?? '—')}</td><td>${esc(e.approverName ?? '—')}</td>` +
+               // Who actually granted the mark, beside who was named to. They
+               // are the same person on a Policy or a Spec; on a Plan the left
+               // column is a dash and this one is the answer.
+               `<td>${esc(e.grantedByName ?? '—')}</td>` +
                `<td>${esc(e.approvedAt ?? '—')}</td>` +
                `<td>${esc(e.effectiveDate ?? '—')}${
                  e.backdated
@@ -1748,6 +1927,7 @@ export function renderCollectionAttestationHtml(bundle: CollectionAttestation): 
         : ''
     }
     ${effectiveDateNote}
+    ${concentrationSection(bundle.concentration)}
     <h2>Canonical at that instant (${esc(bundle.register.length)})</h2>${rows(bundle.register)}
     <h2>Not Canonical at that instant (${esc(bundle.notCanonical.length)})</h2>
     <p class="small muted">Listed rather than omitted: "these are the Canonical pages" is only a useful sentence

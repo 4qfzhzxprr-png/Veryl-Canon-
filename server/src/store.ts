@@ -1267,7 +1267,30 @@ export class CanonStore {
         approverId: fields.approverId ?? null,
       });
     }
-    // A Plan names no approver; any holder of the approve role accepts it.
+    // A Plan names no approver; any holder of the approve role accepts it —
+    // and that is where separation of duties had a hole in it.
+    //
+    // `submitForReview` refuses "the approver cannot submit their own draft",
+    // but only where the TYPE names an approver. On a Plan it names none, so a
+    // person holding `approve` could submit their own draft and then grant it
+    // the Canonical mark themselves. The concentration-of-duty report found it
+    // while measuring: one mark, self-approved, `refusedAtSubmission: false`.
+    //
+    // The check belongs here rather than at submission, because the rule is
+    // about who GRANTS THE MARK, not about who typed. Enforced at submission it
+    // would still be avoidable — submit under one identity, approve under
+    // another — and it would refuse the ordinary case where somebody tidies up
+    // a colleague's draft and puts it forward for a third person to approve.
+    // Here it holds for every type, named approver or not.
+    //
+    // Read from the audit log rather than from a column, because "who put this
+    // forward" is an act rather than a field, and the log is where acts live.
+    const submitted = this.lastSubmission(pageId);
+    if (submitted && submitted.actorId === actorId) {
+      throw new CanonError('forbidden', 'The person who submitted a page for review cannot grant it the Canonical mark', {
+        submittedBy: submitted.actorId,
+      });
+    }
     const approved = this.writeVersion(
       actorId,
       page,
