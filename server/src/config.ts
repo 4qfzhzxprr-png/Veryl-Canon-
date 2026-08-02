@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { redactEnvValue } from './log.js';
+import { EMBEDDING_MODES } from './embeddingproviders.js';
 
 // Start-up configuration validation.
 //
@@ -282,7 +283,60 @@ export async function validateConfig(
     }
   }
 
+  // --- semantic retrieval ------------------------------------------------
+  //
+  // The refusals here are the ones that would otherwise show up as an index
+  // that is quietly empty: a page never embedded is a page the semantic channel
+  // cannot reach, retrieval degrades to lexical without complaining, and
+  // nothing on any screen says why answers got worse.
+
+  const embeddings = (env.CANON_EMBEDDINGS ?? '').trim().toLowerCase();
+  if (embeddings && embeddings !== 'local') {
+    if (!EMBEDDING_MODES.includes(embeddings as (typeof EMBEDDING_MODES)[number])) {
+      refuse('CANON_EMBEDDINGS', `"${embeddings}" is not a mode; it must be one of ${EMBEDDING_MODES.join(', ')}.`);
+    }
+    if (!trimmed(env, 'CANON_EMBEDDINGS_MODEL')) {
+      refuse('CANON_EMBEDDINGS_MODEL', 'CANON_EMBEDDINGS names a real provider, so the model must be named.');
+    }
+    const width = Number(env.CANON_EMBEDDINGS_DIMENSIONS ?? '');
+    if (!Number.isInteger(width) || width < 1) {
+      refuse(
+        'CANON_EMBEDDINGS_DIMENSIONS',
+        'the width of the model’s vectors must be stated, and it must match what the model actually ' +
+          'returns. Canon checks every answer against it rather than storing vectors of mixed width.',
+      );
+    }
+    if (embeddings === 'http') {
+      const url = trimmed(env, 'CANON_EMBEDDINGS_URL');
+      if (!url) {
+        refuse('CANON_EMBEDDINGS_URL', 'CANON_EMBEDDINGS=http, so the endpoint must be given.');
+      } else {
+        let parsed: URL | null = null;
+        try {
+          parsed = new URL(url);
+        } catch {
+          refuse('CANON_EMBEDDINGS_URL', `${url} is not a URL.`);
+        }
+        // The whole of the record's published text goes through this endpoint,
+        // a page at a time, for ever. Over plain http it goes in the clear.
+        if (parsed && parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+          warn(
+            'CANON_EMBEDDINGS_URL',
+            'the embedding endpoint is plain http and is not on this machine. Every published page in the ' +
+              'record is sent to it, so every published page crosses the network in the clear. Use https, ' +
+              'or run the model on this host.',
+          );
+        }
+      }
+    }
+  }
+
   return { problems, warnings, ok: problems.length === 0 };
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
 /** Thrown when a deployment's configuration cannot mean what it says. */

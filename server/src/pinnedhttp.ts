@@ -45,6 +45,22 @@ export interface OutboundRequest {
   /** The one address the socket may connect to. */
   readonly address: string;
   readonly family: number;
+  /**
+   * A request body, for the callers that have one. Absent means no body is
+   * written and the request is exactly what it was before this existed — which
+   * is every federated lookup, all of which are GETs.
+   */
+  readonly body?: string;
+  /**
+   * How much of the answer to read, where the default is wrong for the caller.
+   * Absent means `MAX_RESPONSE_BYTES`, the size of a federated scalar.
+   *
+   * The embedding endpoint is the caller that needs this: a batch of vectors is
+   * legitimately megabytes of JSON, and a ceiling sized for "one field from a
+   * benefits system" would refuse a correct answer. It is still a ceiling, and
+   * the caller states it rather than the transport growing one for everybody.
+   */
+  readonly maxBytes?: number;
 }
 
 export interface OutboundResponse {
@@ -187,12 +203,13 @@ export function pinnedHttpRequest(request: OutboundRequest): Promise<OutboundRes
       }
       const chunks: Buffer[] = [];
       let size = 0;
+      const ceiling = request.maxBytes ?? MAX_RESPONSE_BYTES;
       res.on('data', (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_RESPONSE_BYTES) {
+        if (size > ceiling) {
           res.destroy();
           client.destroy();
-          finish(() => reject(new OutboundTooLarge(`answer exceeded ${MAX_RESPONSE_BYTES} bytes`)));
+          finish(() => reject(new OutboundTooLarge(`answer exceeded ${ceiling} bytes`)));
           return;
         }
         chunks.push(chunk);
@@ -221,6 +238,7 @@ export function pinnedHttpRequest(request: OutboundRequest): Promise<OutboundRes
       finish(() => reject(err));
     }, Math.max(1, request.timeoutMs));
 
+    if (request.body !== undefined) client.write(request.body);
     client.end();
   });
 }

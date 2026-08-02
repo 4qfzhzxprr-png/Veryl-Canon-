@@ -307,8 +307,24 @@ export class EmbeddingStore {
     await this.ready();
     const question = query.question.trim();
     if (!question) return [];
-    const embedded = await this.provider.embed([question]);
-    const target = embedded[0];
+    // Embedding the QUESTION is a call to the provider like any other, and with
+    // a real provider it is a call over a network to a machine that can be
+    // down. A throw here used to come out of POST /ask as a 500: the record was
+    // readable, the lexical index was fine, the graph was fine, and the product
+    // answered nothing because a model server was restarting.
+    //
+    // The documented degradation is that without a working provider retrieval
+    // falls back to lexical plus graph expansion, and this is where that has to
+    // be true. The failure is recorded — `EmbeddingStore.error` is what an
+    // operator reads — and the channel returns nothing, which is exactly what
+    // it returns when no provider is configured at all.
+    let target: number[] | undefined;
+    try {
+      target = (await this.provider.embed([question]))[0];
+    } catch (err) {
+      this.lastError = err instanceof Error ? err : new Error(String(err));
+      return [];
+    }
     if (!target) return [];
 
     const params: (string | number)[] = [actorId, this.provider.name, this.provider.dimensions];

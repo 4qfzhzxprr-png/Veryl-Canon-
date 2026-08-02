@@ -298,6 +298,28 @@ export class RetrievalService {
   // term, then fuses those rank lists with RRF into a single lexical
   // ranking. Pages matching many terms, and matching them strongly, rise;
   // pages matching one rare term still appear.
+  //
+  // A SECOND PASS OVER THE RECORD'S OWN VOCABULARY WAS TRIED HERE AND DOES NOT
+  // PAY. Written down so it is not rebuilt: pseudo-relevance feedback — run the
+  // query, take the words that distinguish the best few results from the rest
+  // of the corpus, ask again with them, damped. Measured against the labelled
+  // set in scripts/eval-retrieval.ts it moved MRR by 0.005 and moved nothing
+  // else, at seven extra queries per ask, and it made the one question it was
+  // built for WORSE.
+  //
+  // The reason is worth keeping. It was aimed at the vocabulary gap: "How long
+  // do we keep files about people who have left the company?" is answered
+  // completely by "Retention periods: employment records" and shares not one
+  // word with it. But feedback can only borrow words from pages the first pass
+  // already reached, and the first pass is precisely what fails in that case —
+  // it reaches the retention pages it can see and borrows "seven", "twenty",
+  // "four", "months", "schedule". Figures, because a figure is rare and
+  // repeated and that is exactly what the scoring rewards. Nothing in that set
+  // is a step towards "employment".
+  //
+  // Feedback sharpens a query that is already roughly right. The vocabulary gap
+  // is where it is not. That gap needs an embedding that knows the two phrases
+  // mean the same thing, which is embeddings.ts's job and not this one's.
   private lexicalRanking(
     actorId: string,
     terms: string[],

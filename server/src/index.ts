@@ -15,6 +15,7 @@ import { attachReadiness, readinessChecksFromEnv, recordChecks, startRecordWatch
 import { installGracefulShutdown } from './shutdown.js';
 import { attachStatic } from './static.js';
 import { CanonStore } from './store.js';
+import { embeddingProviderFromEnv } from './embeddingproviders.js';
 
 const log = loggerFromEnv();
 
@@ -58,7 +59,13 @@ const connectors = defaultConnectorRegistry().register(
     requestTimeoutMs: Number(process.env.CANON_SOURCE_TIMEOUT_MS ?? 3000),
   }),
 );
-const store = new CanonStore(db, mail ?? undefined, undefined, connectors);
+// Semantic retrieval (DATA-BACKBONE.md §5). Without CANON_EMBEDDINGS this is
+// the built-in hashed bag of words: hermetic, dependency-free, and no kind of
+// semantic — see embeddingproviders.ts for what the other two settings buy and
+// what each one costs. A model change re-derives the index from the record,
+// because two models are two unrelated vector spaces.
+const embeddings = embeddingProviderFromEnv();
+const store = new CanonStore(db, mail ?? undefined, embeddings ?? undefined, connectors);
 // Agent Passport authentication is live only when a Registry is configured
 // (CANON_REGISTRY_URL); otherwise Canon runs in dev mode, X-Actor-Id only.
 const agentAuth = agentAuthFromEnv(db, store);

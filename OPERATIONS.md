@@ -17,8 +17,13 @@ product does.
 
 Canon is **one process and one file**.
 
-- The process is Node 22+ with **zero runtime dependencies** — no framework, no
-  driver, no ORM, no queue. `node:sqlite`, `node:http`, `node:crypto`.
+- The process is Node 22+ and **installs with no runtime dependencies** — no
+  framework, no driver, no ORM, no queue. `node:sqlite`, `node:http`,
+  `node:crypto`. There is exactly one optional dependency and it is off by
+  default: setting `CANON_EMBEDDINGS=transformers` runs a real embedding model
+  inside this process and needs `@huggingface/transformers` installed. Every
+  other way of running Canon, including the hosted and self-hosted embedding
+  endpoints, still needs nothing but Node.
 - The file is a SQLite database holding the record, the version history, the
   derived indexes and **the audit log**. History is append-only, enforced by
   database triggers rather than by application code.

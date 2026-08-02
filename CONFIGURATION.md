@@ -133,6 +133,29 @@ somebody holds what.
 | `CANON_SOURCE_SERVICE_IDENTITY` | required for `service` sources | unset | The identity a `service`-mode source is resolved with. Absent, a service source fails visibly rather than resolving anonymously. | §5 assumption 7: Canon stores no credential for a source. This is an identity, and any credential belongs in the connector's own configuration. |
 | `CANON_SOURCE_TIMEOUT_MS` | optional | `3000` | Bounds the whole exchange: connect, handshake, headers and body. | — |
 
+## Semantic retrieval: which embedding model, and where it runs
+
+Leave all of this unset and Canon uses its built-in provider: a hashed bag of
+words, computed in this process, with nothing installed and nothing sent
+anywhere. It is honest about what it is not — it has no notion of synonymy, so
+a question asked in words the record does not use will not reach the page that
+answers it. Retrieval still works; the lexical channel and the graph carry it.
+
+Setting these turns on a real model, and that is a decision with a cost either
+way: `http` sends the record's published text to another machine, and
+`transformers` adds a large optional dependency and several hundred megabytes of
+weights. Neither should happen because a config file was copied.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_EMBEDDINGS` | optional | `local` | `local` (built in), `http` (an OpenAI-compatible `/v1/embeddings` endpoint — hosted, or a model server you run), or `transformers` (the model runs in this process). | `http` means every published page in the record is sent to that endpoint. `transformers` means nothing leaves the machine and needs `npm install @huggingface/transformers`. |
+| `CANON_EMBEDDINGS_MODEL` | required unless `local` | unset | The model's name, as its server knows it. | It is part of the provider's identity, so changing it re-derives the whole vector index from the record rather than mixing two vector spaces. |
+| `CANON_EMBEDDINGS_DIMENSIONS` | required unless `local` | unset | The width of the model's vectors. | Checked against every answer. A model returning a different width is a refusal, not a silently mixed index. |
+| `CANON_EMBEDDINGS_URL` | required if `http` | unset | The full endpoint, e.g. `https://models.internal/v1/embeddings`. | Canon may reach this host and no other — private addresses included, because it comes from your environment rather than from a user calling the API. Plain `http` off this machine is warned about: the whole record crosses the network in the clear. |
+| `CANON_EMBEDDINGS_API_KEY` | optional | unset | **Secret** — sent as `Authorization: Bearer`. | Never logged, and a model server's error body is never quoted back, because it can contain the request that caused it. |
+| `CANON_EMBEDDINGS_BATCH` | optional | `32` | Texts per request. | — |
+| `CANON_EMBEDDINGS_TIMEOUT_MS` | optional | `30000` | Bounds the whole exchange. | A provider that fails leaves pages out of the vector channel and retrieval degrades to lexical plus graph. It never substitutes a vector. |
+
 ## Import
 
 | Variable | Required? | Default | Meaning | Safety |

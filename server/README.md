@@ -187,11 +187,20 @@ How an agent request is handled ([`src/agentauth.ts`](src/agentauth.ts), per [RE
 
 - **Identity.** People sign in through OpenID Connect (above); the provider behind it is the stub in [idp-stub/](../idp-stub/) until the design partner's tenant is wired up, and swapping to it is `CANON_OIDC_ISSUER`. Agents authenticate with their Agent Passport; the Registry behind it is the stub in [registry-stub/](../registry-stub/) on exactly the same terms. `X-Actor-Id` survives as an explicit development opt-in and nothing else.
 - **The connector.** The only connector shipped is the hermetic `static` one, whose fixture data is supplied per source. It is a test double: it reaches nothing. A real integration implements `Connector` and registers itself on the store's `ConnectorRegistry` at start-up, keyed by the `kind` its sources carry; nothing else in federation changes.
-- **The embedding provider and the answer generator.** Both are interfaces with hermetic defaults: a hashed bag of words and an extractive generator. A hosted or self-hosted embedding model and a real language model plug into the same seams, and nothing else in retrieval changes. Until then the vector channel catches partial term overlap rather than paraphrase, and answers quote rather than compose prose.
+- **The answer generator.** An interface with a hermetic default: an extractive generator that quotes rather than composes prose. A real language model plugs into the same seam, under the same rules — the contradiction check runs on the passages before the generator is called, outside the seam, so a model that smooths a conflict cannot make it go away.
+- **The embedding provider.** Also an interface, and no longer only aspirational: `CANON_EMBEDDINGS` selects the built-in hashed bag of words (the default), an OpenAI-compatible endpoint, or a model running in this process. The default has no notion of paraphrase and says so; the measured cost of that is in `scripts/eval-retrieval.ts`. Nothing else in retrieval changes when the provider does, and a model change re-derives the vector index from the record rather than mixing two vector spaces.
 
 ## Running it
 
-Node 22+ (uses the built-in `node:sqlite`; no runtime dependencies).
+Node 22+ (uses the built-in `node:sqlite`). `npm install` pulls dev
+dependencies only — TypeScript and the type definitions — and the server runs
+on Node's own modules.
+
+One optional dependency exists and is off by default. `CANON_EMBEDDINGS=transformers`
+runs a real embedding model in this process, for a deployment that wants
+semantic retrieval with nothing leaving the machine, and that needs
+`npm install @huggingface/transformers`. The default provider and the HTTP one
+need nothing (CONFIGURATION.md, "Semantic retrieval").
 
 ```sh
 npm install   # dev dependencies only (TypeScript)
