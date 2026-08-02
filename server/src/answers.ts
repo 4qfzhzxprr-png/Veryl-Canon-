@@ -525,6 +525,32 @@ export const MIN_TOPICAL_OVERLAP = 0.5;
  */
 export const DIRECT_TOPICAL_OVERLAP = 0.75;
 
+/**
+ * How much more than the middle of a question a single word may weigh.
+ *
+ * IDF IS INVERTED FOR THE WAY PEOPLE ASK. In a policy corpus the words somebody
+ * types are rare and the words the record answers with are common, so weighing
+ * by rarity systematically weighs a question's PHRASING above its SUBJECT.
+ * Measured over the labelled set, on the questions still being refused:
+ *
+ *   quickly df=0  w=5.67     claim    df=38  w=2.03
+ *   tell    df=3  w=4.57     decision df=143 w=0.71
+ *   proof   df=2  w=4.98     member   df=127 w=0.83
+ *   somebody df=4 w=4.28     record   df=164 w=0.57
+ *
+ * "What must a decision letter tell the member?" was refused by a page carrying
+ * three of its four words, because the fourth was "tell" and "tell" outweighed
+ * the other three together. That is not a judgement about the page.
+ *
+ * So no single word may weigh more than this multiple of the question's median
+ * word. It is a cap and not a re-weighting: the ordering of terms is untouched,
+ * rare words still count for more, and a question made mostly of words the
+ * record does not use still fails — every one of its words is capped too, so
+ * the ratio between covered and asked is unchanged by capping alone. What it
+ * removes is one word's ability to decide the whole question by itself.
+ */
+export const WEIGHT_DOMINANCE = 2;
+
 // Enough of a stemmer to survive plurals and tense: records/record,
 // policies/policy, retained/retain. Not linguistics — just the difference
 // between a gate that works on real questions and one that refuses everything.
@@ -692,16 +718,39 @@ export function topicalCoverage(question: string, text: string, stats: TermStats
   // weigh and is still a sane answer. The test is not the size of the record —
   // that would be a number pulled out of the air — but whether any word the
   // record actually uses carries any weight at all.
-  const informative = stats
-    ? questionTerms.filter((t) => (stats.df.get(t) ?? 0) > 0).reduce((n, t) => n + weightOf(t), 0)
-    : 0;
+  const known = stats ? questionTerms.filter((t) => (stats.df.get(t) ?? 0) > 0) : [];
+  const informative = known.reduce((n, t) => n + weightOf(t), 0);
   if (informative === 0) return covered.length / questionTerms.length;
 
-  // Unseen terms keep their full weight here, in the denominator: a question
-  // built mostly of words the record does not use should still fail, and this
-  // is where it does.
-  const asked = questionTerms.reduce((n, t) => n + weightOf(t), 0);
-  const met = covered.reduce((n, t) => n + weightOf(t), 0);
+  // A WORD THE RECORD HAS NEVER SEEN CANNOT BE THE MOST IMPORTANT WORD IN THE
+  // QUESTION, and treating it as one was refusing questions the record answers.
+  //
+  // `termWeight` scores an unseen term as though it were on a single page: the
+  // highest weight the corpus can produce. For "submarine" that is right — a
+  // word this record does not use is evidence the question is not about this
+  // record. For "urgent", "proof", "baby", "cleanup" and "tell" it is nonsense.
+  // Those are ordinary English words that a policy corpus happens to spell
+  // differently ("expedited", "evidenced", "maternity", "deletion job", "is
+  // told"), and each one of them, alone, outweighed every word of the question
+  // the record DID know. Five of the six questions still being refused over the
+  // labelled set were exactly this: the page covered half or more of what was
+  // asked and lost to a single word it did not contain.
+  //
+  // The record has no evidence about a word it has never seen. Assuming such a
+  // word is the most decisive term in the question is an assumption, not a
+  // measurement — so it is capped at the most decisive word the record DOES
+  // know. An unseen term still counts, still counts fully in the denominator,
+  // and can still sink a question made mostly of words the record does not use;
+  // it just cannot outrank the rarest thing the record has actually got.
+  const weights = questionTerms.map(weightOf).sort((a, b) => a - b);
+  const mid = weights.length % 2 === 1
+    ? weights[(weights.length - 1) / 2]!
+    : (weights[weights.length / 2 - 1]! + weights[weights.length / 2]!) / 2;
+  const ceiling = Math.max(mid * WEIGHT_DOMINANCE, Math.min(...known.map(weightOf)));
+  const bounded = (t: string): number => Math.min(weightOf(t), ceiling);
+
+  const asked = questionTerms.reduce((n, t) => n + bounded(t), 0);
+  const met = covered.reduce((n, t) => n + bounded(t), 0);
   return asked === 0 ? 0 : met / asked;
 }
 

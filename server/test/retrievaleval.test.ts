@@ -129,8 +129,8 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
   // more — so the measured half improved and the half a reader actually
   // experiences did not. A floor on ranking alone would have let all of that
   // through, and did.
-  assert.ok(report.answered >= 0.8, `answered fell to ${report.answered.toFixed(3)}${summary}`);
-  assert.ok(report.direct >= 0.85, `direct fell to ${report.direct.toFixed(3)}${summary}`);
+  assert.ok(report.answered >= 0.88, `answered fell to ${report.answered.toFixed(3)}${summary}`);
+  assert.ok(report.direct >= 0.87, `direct fell to ${report.direct.toFixed(3)}${summary}`);
   assert.ok(report.citedRelevant >= 0.78, `cited-relevant fell to ${report.citedRelevant.toFixed(3)}${summary}`);
 
   // The same record answers the same question the same way. Two corpora built

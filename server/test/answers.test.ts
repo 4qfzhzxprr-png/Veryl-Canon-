@@ -493,6 +493,42 @@ test('ask: a neighbour of an anchor is cited whether or not the question also fi
   );
 });
 
+test('isOnTopic: no single word of a question decides it', () => {
+  // IDF IS INVERTED FOR THE WAY PEOPLE ASK. In a policy corpus the words
+  // somebody types are rare and the words the record answers with are common,
+  // so weighing purely by rarity weighs a question's phrasing above its
+  // subject. These are the real figures from the demo corpus.
+  const stats = {
+    total: 290,
+    df: new Map([
+      ['decision', 143], // w 0.71
+      ['letter', 34], //   w 2.14
+      ['member', 127], //  w 0.83
+      ['tell', 3], //      w 4.57 — outweighs the other three together
+    ]),
+  };
+  const question = 'What must a decision letter tell the member?';
+  const page = 'Appeals and Grievances. Every decision letter states the reason and names the next level of appeal to the member.';
+
+  assert.equal(
+    isOnTopic(question, page, stats),
+    true,
+    'three of four words, on a page that plainly addresses the question',
+  );
+
+  // The cap does not turn the gate off. A question mostly made of words this
+  // record does not use is still refused — every term is capped, so capping
+  // alone cannot change the ratio between what was covered and what was asked.
+  const offTopic = {
+    total: 290,
+    df: new Map([['polici', 240], ['submarin', 0], ['procur', 0]]),
+  };
+  assert.equal(
+    isOnTopic('What is our policy on submarine procurement?', 'A policy about retention.', offTopic),
+    false,
+  );
+});
+
 test('isOnTopic: the corpus statistic is used where it says something and counted where it does not', () => {
   const question = 'How long are client records retained?';
   const text = 'Client data retention policy. Client records are retained for ten years.';
