@@ -1485,34 +1485,85 @@ test('isOnTopic: a term the record has never used counts against a match', () =>
 // An answer says how well grounded it is, and the extractive generator opens
 // differently when it is thin. "The record says:" over one weak match and its
 // graph neighbours is an assertion the evidence does not support.
-test('ask: one anchor and its neighbours is a thin answer, and says so', async () => {
+test('ask: grounding is how squarely the record answers, not how many pages did', async () => {
+  const question = 'who approves a learning budget request';
   const { store, marc, iris, collection } = setup();
-  const anchor = publishCanonical(
+
+  // A page that shares the question's subject without addressing it: over the
+  // bar to anchor an answer, nowhere near answering it. Plus a neighbour that
+  // rides in on the tree and answers nothing either. This is what "thin" is
+  // for, and the answer says so.
+  const near = publishCanonical(
     store, marc.id, iris.id, collection.id,
-    'Learning budget',
-    'The team lead approves a learning budget request up to five hundred pounds.',
+    'Team spending',
+    'Requests for team spending are recorded against a budget line in the finance system.',
   );
-  // A neighbour that answers nothing, reachable only through the graph.
-  const child = publishCanonical(
+  publishCanonical(
     store, marc.id, iris.id, collection.id,
     'Booking a course',
     'Courses are booked through the supplier portal once funds are confirmed.',
-    anchor.id,
+    near.id,
   );
-  assert.ok(child);
 
-  const thin = await store.ask(marc.id, { question: 'who approves a learning budget request' });
+  const thin = await store.ask(marc.id, { question });
   assert.equal(thin.refused, false);
   assert.equal(thin.grounding, 'thin');
   assert.match(thin.answer!, /^Nothing in the record answers this directly/);
 
-  // Two pages that each address the question on their own terms is direct.
+  // ONE page that squarely answers it is direct, on its own.
+  //
+  // This is the rule that changed and the reason it had to. Grounding was a
+  // headcount — two anchors or it was thin — so a question answered plainly, on
+  // one Canonical page, by the person who owns that subject, was reported as
+  // "Nothing in the record answers this directly". A well-kept record answers a
+  // question on ONE page; that is what Canonical means, and the old rule was
+  // hedging exactly the record-keeping the product asks people to do. Over the
+  // labelled question set it fired on fifteen of forty-one.
   publishCanonical(
     store, marc.id, iris.id, collection.id,
-    'Learning budget approvals over five hundred',
-    'A learning budget request above five hundred pounds is approved by the department head.',
+    'Learning budget',
+    'The team lead approves a learning budget request up to five hundred pounds.',
   );
-  const direct = await store.ask(marc.id, { question: 'who approves a learning budget request' });
+  const direct = await store.ask(marc.id, { question });
   assert.equal(direct.grounding, 'direct');
   assert.match(direct.answer!, /^The record says:/);
+});
+
+test('ask: the page decides whether it is on topic, not the sentence chosen to quote', async () => {
+  // THE BUG: the topical gate read `title + passage`, and the passage is the
+  // CITATION — a short window centred on wherever the first matching term
+  // landed. A page that answers the question in a later section was refused,
+  // because the window chosen for quoting was somewhere else on it.
+  //
+  // The body below is built to reproduce exactly that: the opening is long,
+  // shares the question's first term, and says nothing; the answer is at the
+  // end. Seven of twelve wrongful refusals over the labelled set were this.
+  const { store, marc, iris, collection } = setup();
+  const question = 'when does the claims purge job run';
+  // One paragraph, under a chunk in length, so there is exactly one chunk and
+  // the window is its opening: several sentences of on-subject filler, and the
+  // answer in the last line where the window cannot reach it.
+  const filler = Array.from(
+    { length: 5 },
+    (_, i) => `The claims register for class ${i} is maintained by the committee and reviewed each quarter.`,
+  ).join(' ');
+  const page = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Retention jobs and their schedule',
+    `${filler} The claims-purge job runs nightly at 02:10 UTC.`,
+  );
+  await store.embeddings.ready();
+
+  // The precondition, asserted rather than assumed: the window really does miss
+  // the answer. If that ever stops being true this test should say so instead
+  // of passing for a reason it was not written for.
+  const candidates = await store.retrieve(marc.id, { question, canonicalOnly: true });
+  const candidate = candidates.find((c) => c.pageId === page.id);
+  assert.ok(candidate, 'the page is retrieved');
+  assert.ok(!candidate.passage.includes('02:10'), 'the quoted window falls on the filler, not on the answer');
+
+  // And the answer comes anyway, because the PAGE is about the question.
+  const answer = await store.ask(marc.id, { question });
+  assert.equal(answer.refused, false, 'the page states the answer; the window merely did not contain it');
+  assert.deepEqual(answer.citations.map((c) => c.pageId), [page.id]);
 });

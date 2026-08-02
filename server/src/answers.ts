@@ -494,6 +494,37 @@ function attribute(p: AnswerPassage): string {
 // DATA-BACKBONE.md §5 asks for.
 export const MIN_TOPICAL_OVERLAP = 0.5;
 
+/**
+ * The bar for "The record says" rather than "the closest it comes".
+ *
+ * GROUNDING USED TO BE A HEADCOUNT, and the headcount was wrong about the case
+ * this product is built for. Two anchors meant direct, one meant thin — so a
+ * question answered squarely, on one Canonical page, by the person who owns
+ * that subject, was reported as "Nothing in the record answers this directly."
+ * That is not a hedge, it is a false statement about the record, and it fired
+ * on fifteen of the forty-one questions in the labelled set. A well-organised
+ * record answers a question on ONE page. That is what Canonical means; the
+ * grounding rule was punishing exactly the record-keeping the product asks for.
+ *
+ * So confidence is now about how squarely the best anchor answered, with the
+ * headcount kept as the second way to earn it: two independent pages that both
+ * clear admission are still a different and stronger claim than one that barely
+ * did, and that argument was never wrong — it was just not the only one.
+ *
+ * THIS NUMBER IS A JUDGEMENT AND NOT A MEASUREMENT, unlike the title weight in
+ * search.ts, and the difference is worth being straight about. Swept across the
+ * labelled set it moves the share of answers that read "the record says" from
+ * 97% at 0.55 to 86% at 0.95, smoothly, with no peak — because the labels say
+ * which PAGE answers each question and do not say which questions deserve to be
+ * hedged. There is nothing there for a sweep to find. 0.75 is the reading that
+ * three quarters of what was asked, weighted by how much each word of it
+ * distinguishes a page, is enough to stop calling an answer "the closest it
+ * comes". Measuring it properly needs a second kind of label — a person saying
+ * this answer overclaims — and that is worth collecting from design partners
+ * rather than inventing here.
+ */
+export const DIRECT_TOPICAL_OVERLAP = 0.75;
+
 // Enough of a stemmer to survive plurals and tense: records/record,
 // policies/policy, retained/retain. Not linguistics — just the difference
 // between a gate that works on real questions and one that refuses everything.
@@ -609,13 +640,33 @@ export interface TermStats {
  * hand (a test, a generator harness) still gets a sane answer.
  */
 export function isOnTopic(question: string, text: string, stats: TermStats | null = null): boolean {
+  return topicalCoverage(question, text, stats) >= MIN_TOPICAL_OVERLAP;
+}
+
+/**
+ * HOW MUCH of the question this text covers, from 0 to 1 — the number
+ * `isOnTopic` compares against a threshold, exposed because one threshold is
+ * not enough.
+ *
+ * Admission and confidence are two different questions and were answered by one
+ * number. A candidate clears `MIN_TOPICAL_OVERLAP` to be allowed to anchor an
+ * answer at all; whether the answer then reads "The record says" or "Nothing in
+ * the record answers this directly" is a judgement about how squarely the best
+ * page addressed the question, and that judgement needs the margin, not the
+ * verdict.
+ *
+ * Returns 0 where the question has no content terms, and 0 where the text
+ * covers fewer than two of them — the shape rule below, which is about the
+ * question rather than about relevance and cannot be expressed as a ratio.
+ */
+export function topicalCoverage(question: string, text: string, stats: TermStats | null = null): number {
   const questionTerms = contentTerms(question);
-  if (questionTerms.length === 0) return false;
+  if (questionTerms.length === 0) return 0;
   const covered = coveredTerms(questionTerms, text);
   // Never on one shared word, unless the question was one word. Unchanged, and
   // it is about the shape of the question rather than about relevance.
   const minimum = questionTerms.length === 1 ? 1 : 2;
-  if (covered.length < minimum) return false;
+  if (covered.length < minimum) return 0;
 
   const weightOf = (t: string) => termWeight(t, stats);
 
@@ -644,14 +695,14 @@ export function isOnTopic(question: string, text: string, stats: TermStats | nul
   const informative = stats
     ? questionTerms.filter((t) => (stats.df.get(t) ?? 0) > 0).reduce((n, t) => n + weightOf(t), 0)
     : 0;
-  if (informative === 0) return covered.length / questionTerms.length >= MIN_TOPICAL_OVERLAP;
+  if (informative === 0) return covered.length / questionTerms.length;
 
   // Unseen terms keep their full weight here, in the denominator: a question
   // built mostly of words the record does not use should still fail, and this
   // is where it does.
   const asked = questionTerms.reduce((n, t) => n + weightOf(t), 0);
   const met = covered.reduce((n, t) => n + weightOf(t), 0);
-  return met / asked >= MIN_TOPICAL_OVERLAP;
+  return asked === 0 ? 0 : met / asked;
 }
 
 // ---------------------------------------------------------------------------
@@ -1599,7 +1650,11 @@ export interface AnswerHost {
    * is what knows that. Optional so a harness can construct an AnswerService
    * without one; the gate falls back to its unweighted form when it is absent.
    */
-  readonly searchIndex?: { documentFrequency(terms: readonly string[]): TermStats };
+  readonly searchIndex?: {
+    documentFrequency(terms: readonly string[]): TermStats;
+    /** The indexed words of these pages, for judging what a page is about. */
+    indexedText(pageIds: readonly string[]): Map<string, string>;
+  };
 }
 
 function now(): string {
@@ -1701,15 +1756,55 @@ export class AnswerService {
     // once per ask, over the question's terms only. Without it the gate counts
     // words and treats "policy" as worth as much as "indemnity".
     const stats = this.termStats(question);
-    const anchors = eligible.filter((c) => c.via === null && isOnTopic(question, `${c.title} ${c.passage}`, stats));
+
+    // WHAT THE GATE READS, which was the defect.
+    //
+    // It read `title + passage`, and the passage is the CITATION: a 320-
+    // character window chosen to be quoted, centred on wherever the semantic
+    // channel or the first matching term happened to land. Two different jobs
+    // were sharing one string. "Is this page about the question" is a judgement
+    // about the PAGE; "what do we quote" is a judgement about a sentence on it,
+    // and the second is not evidence for the first.
+    //
+    // The result was a page that answers a question in so many words being
+    // refused because the window fell somewhere else on it. `Retention jobs and
+    // their schedule` states `claims-purge — nightly, 02:10 UTC`; asked when the
+    // claims purge job runs, it came back FIRST and the answer was refused,
+    // because the 320 characters chosen for quoting were about log scrubbing.
+    // Seven of the twelve refusals over the labelled question set were this.
+    //
+    // So the judgement is made on the page's own indexed words — the same text
+    // that made it a candidate, already stripped of Markdown and link targets.
+    // The passage is still the passage; it is just no longer asked to be
+    // evidence of something it was never chosen for.
+    const bodies = this.host.searchIndex?.indexedText(eligible.map((c) => c.pageId)) ?? new Map<string, string>();
+    // A page the index has nothing for falls back to the passage rather than to
+    // nothing: the index is derived and can be mid-rebuild, and a gate that
+    // fails closed on a missing derived row would refuse questions the record
+    // answers — the wrong failure, and the same argument as `termStats`.
+    const judgeable = (c: RetrievalCandidate): string => `${c.title} ${bodies.get(c.pageId) || c.passage}`;
+
+    const coverage = new Map<string, number>();
+    const anchors = eligible.filter((c) => {
+      if (c.via !== null) return false;
+      const score = topicalCoverage(question, judgeable(c), stats);
+      coverage.set(c.pageId, score);
+      return score >= MIN_TOPICAL_OVERLAP;
+    });
     const anchored = new Set(anchors.map((c) => c.pageId));
-    // How much of this answer is going to be an ANSWER. One anchor means one
-    // page addressed the question and everything else riding along came through
-    // the graph — real, cited, quotable context, but not evidence that the
-    // record answers what was asked. Two independent pages agreeing that they
-    // are about the subject is a different claim, and only that one earns "the
-    // record says".
-    const grounding: 'direct' | 'thin' = anchors.length >= 2 ? 'direct' : 'thin';
+    // How much of this answer is going to be an ANSWER — see
+    // DIRECT_TOPICAL_OVERLAP for why this stopped being a headcount. One page
+    // that squarely addresses the question earns "the record says", because one
+    // Canonical page squarely addressing a question is what a well-kept record
+    // looks like. Two independent pages that both clear admission earn it too,
+    // which is the argument the headcount was making and is still sound.
+    //
+    // "Thin" survives for what it was for: an answer assembled out of pages that
+    // are NEAR the question — over the admission bar, under this one — plus
+    // whatever the graph brought with them.
+    const best = anchors.reduce((n, c) => Math.max(n, coverage.get(c.pageId) ?? 0), 0);
+    const grounding: 'direct' | 'thin' =
+      best >= DIRECT_TOPICAL_OVERLAP || anchors.length >= 2 ? 'direct' : 'thin';
     // What may be cited, once there is an anchor: the anchors themselves, and
     // the pages the record connects to one.
     //

@@ -123,6 +123,16 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
   assert.ok(report.recallAt5 >= 0.95, `R@5 fell to ${report.recallAt5.toFixed(3)}${summary}`);
   assert.ok(report.mrr >= 0.9, `MRR fell to ${report.mrr.toFixed(3)}${summary}`);
 
+  // The other half, and the half that was unguarded while it was the worse of
+  // the two. Retrieval was putting a right page first 90% of the time while Ask
+  // refused twelve of these forty-one questions outright and hedged fifteen
+  // more — so the measured half improved and the half a reader actually
+  // experiences did not. A floor on ranking alone would have let all of that
+  // through, and did.
+  assert.ok(report.answered >= 0.8, `answered fell to ${report.answered.toFixed(3)}${summary}`);
+  assert.ok(report.direct >= 0.85, `direct fell to ${report.direct.toFixed(3)}${summary}`);
+  assert.ok(report.citedRelevant >= 0.78, `cited-relevant fell to ${report.citedRelevant.toFixed(3)}${summary}`);
+
   // The same record answers the same question the same way. Two corpora built
   // from one seed hold the same pages with the same words and different page
   // ids, and every ranking they produce must be identical.

@@ -263,6 +263,29 @@ export class SearchIndex {
     for (const row of rows) this.insert.run(row.id, row.title, indexableText(row.body));
   }
 
+  /**
+   * The indexed words of these pages — the page's prose, with its Markdown and
+   * its link targets already gone (plaintext.ts). The same text `search`
+   * matches against, which is the point: a judgement about whether a page is
+   * about a question should be made on the same words that decided it was a
+   * candidate.
+   *
+   * NO PERMISSION FILTER, deliberately, and it takes page ids the caller has
+   * ALREADY had through a permission-filtered query. There is one permission
+   * gate in this file, in `search`, and a second one here would be a second
+   * thing to keep right. The one caller (answers.ts) passes ids that came out
+   * of retrieval, which filters in SQL before anything is ranked.
+   */
+  indexedText(pageIds: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (pageIds.length === 0) return out;
+    const rows = this.db
+      .prepare(`SELECT page_id, body FROM page_search WHERE page_id IN (${pageIds.map(() => '?').join(', ')})`)
+      .all(...pageIds) as Record<string, unknown>[];
+    for (const row of rows) out.set(row.page_id as string, row.body as string);
+    return out;
+  }
+
   private get insert() {
     return this.db.prepare('INSERT INTO page_search (page_id, title, body) VALUES (?, ?, ?)');
   }

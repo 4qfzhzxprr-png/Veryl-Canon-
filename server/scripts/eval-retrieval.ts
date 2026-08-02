@@ -328,6 +328,27 @@ export interface EvalReport {
   /** Of UNANSWERABLE, the fraction Ask refused. */
   refused: number;
   refusalCases: number;
+  /**
+   * What Ask did with the questions the record DOES answer.
+   *
+   * Retrieval getting the right page to the top is worth nothing if the answer
+   * path then declines to use it, and for a long time it did: the right page
+   * came back first and Ask refused, or answered under "Nothing in the record
+   * answers this directly". Only the retrieval half was measured, so only the
+   * retrieval half improved.
+   *
+   * These are the two failures that are symmetric to `refused` above and just
+   * as bad — refusing what the record answers, and hedging an answer the record
+   * states plainly. A change that lifts `refused` by refusing more of
+   * everything shows up here immediately.
+   */
+  answered: number;
+  /** Of the answered, the fraction that said "the record says" rather than hedging. */
+  direct: number;
+  /** The fraction whose citations included a page the labels call relevant. */
+  citedRelevant: number;
+  /** The answerable questions Ask refused, named. */
+  wrongfulRefusals: readonly string[];
   results: readonly CaseResult[];
   /** The cases with no relevant page in the whole returned list. */
   misses: readonly CaseResult[];
@@ -335,10 +356,15 @@ export interface EvalReport {
   overreach: readonly { question: string; cited: readonly string[] }[];
 }
 
+type RankingReport = Omit<
+  EvalReport,
+  'refused' | 'refusalCases' | 'overreach' | 'answered' | 'direct' | 'citedRelevant' | 'wrongfulRefusals'
+>;
+
 export async function runRetrievalEval(
   retrieve: Retriever,
   cases: readonly EvalCase[] = EVAL_CASES,
-): Promise<Omit<EvalReport, 'refused' | 'refusalCases' | 'overreach'>> {
+): Promise<RankingReport> {
   const results: CaseResult[] = [];
   for (const evalCase of cases) {
     const ranked = await retrieve(evalCase.question);
@@ -401,11 +427,32 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
       overreach.push({ question, cited: answer.citations.map((c) => c.title) });
     }
   }
+
+  // The other half: what Ask does with the questions the record answers.
+  const wrongfulRefusals: string[] = [];
+  let direct = 0;
+  let citedRelevant = 0;
+  for (const evalCase of EVAL_CASES) {
+    const answer = await corpus.store.ask(corpus.actorId, { question: evalCase.question });
+    if (answer.refused) {
+      wrongfulRefusals.push(evalCase.question);
+      continue;
+    }
+    if (answer.grounding === 'direct') direct += 1;
+    if (answer.citations.some((c) => evalCase.relevant.includes(c.title))) citedRelevant += 1;
+  }
+  const total = EVAL_CASES.length || 1;
+  const answeredCount = EVAL_CASES.length - wrongfulRefusals.length;
+
   return {
     ...ranking,
     refusalCases: UNANSWERABLE.length,
     refused: (UNANSWERABLE.length - overreach.length) / (UNANSWERABLE.length || 1),
     overreach,
+    answered: answeredCount / total,
+    direct: direct / (answeredCount || 1),
+    citedRelevant: citedRelevant / total,
+    wrongfulRefusals,
   };
 }
 
@@ -424,6 +471,11 @@ export function formatReport(report: EvalReport, pages: number): string {
     `R@5               ${pct(report.recallAt5)}`,
     `R@8               ${pct(report.recallAt8)}`,
     `MRR               ${report.mrr.toFixed(3).padStart(6)}`,
+    '',
+    'what Ask then does with it',
+    `answered          ${pct(report.answered)}   of the questions the record answers`,
+    `direct            ${pct(report.direct)}   of those said "the record says", not "the closest it comes"`,
+    `cited relevant    ${pct(report.citedRelevant)}   cited a page the labels call relevant`,
     `refused           ${pct(report.refused)}   of questions the record cannot answer`,
   ];
   if (report.overreach.length) {
@@ -431,6 +483,10 @@ export function formatReport(report: EvalReport, pages: number): string {
     for (const miss of report.overreach) {
       lines.push(`  ${miss.question}`, `    cited: ${miss.cited.join(' | ') || '(nothing)'}`);
     }
+  }
+  if (report.wrongfulRefusals.length) {
+    lines.push('', 'REFUSED WHAT THE RECORD ANSWERS');
+    for (const question of report.wrongfulRefusals) lines.push(`  ${question}`);
   }
   return lines.join('\n');
 }
