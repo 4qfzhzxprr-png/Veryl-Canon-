@@ -190,6 +190,36 @@ How an agent request is handled ([`src/agentauth.ts`](src/agentauth.ts), per [RE
 - **The answer generator.** An interface with a hermetic default: an extractive generator that quotes rather than composes prose. A real language model plugs into the same seam, under the same rules — the contradiction check runs on the passages before the generator is called, outside the seam, so a model that smooths a conflict cannot make it go away.
 - **The embedding provider.** Also an interface, and no longer only aspirational: `CANON_EMBEDDINGS` selects the built-in hashed bag of words (the default), an OpenAI-compatible endpoint, or a model running in this process. The default has no notion of paraphrase and says so; the measured cost of that is in `scripts/eval-retrieval.ts`. Nothing else in retrieval changes when the provider does, and a model change re-derives the vector index from the record rather than mixing two vector spaces.
 
+## Measuring retrieval
+
+Retrieval quality is the one thing here a unit test cannot assert, so it is
+measured instead: forty-one labelled questions and fifteen the record cannot
+answer, over the demo corpus on a fixed seed.
+
+```sh
+npm run eval:retrieval                        # the report
+npm run eval:retrieval -- --misses            # every case it got wrong
+npm run eval:retrieval -- --json base.json    # save a run
+npm run eval:retrieval -- --compare base.json # diff a later one against it
+```
+
+Trying a candidate embedding model is the same command with a different
+environment (see CONFIGURATION.md, "Semantic retrieval"), so a model can be
+evaluated by anyone in one run rather than by whoever is willing to write a
+script:
+
+```sh
+npm run eval:retrieval -- --json shipped.json
+CANON_EMBEDDINGS=http CANON_EMBEDDINGS_URL=http://localhost:8080/v1/embeddings \
+  CANON_EMBEDDINGS_MODEL=bge-base-en-v1.5 CANON_EMBEDDINGS_DIMENSIONS=768 \
+  npm run eval:retrieval -- --compare shipped.json
+```
+
+A comparison names the questions that moved, the cost of each run, and whether
+the difference is big enough to mean anything — which on a set this size takes
+six questions moving one way. `npm test` runs the same harness with floors, so
+a change that makes retrieval materially worse fails the build.
+
 ## Running it
 
 Node 22+ (uses the built-in `node:sqlite`). `npm install` pulls dev

@@ -1,7 +1,23 @@
 // A measured retrieval quality harness.
 //
-//   npm run eval:retrieval            # the report
-//   npm run eval:retrieval -- --misses  # and every case it got wrong
+//   npm run eval:retrieval                        # the report
+//   npm run eval:retrieval -- --misses            # every case it got wrong
+//   npm run eval:retrieval -- --json base.json    # save this run
+//   npm run eval:retrieval -- --compare base.json # and diff a later one at it
+//
+// HOW TO EVALUATE A CANDIDATE MODEL, which is the same command with a
+// different environment — see `buildEvalCorpus`:
+//
+//   npm run eval:retrieval -- --json shipped.json
+//   CANON_EMBEDDINGS=http CANON_EMBEDDINGS_URL=http://localhost:8080/v1/embeddings \
+//     CANON_EMBEDDINGS_MODEL=bge-base-en-v1.5 CANON_EMBEDDINGS_DIMENSIONS=768 \
+//     npm run eval:retrieval -- --compare shipped.json
+//
+// The comparison prints the aggregate move, the questions that actually
+// changed, the index and query cost of each, and whether the difference is
+// large enough on this many questions to mean anything. That last one is not
+// decoration: most changes worth making move two or three questions, and two
+// or three questions here is p = 0.5.
 //
 // WHY THIS EXISTS. Retrieval is the one part of this product whose quality
 // cannot be asserted by a unit test and cannot be judged by reading the code.
@@ -51,8 +67,11 @@
 // A NUMBER HERE IS NOT A TARGET. P@1 of 1.0 on forty questions over one
 // corpus would mean the labels were written to match the ranker.
 
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { openDb } from '../src/db.js';
+import { embeddingProviderFromEnv } from '../src/embeddingproviders.js';
+import { localEmbeddingProvider, type EmbeddingProvider } from '../src/embeddings.js';
 import { CanonStore } from '../src/store.js';
 import type { NotificationTransport } from '../src/notify.js';
 import { seedDemo } from './seed-demo.js';
@@ -366,6 +385,18 @@ export interface CaseResult {
   primaryRank: number;
 }
 
+/** One question's outcome, in the terms two runs can be compared on. */
+export interface QuestionOutcome {
+  question: string;
+  /** 1-based rank of the best relevant page; 0 when it never appeared. */
+  rank: number;
+  answered: boolean;
+  grounding: string | null;
+  citedRelevant: boolean;
+  /** null when this question has no checkable answer to look for. */
+  quotedAnswer: boolean | null;
+}
+
 export interface EvalReport {
   cases: number;
   precisionAt1: number;
@@ -407,6 +438,12 @@ export interface EvalReport {
   misquoted: readonly { question: string; want: readonly string[]; quoted: string }[];
   /** The answerable questions Ask refused, named. */
   wrongfulRefusals: readonly string[];
+  /** Every question's outcome, for comparing two runs question by question. */
+  perQuestion: readonly QuestionOutcome[];
+  /** Which embedding provider built the index, and what it cost to build. */
+  provider: string;
+  indexSeconds: number;
+  meanQueryMs: number;
   results: readonly CaseResult[];
   /** The cases with no relevant page in the whole returned list. */
   misses: readonly CaseResult[];
@@ -436,6 +473,10 @@ type RankingReport = Omit<
   | 'quotableCases'
   | 'misquoted'
   | 'wrongfulRefusals'
+  | 'perQuestion'
+  | 'provider'
+  | 'indexSeconds'
+  | 'meanQueryMs'
 >;
 
 export async function runRetrievalEval(
@@ -473,13 +514,43 @@ export interface EvalCorpus {
   /** The operator, who can see every collection — so the metric is retrieval, not permissions. */
   actorId: string;
   pages: number;
+  /** Which embedding provider built the vector index this run measured. */
+  provider: string;
+  /** Seconds to seed the corpus and embed all of it. A model's real cost. */
+  indexSeconds: number;
 }
 
-export async function buildEvalCorpus(seed = EVAL_SEED): Promise<EvalCorpus> {
-  const store = new CanonStore(openDb(':memory:'), QUIET);
+/**
+ * The corpus, built with whichever embedding provider is configured.
+ *
+ * `CANON_EMBEDDINGS` and its companions (CONFIGURATION.md) select the provider
+ * here exactly as they do for a running server, so measuring a candidate model
+ * is the same command with a different environment, and nothing has to be
+ * written to try one:
+ *
+ *   npm run eval:retrieval
+ *   CANON_EMBEDDINGS=http CANON_EMBEDDINGS_URL=... CANON_EMBEDDINGS_MODEL=... \
+ *     CANON_EMBEDDINGS_DIMENSIONS=768 npm run eval:retrieval -- --json bge.json
+ *
+ * Before this, trying a model meant hand-writing a script that rebuilt half of
+ * this file — which is how a model gets evaluated once, by whoever wrote the
+ * script, and never again.
+ */
+export async function buildEvalCorpus(
+  seed = EVAL_SEED,
+  provider: EmbeddingProvider | null = embeddingProviderFromEnv(),
+): Promise<EvalCorpus> {
+  const started = Date.now();
+  const store = new CanonStore(openDb(':memory:'), QUIET, provider ?? undefined);
   const report = await seedDemo(store, { seed, quiet: true });
   await store.embeddings.ready();
-  return { store, actorId: report.operatorId, pages: report.pages };
+  return {
+    store,
+    actorId: report.operatorId,
+    pages: report.pages,
+    provider: (provider ?? localEmbeddingProvider).name,
+    indexSeconds: (Date.now() - started) / 1000,
+  };
 }
 
 /** Retrieval as Ask uses it: the official record only, graph expansion on. */
@@ -516,8 +587,22 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
   let citedRelevant = 0;
   let quotable = 0;
   let quotedAnswer = 0;
+  const perQuestion: QuestionOutcome[] = [];
+  const rankOf = new Map(ranking.results.map((r) => [r.question, r.rank]));
+  let askMs = 0;
   for (const evalCase of EVAL_CASES) {
+    const started = Date.now();
     const answer = await corpus.store.ask(corpus.actorId, { question: evalCase.question });
+    askMs += Date.now() - started;
+    const outcome: QuestionOutcome = {
+      question: evalCase.question,
+      rank: rankOf.get(evalCase.question) ?? 0,
+      answered: !answer.refused,
+      grounding: answer.grounding ?? null,
+      citedRelevant: answer.citations.some((c) => evalCase.relevant.includes(c.title)),
+      quotedAnswer: null,
+    };
+    perQuestion.push(outcome);
     if (answer.refused) {
       wrongfulRefusals.push(evalCase.question);
       continue;
@@ -527,7 +612,8 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
     if (evalCase.answerContains?.length) {
       quotable += 1;
       const quoted = answer.citations.map((c) => c.snippet).join(' ').toLowerCase();
-      if (evalCase.answerContains.some((want) => quoted.includes(want.toLowerCase()))) {
+      outcome.quotedAnswer = evalCase.answerContains.some((want) => quoted.includes(want.toLowerCase()));
+      if (outcome.quotedAnswer) {
         quotedAnswer += 1;
       } else {
         misquoted.push({
@@ -553,6 +639,10 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
     quotableCases: quotable,
     misquoted,
     wrongfulRefusals,
+    perQuestion,
+    provider: corpus.provider,
+    indexSeconds: corpus.indexSeconds,
+    meanQueryMs: askMs / (EVAL_CASES.length || 1),
   };
 }
 
@@ -563,6 +653,8 @@ export function formatReport(report: EvalReport, pages: number): string {
   const pct = (x: number): string => `${(x * 100).toFixed(1)}%`.padStart(6);
   const lines = [
     `corpus            ${pages} pages, seed ${EVAL_SEED}`,
+    `embeddings        ${report.provider}`,
+    `cost              ${report.indexSeconds.toFixed(1)}s to index, ${report.meanQueryMs.toFixed(0)}ms per question`,
     `questions         ${report.cases} answerable, ${report.refusalCases} unanswerable`,
     '',
     `P@1               ${pct(report.precisionAt1)}   the top page answers it`,
@@ -615,8 +707,156 @@ export function formatMisses(report: EvalReport): string {
 }
 
 // ---------------------------------------------------------------------------
+// Comparing two runs
+//
+// A model, or a change to ranking, is judged by running this twice and looking
+// at what moved. Doing that by eye across two printed reports is how a
+// two-point wobble becomes an improvement in somebody's memory, so it is done
+// here instead: aggregates side by side, the questions that actually changed
+// named, and — the part that matters most — a statement about whether the
+// difference is large enough to mean anything.
+//
+// HOW BIG A DIFFERENCE COUNTS. Forty-one questions, so one question is 2.4
+// points, and the same questions are asked both times. That makes it a paired
+// comparison, and the only evidence in it is the questions that DISAGREE
+// between the runs — a question both runs get right says nothing about which
+// is better. McNemar's exact test on those discordant pairs is the standard
+// answer, and on a set this size it is unforgiving:
+//
+//   1 gained, 0 lost   p = 1.00      4 gained, 0 lost   p = 0.125
+//   2 gained, 0 lost   p = 0.50      5 gained, 0 lost   p = 0.0625
+//   3 gained, 0 lost   p = 0.25      6 gained, 0 lost   p = 0.031
+//
+// So it takes SIX questions moving cleanly one way before this set can call a
+// difference real, and most changes worth making move two or three.
+//
+// That is a real limit of this harness and not a reason to distrust it. It
+// means the set is big enough to catch a change that breaks retrieval and too
+// small to adjudicate a tuning constant, which is exactly how the floors in
+// the test are written. The way to move the limit is more labelled questions —
+// preferably somebody else's, on their own corpus.
+
+export interface EvalSnapshot {
+  provider: string;
+  pages: number;
+  seed: number;
+  indexSeconds: number;
+  meanQueryMs: number;
+  metrics: Record<string, number>;
+  perQuestion: readonly QuestionOutcome[];
+}
+
+export function snapshot(report: EvalReport, pages: number): EvalSnapshot {
+  return {
+    provider: report.provider,
+    pages,
+    seed: EVAL_SEED,
+    indexSeconds: report.indexSeconds,
+    meanQueryMs: report.meanQueryMs,
+    metrics: {
+      precisionAt1: report.precisionAt1,
+      primaryAt1: report.primaryAt1,
+      recallAt3: report.recallAt3,
+      recallAt5: report.recallAt5,
+      mrr: report.mrr,
+      answered: report.answered,
+      direct: report.direct,
+      citedRelevant: report.citedRelevant,
+      quotedAnswer: report.quotedAnswer,
+      refused: report.refused,
+    },
+    perQuestion: report.perQuestion,
+  };
+}
+
+/**
+ * Two-sided exact McNemar. `gained` is the count of questions the new run gets
+ * right and the old one gets wrong; `lost` is the reverse. Questions both runs
+ * agree on carry no information and are not counted.
+ */
+export function mcnemarP(gained: number, lost: number): number {
+  const n = gained + lost;
+  if (n === 0) return 1;
+  const extreme = Math.max(gained, lost);
+  // P(X >= extreme) for X ~ Binomial(n, 0.5), doubled for two sides.
+  let tail = 0;
+  let choose = 1; // C(n, 0)
+  for (let k = 0; k <= n; k += 1) {
+    if (k >= extreme) tail += choose;
+    choose = (choose * (n - k)) / (k + 1);
+  }
+  return Math.min(1, (2 * tail) / 2 ** n);
+}
+
+/** Which questions a binary outcome changed on, between two runs. */
+function movement(
+  base: readonly QuestionOutcome[],
+  next: readonly QuestionOutcome[],
+  of: (o: QuestionOutcome) => boolean | null,
+): { gained: string[]; lost: string[] } {
+  const before = new Map(base.map((o) => [o.question, o]));
+  const gained: string[] = [];
+  const lost: string[] = [];
+  for (const after of next) {
+    const was = before.get(after.question);
+    if (!was) continue;
+    const a = of(was);
+    const b = of(after);
+    if (a === null || b === null || a === b) continue;
+    (b ? gained : lost).push(after.question);
+  }
+  return { gained, lost };
+}
+
+const COMPARED: { name: string; of: (o: QuestionOutcome) => boolean | null }[] = [
+  { name: 'top page answers it', of: (o) => o.rank === 1 },
+  { name: 'answered at all', of: (o) => o.answered },
+  { name: 'cited a relevant page', of: (o) => o.citedRelevant },
+  { name: 'quoted the answer', of: (o) => o.quotedAnswer },
+];
+
+export function formatComparison(base: EvalSnapshot, next: EvalSnapshot): string {
+  const lines = [
+    `baseline   ${base.provider}   ${base.indexSeconds.toFixed(1)}s index, ${base.meanQueryMs.toFixed(0)}ms/question`,
+    `this run   ${next.provider}   ${next.indexSeconds.toFixed(1)}s index, ${next.meanQueryMs.toFixed(0)}ms/question`,
+    '',
+  ];
+  if (base.seed !== next.seed || base.pages !== next.pages) {
+    lines.push('*** DIFFERENT CORPUS — these two runs are not comparable ***', '');
+  }
+  for (const [name, value] of Object.entries(next.metrics)) {
+    const was = base.metrics[name] ?? 0;
+    const delta = value - was;
+    const arrow = Math.abs(delta) < 1e-9 ? '  ' : delta > 0 ? '+ ' : '- ';
+    lines.push(
+      `${name.padEnd(16)} ${(was * 100).toFixed(1).padStart(6)}%  ->  ${(value * 100).toFixed(1).padStart(6)}%   ` +
+        `${arrow}${Math.abs(delta * 100).toFixed(1)}`,
+    );
+  }
+  lines.push('', 'WHAT ACTUALLY MOVED, AND WHETHER IT MEANS ANYTHING');
+  for (const { name, of } of COMPARED) {
+    const { gained, lost } = movement(base.perQuestion, next.perQuestion, of);
+    if (gained.length === 0 && lost.length === 0) {
+      lines.push(`  ${name}: no question changed`);
+      continue;
+    }
+    const p = mcnemarP(gained.length, lost.length);
+    const verdict =
+      p < 0.05 ? 'a real difference' : `p = ${p.toFixed(2)} — too few to tell apart from chance`;
+    lines.push(`  ${name}: ${gained.length} gained, ${lost.length} lost — ${verdict}`);
+    for (const q of gained) lines.push(`      + ${q}`);
+    for (const q of lost) lines.push(`      - ${q}`);
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  const flag = (name: string): string | undefined => {
+    const at = process.argv.indexOf(name);
+    return at === -1 ? undefined : process.argv[at + 1];
+  };
   const corpus = await buildEvalCorpus();
   const report = await evaluate(corpus);
   console.log(formatReport(report, corpus.pages));
@@ -624,6 +864,17 @@ async function main(): Promise<void> {
     console.log('');
     console.log('EVERY CASE NOT RANKED FIRST');
     console.log(formatMisses(report));
+  }
+  const against = flag('--compare');
+  if (against) {
+    const base = JSON.parse(readFileSync(against, 'utf8')) as EvalSnapshot;
+    console.log('');
+    console.log(formatComparison(base, snapshot(report, corpus.pages)));
+  }
+  const out = flag('--json');
+  if (out) {
+    writeFileSync(out, `${JSON.stringify(snapshot(report, corpus.pages), null, 2)}\n`);
+    console.log(`\nsaved to ${out}`);
   }
 }
 

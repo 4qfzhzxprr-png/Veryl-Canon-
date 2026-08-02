@@ -9,7 +9,25 @@ import {
   formatReport,
   runRetrievalEval,
   askRetriever,
+  formatComparison,
+  mcnemarP,
+  EVAL_SEED,
+  type EvalSnapshot,
+  type QuestionOutcome,
 } from '../scripts/eval-retrieval.js';
+
+/** A snapshot with only the fields a comparison reads, so a case stays legible. */
+function snapshotOf(perQuestion: QuestionOutcome[]): EvalSnapshot {
+  return {
+    provider: 'test',
+    pages: 290,
+    seed: EVAL_SEED,
+    indexSeconds: 0,
+    meanQueryMs: 0,
+    metrics: { answered: perQuestion.filter((o) => o.answered).length / (perQuestion.length || 1) },
+    perQuestion,
+  };
+}
 
 // The retrieval quality harness (scripts/eval-retrieval.ts, `npm run
 // eval:retrieval`).
@@ -175,4 +193,54 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
     report.overreach.length <= 2,
     `too much reaching for the nearest page on questions the record cannot answer${summary}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Comparing two runs
+//
+// The same argument as the metrics above: a significance test that is quietly
+// wrong is worse than none, because it would put a number of authority on
+// whatever the bug says. These are the exact binomial tails and can be checked
+// by hand.
+
+test('eval: the significance test is the exact binomial tail', () => {
+  assert.equal(mcnemarP(0, 0), 1, 'nothing moved, so nothing is known');
+  assert.equal(mcnemarP(1, 0), 1);
+  assert.equal(mcnemarP(2, 0), 0.5);
+  assert.equal(mcnemarP(3, 0), 0.25);
+  assert.equal(mcnemarP(4, 0), 0.125);
+  assert.equal(mcnemarP(5, 0), 0.0625, 'five clean gains is still p > 0.05');
+  assert.equal(mcnemarP(6, 0), 0.03125, 'six is the first that clears it');
+  assert.equal(mcnemarP(0, 6), 0.03125, 'and it is two-sided');
+  assert.equal(mcnemarP(2, 2), 1, 'questions that moved both ways cancel');
+
+  // The thing this exists to stop: reading a two-question move as progress.
+  assert.ok(mcnemarP(2, 0) > 0.05, 'two questions on a set this size is not evidence');
+});
+
+test('eval: a comparison names the questions that moved and only those', () => {
+  const outcome = (question: string, answered: boolean): QuestionOutcome => ({
+    question,
+    rank: 1,
+    answered,
+    grounding: answered ? 'direct' : null,
+    citedRelevant: answered,
+    quotedAnswer: null,
+  });
+  const base = snapshotOf([outcome('a', true), outcome('b', false), outcome('c', true)]);
+  const next = snapshotOf([outcome('a', true), outcome('b', true), outcome('c', false)]);
+
+  const text = formatComparison(base, next);
+  assert.match(text, /answered at all: 1 gained, 1 lost/);
+  assert.ok(text.includes('+ b'), 'the question that started being answered is named');
+  assert.ok(text.includes('- c'), 'and so is the one that stopped');
+  assert.ok(!text.includes('+ a') && !text.includes('- a'), 'a question that did not move is not named');
+  // Questions with nothing to check are not counted as agreeing or disagreeing.
+  assert.match(text, /quoted the answer: no question changed/);
+});
+
+test('eval: comparing runs over different corpora says so rather than subtracting them', () => {
+  const one = snapshotOf([]);
+  const other = { ...snapshotOf([]), pages: 12 };
+  assert.match(formatComparison(one, other), /DIFFERENT CORPUS/);
 });
