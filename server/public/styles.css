@@ -2148,3 +2148,9 @@ label.check input { width: auto; display: inline; margin: 0; }
   .map-scope select { max-width: 100%; }
   .map-legend-grid { gap: 0.7rem 1rem; }
 }
+
+/* The stated basis for a backdated effective date, shown wherever the date is
+   (USER-TESTING.md, second round). Quiet, because it is provenance rather than
+   the value — but present, because collecting it and hiding it is worse than
+   not collecting it. */
+.field-basis { margin-top: 0.2rem; font-size: 0.86rem; line-height: 1.45; }

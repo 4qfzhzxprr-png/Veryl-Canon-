@@ -162,6 +162,13 @@ export interface Collection {
   restricted: boolean; // restricted collections log page views to the audit log
   createdAt: string;
   archivedAt: string | null;
+  /**
+   * How many of this collection's pages are archived, and therefore absent
+   * from the tree. Carried so the contents listing can reconcile itself with
+   * the attestation register, which counts them: the two differ by exactly
+   * this, and a reader should not have to guess that.
+   */
+  archivedPages?: number;
 }
 
 export interface Page {

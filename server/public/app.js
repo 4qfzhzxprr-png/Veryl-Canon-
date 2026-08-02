@@ -1729,15 +1729,24 @@ function collectionContentsHTML(tree) {
         <td class="nowrap">${esc(TYPE_LABELS[n.type] ?? n.type)}</td>
         <td class="nowrap">${badge(n.status, 'sm')}</td>
         <td>${n.ownerId ? actorLabel(n.ownerId) : '<span class="muted">—</span>'}</td>
+        ${/* For a page In Review this is the approver the server will accept —
+              the draft's, the same one the queue is built on — so a queue can
+              be checked against this table rather than by opening every page.
+              For anything else it is who approved what is published. */ ''}
+        <td>${
+          n.status === 'in_review'
+            ? (n.pendingApproverId ? `${actorLabel(n.pendingApproverId)} <span class="muted">· waiting</span>` : '<span class="muted">any approver</span>')
+            : n.approverId ? actorLabel(n.approverId) : '<span class="muted">—</span>'
+        }</td>
         <td class="nowrap">${review}</td>
       </tr>`;
   });
-  // Five columns, so on a narrow screen it scrolls inside its own container
+  // Six columns, so on a narrow screen it scrolls inside its own container
   // rather than pushing the page sideways and taking the status key with it.
   return `
     <div class="table-scroll">
       <table class="table docs-table">
-        <thead><tr><th>Page</th><th>Type</th><th>Status</th><th>Owner</th><th>Review due</th></tr></thead>
+        <thead><tr><th>Page</th><th>Type</th><th>Status</th><th>Owner</th><th>Approver</th><th>Review due</th></tr></thead>
         <tbody>${rows.join('')}</tbody>
       </table>
     </div>`;
@@ -1753,11 +1762,27 @@ async function viewCollection(id) {
   const flat = flattenTree(tree);
   const counts = new Map();
   for (const n of flat) counts.set(n.status, (counts.get(n.status) ?? 0) + 1);
+  // Archived pages leave the tree, so they are absent from `flat` and must be
+  // counted from the collection itself or the difference stays invisible.
+  if (typeof collection.archivedPages === 'number' && collection.archivedPages > 0) {
+    counts.set('archived', collection.archivedPages);
+  }
   const present = new Set(counts.keys());
+  // The tally lists the four live statuses and the tree omits archived pages,
+  // so this count and the attestation register's count are about different
+  // populations — 82 against 85 in the corpus a compliance director
+  // cross-footed. Neither is wrong and neither said so: "I'd guess archived
+  // pages, but I'm guessing, and I don't sign things I'm guessing about."
+  // Two numbers on an examiner's desk that do not tie, with nothing to explain
+  // the difference, is a finding whatever the explanation turns out to be.
+  const archived = counts.get('archived') ?? 0;
   const tally = ['canonical', 'needs_update', 'in_review', 'draft']
     .filter((s) => counts.has(s))
     .map((s) => `${counts.get(s)} ${STATUS_LABELS[s]}`)
-    .join(' · ');
+    .join(' · ')
+    + (archived
+      ? ` · ${archived} archived, not listed below (the attestation register counts ${flat.length + archived} including them)`
+      : '');
 
   app.innerHTML = `
     <div class="layout">
@@ -1958,6 +1983,15 @@ const REVIEW_FIELDS = [
   { key: 'ownerId', label: 'Owner', render: (v) => (v == null ? '<span class="muted">none</span>' : actorLabel(v)) },
   { key: 'approverId', label: 'Approver', render: (v) => (v == null ? '<span class="muted">none</span>' : actorLabel(v)) },
   { key: 'effectiveDate', label: 'Effective date', render: (v) => esc(fmtDate(v)) },
+  // The approver is deciding on the date AND on the reason given for it. A
+  // backdated date is only supportable because somebody stated where it came
+  // from, so a change to that statement is a change to the evidence and belongs
+  // in front of whoever is about to put their name to it.
+  {
+    key: 'effectiveDateBasis',
+    label: 'Basis for the effective date',
+    render: (v) => (v == null || v === '' ? '<span class="muted">none stated</span>' : esc(v)),
+  },
   { key: 'reviewDate', label: 'Review date', render: (v) => esc(fmtDate(v)) },
 ];
 
@@ -2238,7 +2272,18 @@ async function viewPage(id) {
           <div><dt>Status</dt><dd>${badge(page.status)}</dd></div>
           ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${pendingFieldCell(page.ownerId, pendingOf('ownerId'), actorLabel, hasPublished)}</dd></div>` : ''}
           ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${pendingFieldCell(page.approverId, pendingOf('approverId'), actorLabel, hasPublished)}</dd></div>` : ''}
-          ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${pendingFieldCell(page.effectiveDate, pendingOf('effectiveDate'), fmtDate, hasPublished)}</dd></div>` : ''}
+          ${/* The basis is shown wherever the date is. The editor makes an
+                author state where a backdated effective date comes from, and
+                then nobody downstream saw it: a compliance director wrote a
+                paragraph of a send-back demanding an answer the record already
+                held and was not showing him. Collecting evidence and hiding it
+                is worse than not collecting it. */ ''}
+          ${rules.effectiveDate ? `<div><dt>Effective date</dt><dd>${pendingFieldCell(page.effectiveDate, pendingOf('effectiveDate'), fmtDate, hasPublished)}${
+            page.effectiveDateBasis
+              ? `<div class="field-basis"><span class="muted">Stated basis:</span> ${esc(page.effectiveDateBasis)}
+                   <span class="muted">— Canon records this and cannot verify it.</span></div>`
+              : ''
+          }</dd></div>` : ''}
           ${/* Past review is read from the DATE, not from the status: a page whose
                 review date passed since the last sweep is already stale, and saying
                 so here is what makes the warning true in the window before the
@@ -3799,7 +3844,11 @@ async function viewVersion(id, n) {
         <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
         ${version.fields.ownerId ? `<div><dt>Owner</dt><dd>${actorLabel(version.fields.ownerId)}</dd></div>` : ''}
         ${version.fields.approverId ? `<div><dt>Approver</dt><dd>${actorLabel(version.fields.approverId)}</dd></div>` : ''}
-        ${version.fields.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(version.fields.effectiveDate)}</dd></div>` : ''}
+        ${version.fields.effectiveDate ? `<div><dt>Effective date</dt><dd>${fmtDate(version.fields.effectiveDate)}${
+          version.fields.effectiveDateBasis
+            ? `<div class="field-basis"><span class="muted">Stated basis:</span> ${esc(version.fields.effectiveDateBasis)}</div>`
+            : ''
+        }</dd></div>` : ''}
         ${version.fields.reviewDate ? `<div><dt>Review date</dt><dd>${fmtDate(version.fields.reviewDate)}</dd></div>` : ''}
         ${version.note ? `<div><dt>Version note</dt><dd>${esc(version.note)}</dd></div>` : ''}
       </dl>

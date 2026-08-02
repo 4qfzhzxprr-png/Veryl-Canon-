@@ -78,6 +78,12 @@ import {
 
 export interface TreeNode extends Page {
   children: TreeNode[];
+  /**
+   * Who `approve` will accept while this page is In Review — the DRAFT's
+   * approver, not `Page.approverId`, which is the approver of the published
+   * version. Null on every page that is not in review. See `tree`.
+   */
+  pendingApproverId?: string | null;
 }
 
 /**
@@ -522,6 +528,17 @@ export class CanonStore {
       | undefined;
     if (!row) throw new CanonError('not_found', `No such collection: ${id}`);
     this.requireRole(actorId, id, 'view');
+    // How many pages have left the tree. The contents listing is built from the
+    // tree and archived pages are not in it, while the attestation register
+    // counts every page the collection holds — so the two totals differ by
+    // exactly this number, and until it was carried neither screen could say
+    // why. Two totals on an examiner's desk that do not tie are a finding
+    // whatever the explanation.
+    const archivedPages = (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM pages WHERE collection_id = ? AND status = 'archived'")
+        .get(id) as { n: number }
+    ).n;
     return {
       id: row.id as string,
       name: row.name as string,
@@ -529,6 +546,7 @@ export class CanonStore {
       restricted: (row.restricted as number) === 1,
       createdAt: row.created_at as string,
       archivedAt: (row.archived_at as string) ?? null,
+      archivedPages,
     };
   }
 
@@ -633,11 +651,35 @@ export class CanonStore {
 
   tree(actorId: string, collectionId: string): TreeNode[] {
     this.requireRole(actorId, collectionId, 'view');
+    // The pending approver rides along for pages In Review. A compliance
+    // director could see his queue but not check it: to prove his sixteen items
+    // were all and only his, he would have had to open all twenty-four
+    // in-review pages across five collections — the walk the queue exists to
+    // end. One column makes the queue cross-footable in thirty seconds.
+    //
+    // It is read from the DRAFT, like `reviewState` and like `approve` itself.
+    // `pages.approver_id` is the approver of the PUBLISHED version and answers
+    // a different question; a column built on it would put the T1.3 defect back
+    // into a new surface, and look right doing it.
     const rows = this.db
-      .prepare("SELECT * FROM pages WHERE collection_id = ? AND status != 'archived' ORDER BY position")
+      .prepare(
+        `SELECT p.*,
+                CASE WHEN p.status = 'in_review'
+                     THEN json_extract(d.fields_json, '$.approverId') END AS pending_approver_id
+           FROM pages p
+           LEFT JOIN drafts d ON d.page_id = p.id
+          WHERE p.collection_id = ? AND p.status != 'archived'
+          ORDER BY p.position`,
+      )
       .all(collectionId) as Record<string, unknown>[];
     const nodes = new Map<string, TreeNode>();
-    for (const row of rows) nodes.set(row.id as string, { ...this.toPage(row), children: [] });
+    for (const row of rows) {
+      nodes.set(row.id as string, {
+        ...this.toPage(row),
+        pendingApproverId: (row.pending_approver_id as string) ?? null,
+        children: [],
+      });
+    }
     const roots: TreeNode[] = [];
     for (const node of nodes.values()) {
       const parent = node.parentId ? nodes.get(node.parentId) : undefined;
