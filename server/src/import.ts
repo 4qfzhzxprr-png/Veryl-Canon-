@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { forbiddenRole } from './abilities.js';
 import {
   Actor,
   CanonError,
@@ -1041,11 +1042,9 @@ export class ImportService {
   private requireRole(actorId: string, collectionId: string, needed: Role): void {
     const role = this.host.roleOf(actorId, collectionId);
     if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
-      throw new CanonError('forbidden', `Requires ${needed} access to this collection`, {
-        collectionId,
-        needed,
-        held: role,
-      });
+      // One sentence, built in abilities.ts, and the same one the screen shows
+      // before the click (USER-TESTING.md T4.4, second round).
+      throw forbiddenRole(this.db, collectionId, role, needed);
     }
   }
 

@@ -43,6 +43,123 @@ test('permissions: a non-member cannot see or write to a collection', () => {
   assert.equal(store.listCollections(outsider.id).length, 0);
 });
 
+// USER-TESTING.md T4.4, second round: the Members screen was the last one in
+// the product offering a control it would refuse — a fully enabled Remove
+// beside every colleague, for somebody holding `edit`, answered by a
+// three-second toast in the far corner. These are what it draws its buttons
+// from, and the property that keeps them honest.
+test('abilities: a collection says who may administer its membership, and who can instead', () => {
+  const { store, dana, marc, collection } = setup();
+
+  const hers = store.collectionAbilities(dana.id, collection.id);
+  assert.equal(hers.role, 'admin');
+  assert.equal(hers.addMember.can, true);
+  assert.equal(hers.removeMember.can, true);
+  assert.equal(hers.createPage.can, true);
+
+  const his = store.collectionAbilities(marc.id, collection.id);
+  assert.equal(his.role, 'edit');
+  assert.equal(his.createPage.can, true, 'edit is what creating a page takes');
+  assert.equal(his.removeMember.can, false);
+  // The three parts of the one sentence: what the act needs, what he holds,
+  // and somebody to ask.
+  assert.match(his.removeMember.why!, /Removing a member needs the admin role on Compliance/);
+  assert.match(his.removeMember.why!, /you hold edit there/);
+  assert.match(his.removeMember.why!, /Dana holds it\.$/);
+  assert.match(his.addMember.why!, /Adding a member needs the admin role on Compliance/);
+
+  // And it is a mirror: what it reports as refused, the server refuses.
+  const refused = expectCode(() => store.removeMember(marc.id, collection.id, dana.id), 'forbidden');
+  assert.equal(refused.message, his.removeMember.why);
+});
+
+test('abilities: an administrator of the Canon may administer a membership, and is told so', () => {
+  const { store, dana, collection } = setup();
+  // The break-glass path for a collection whose last admin left (store.ts,
+  // `requirePermissionAdmin`). A mirror that missed it would tell an
+  // administrator they cannot do a thing the server accepts from them.
+  const ade = store.createActor({ kind: 'person', name: 'Ade', email: 'ade@example.com' });
+  store.setMember(dana.id, collection.id, ade.id, 'view');
+  assert.equal(store.collectionAbilities(ade.id, collection.id).addMember.can, false);
+  store.bootstrapAdministrator(ade.id);
+  const now = store.collectionAbilities(ade.id, collection.id);
+  assert.equal(now.role, 'view');
+  assert.equal(now.addMember.can, true);
+  assert.equal(now.removeMember.can, true);
+});
+
+test('abilities: reading a collection’s abilities needs `view`, like the collection itself', () => {
+  const { store, collection } = setup();
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+  expectCode(() => store.collectionAbilities(outsider.id, collection.id), 'forbidden');
+});
+
+test('a refusal names who can only to somebody who could already have looked', () => {
+  const { store, marc, collection } = setup();
+  // A member is told the names: anyone holding `view` can read the membership
+  // table and every comment on every page in it, so this gives nothing away.
+  assert.match(store.collectionAbilities(marc.id, collection.id).removeMember.why!, /Dana holds it/);
+
+  // A non-member is told where to go instead. The same sentence with names in
+  // it would be a restricted collection's staff list, handed out by a 403.
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+  const refused = expectCode(() => store.getCollection(outsider.id, collection.id), 'forbidden');
+  assert.match(refused.message, /This needs the view role on Compliance; you hold none there\./);
+  assert.match(refused.message, /An administrator of this collection can grant it\.$/);
+  assert.ok(!refused.message.includes('Dana'), 'a non-member is told nobody’s name');
+});
+
+// USER-TESTING.md, second round: "A new page is created with no owner, and
+// nothing prompts for one. Nine pages in one seeded collection show — for
+// Owner."
+test('a page is owned from the moment it is created, by its creator unless told otherwise', () => {
+  const { store, dana, marc, collection } = setup();
+
+  const mine = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Retention' });
+  assert.equal(mine.ownerId, marc.id);
+
+  // Named at creation, which is what the New page dialog does when the creator
+  // knows the page belongs to somebody else.
+  const hers = store.createPage(marc.id, {
+    collectionId: collection.id,
+    type: 'spec',
+    title: 'Vault spec',
+    ownerId: dana.id,
+  });
+  assert.equal(hers.ownerId, dana.id);
+
+  // A Note has no owner field, so it is given none rather than one it would
+  // silently lose at its first publish.
+  const note = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Scratch' });
+  assert.equal(note.ownerId, null);
+
+  // Unowned stays possible, but only by saying so.
+  const unowned = store.createPage(marc.id, {
+    collectionId: collection.id,
+    type: 'plan',
+    title: 'Q4 plan',
+    ownerId: null,
+  });
+  assert.equal(unowned.ownerId, null);
+
+  // An owner Canon cannot name is not an owner.
+  expectCode(
+    () => store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Q1', ownerId: 'nobody' }),
+    'not_found',
+  );
+
+  // And the draft inherits it, so the editor opens on it and a publish keeps
+  // it — the owner is set once and travels.
+  const draft = store.editDraft(marc.id, mine.id, { body: 'Six years.' });
+  assert.equal(draft.fields.ownerId, marc.id);
+
+  // On the record, even when it is the default: "who was this page born
+  // accountable to" is what an auditor asks of a page whose owner has since
+  // changed twice.
+  const created = store.queryAudit(dana.id, { action: 'page.create' }).find((e) => e.pageId === mine.id)!;
+  assert.equal(created.details.ownerId, marc.id);
+});
+
 test('agents require a Registry reference; Canon stores no credentials of its own', () => {
   const { store } = setup();
   expectCode(() => store.createActor({ kind: 'agent', name: 'Helper' }), 'invalid');
@@ -212,12 +329,18 @@ test('review: a brand-new page names its owner, approver and dates the moment it
   });
   store.submitForReview(marc.id, page.id);
 
-  // Nothing has published, so the page row is empty of all four. That is what
-  // rendered "In review. Waiting on the named approver, —" with owner,
-  // approver and both dates blank on every author's first submission.
+  // Nothing has published, so the page row is empty of the three fields a
+  // version publishes. That is what rendered "In review. Waiting on the named
+  // approver, —" with owner, approver and both dates blank on every author's
+  // first submission.
+  //
+  // The OWNER is the exception, and deliberately: a page is owned from the
+  // moment it is created (see `createPage`), because an unowned page is never a
+  // fact about the record — only a gap the product left. Marc created this one
+  // and named nobody else, so it is his.
   const row = store.getPage(marc.id, page.id);
   assert.equal(row.currentVersion, null);
-  assert.equal(row.ownerId, null);
+  assert.equal(row.ownerId, marc.id);
   assert.equal(row.approverId, null);
   assert.equal(row.effectiveDate, null);
 

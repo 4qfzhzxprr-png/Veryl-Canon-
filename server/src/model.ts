@@ -287,6 +287,13 @@ export interface PageAbilities {
   sendBack: PageAbility;
   withdraw: PageAbility;
   archive: PageAbility;
+  /**
+   * Asserting a conflict or a supersession, for THIS end of it. A relation
+   * needs `edit` on both pages' collections; the other end's answer comes from
+   * that collection's own abilities and is written by the same function, so the
+   * two halves of one refusal cannot drift apart.
+   */
+  assertRelation: PageAbility;
 }
 
 export interface AuditEvent {

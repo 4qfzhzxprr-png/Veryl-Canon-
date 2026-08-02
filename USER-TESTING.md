@@ -57,10 +57,13 @@ been quietly lying to me about both for years."*
 
 ## Where this stands
 
-All twenty-five findings have been worked. Twenty-three were fixed; one
-(**T3.6**) was answered by design once the answer was documented, and one
-(**T4.4**) is fixed apart from two named controls. Each entry below carries what
-was done and, where something was deliberately left, what and why.
+All twenty-five findings have been worked. Twenty-four were fixed; one
+(**T3.6**) was answered by design once the answer was documented. **T4.4** —
+"every action is offered and then refused" — is now closed everywhere, including
+the New page control and Delete on a source that were named as outstanding; what
+a second round of testing found about it, and what was done, is at the end of
+this file under *The second round: two ways of saying no*. Each entry below
+carries what was done and, where something was deliberately left, what and why.
 
 Three of them turned out to be worse than reported once someone looked:
 **T1.1** was wrong by construction rather than intermittently, and the same
@@ -535,8 +538,11 @@ it"). Every action on the page view and the comment box is drawn from it:
 greyed, with the reason on the button and repeated as text, because a `title`
 is invisible to a keyboard and to a phone. It is a MIRROR of the checks and
 never one of them — a test walks every actor over pages in three states and
-fails if anything reported as refused is in fact accepted. Still outstanding:
-**New page** in the sidebar, and **Delete** on a source.
+fails if anything reported as refused is in fact accepted. **Now closed in
+full**, including the two controls that were outstanding here — **New page** in
+the sidebar, and **Delete** on a source — along with the Members screen, the
+relation dialog, and the second vocabulary the server itself was still speaking.
+See *The second round: two ways of saying no* at the end of this file.
 
 **T4.5 · An author cannot retract their own submission.** *(Priya bug D.)*
 Send back is offered and refused, the editor is locked, approve is refused. The
@@ -659,7 +665,13 @@ they do — `sourceId` beside `sourceName`, and a relation's stored pair beside
 its asserted pair, which differ only for a symmetric relation and are worth the
 row space only then.
 
-## The second round: where a fact is, not whether it is there
+## The second round
+
+The same three testers were given the fixed product and asked to do the job
+again. All three verdicts moved — the contributor from "not yet" to "I would
+use this", the compliance director to putting his name on a decision the
+product walked him through, and the auditor from a qualified opinion to a
+substantially clean one. What they found next is below.
 
 The same compliance director and the same new contributor were given the fixed
 product and asked to do the job again. Both now rate it well, and what they
@@ -747,6 +759,101 @@ now; a taller tree scrolls with the page, whole. And the version-history table,
 found while measuring, pushed a 420px page 121 pixels sideways: it is in its own
 scroll container, like the collection's contents table, because nothing in this
 product may scroll horizontally.
+
+A second round of testing found the product had grown **two vocabularies for
+refusal**, and that the good one was not the one that turned up when it
+mattered. The good one, from the `abilities` work above, names the caller and
+names who can act:
+
+> *"Editing needs the edit role on this collection; you hold view. Bo Ferrante,
+> Dana Whitfield, Joel Brennan and 2 others hold it."*
+
+The old one was a small red toast in the bottom-right corner, behind a dimmed
+modal backdrop, gone in about three seconds:
+
+> *"Requires edit access to this collection."*
+
+The contributor's words: *"They read like two different products, and the second
+one turns up at exactly the moments that matter most."* **All of it is fixed.**
+
+**One vocabulary, and one place it is written.** `src/abilities.ts` holds the
+sentence and nothing else: who holds a role here, who holds an org role, and the
+whole refusal for an act that needs one. The rules did not move — they are still
+beside the check each one mirrors — but the words are now built once. The
+sentence **names its collection** rather than saying "this collection", because
+a refusal that has to travel has to name the thing it is about. And the second
+vocabulary is gone from the server too: `requireRole` was written out eight
+times across `store`, `sources`, `references`, `relations`, `comments`,
+`proposals`, `queries` and `import`, and every one of them threw the same seven
+words. All eight now throw the sentence `abilities.ts` builds, so the refusal a
+screen SHOWS and the refusal a request GETS are one sentence. Who-can is said
+only to somebody holding a role in that collection — a member can already read
+the membership, while to a non-member the same sentence would be a restricted
+collection's staff list handed out by a 403; they are told where to go instead.
+
+**Members.** The last screen in the product offering a control it would refuse,
+and the one where a wrong click would be most alarming: holding only `edit`,
+every **Remove** beside every colleague was fully enabled and the Add member
+form was live. Both are now drawn from `collection.abilities` — a mirror of
+`requirePermissionAdmin`, including the org-administrator break-glass path,
+because a mirror that missed it would tell an administrator they cannot do a
+thing the server accepts from them.
+
+**Sources.** Each row carries what the asking actor may do to it, and `GET
+/sources/new` answers for the one control that exists before a source does. The
+red **Delete** is refused with the reference count as well as the role, because
+a source with pages pointing at it is refused whoever asks. The scope picker
+marks collections the caller does not administer, where the choice is made
+rather than after the Save.
+
+**The cross-collection conflict**, which mattered most, because the one real
+contradiction in the seeded record is cross-collection and cross-boundary is
+where contradictions come from. She picked a page in another collection, wrote
+the note, pressed the solid green **Assert it** — and nothing happened. *"Which
+collection? The one I'm on, where I hold edit? Or the one I'm pointing at? It
+doesn't say, and it names nobody to ask."* Asserting needs `edit` on BOTH pages'
+collections, so the dialog now asks the server about both: the picker marks
+pages the caller cannot assert against, the way the approver picker lists only
+real approvers, and the mark carries the collection that refused, what they hold
+there, and who does hold it. Reproduced against a running server: *"Asserting a
+relation needs the edit role on Compliance; you hold view there. Dana Whitfield,
+Helena Vardy, Marc Oyelaran and 2 others hold it."*
+
+**A refusal after the click is readable.** An error toast waits to be dismissed
+instead of leaving after three seconds, and one raised inside a dialog is drawn
+**in the dialog** — *"if I had blinked, I would have gone home believing I had
+raised mine."*
+
+**The explanations stopped stacking.** *"Three or four of these and there's a
+paragraph of apology above the thing I opened the page to read."* One refusal is
+one line, as before. Two or more collapse to a single line and a **Why?** that
+opens them, and focusing, tapping or clicking any greyed control opens the list
+with that control's own reason lit. The reason is never only a `title`: a
+refused control is `aria-disabled` rather than `disabled` so it stays in the tab
+order and can be tapped, and its sentence is always in the document.
+
+**A new page is owned from the moment it exists.** It used to be created with no
+owner and nothing ever asked for one — nine pages in one seeded collection
+showed "—" under Owner, and the first anybody heard about it was Submit for
+review refusing the page days later on another screen. Decided **both** ways
+round, because they are not alternatives: the server defaults the owner to the
+creator, and the New page dialog asks, filled in with the creator. The default,
+because at that moment the creator is the only person Canon can honestly name as
+accountable, and an unowned page is never a fact about the record — only a gap
+the product left. The prompt, because a default nobody is shown is a default
+nobody corrects, and whoever creates a page very often knows it belongs to
+somebody else. Nothing is locked: the draft inherits it, the editor edits it, an
+approver sees a change to it in the diff, and `ownerId: null` still creates an
+unowned page for an importer whose corpus genuinely does not know — which is
+what `hasOwner: false` and the record-health count are for. A Note is given
+none, because it has no owner field and would silently lose one at its first
+publish.
+
+Verified against a running server, as her sequence: signed in as somebody
+holding only `edit`, the Members screen greys every Remove and says who can; the
+source register greys Register, Edit and Delete; and asserting a conflict
+against a page in another collection is marked in the picker before the note is
+written and, if forced past that, refused **in the dialog** in the same words.
 
 ## What we are deliberately not doing
 

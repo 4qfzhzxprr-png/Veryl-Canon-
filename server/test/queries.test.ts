@@ -291,8 +291,16 @@ test('queries: the filter vocabulary is fixed, and a typo is refused rather than
   assert.deepEqual(store.runQuery(marc.id, {}).map((r) => r.pageId), [canonical.id]);
   assert.deepEqual(store.runQuery(marc.id, { statuses: ['archived'] }).map((r) => r.pageId), [note.id]);
 
-  // hasOwner / hasReviewDate are the health questions, asked directly.
-  const unowned = store.createPage(marc.id, { collectionId: collection.id, type: 'spec', title: 'Ownerless spec' });
+  // hasOwner / hasReviewDate are the health questions, asked directly. A page
+  // is created owned unless the creator says otherwise in as many words, which
+  // is what `ownerId: null` is (see `createPage`) — so this is a page somebody
+  // deliberately left unowned, which is the only kind there now is.
+  const unowned = store.createPage(marc.id, {
+    collectionId: collection.id,
+    type: 'spec',
+    title: 'Ownerless spec',
+    ownerId: null,
+  });
   assert.deepEqual(store.runQuery(marc.id, { hasOwner: false }).map((r) => r.pageId), [unowned.id]);
   assert.deepEqual(store.runQuery(marc.id, { hasReviewDate: true }).map((r) => r.pageId), [canonical.id]);
 });
@@ -396,11 +404,22 @@ test('record health: counts past review, unowned, orphaned, and stale drafts', (
     reviewDate: '2099-01-01',
   });
   store.movePage(marc.id, current.id, { parentId: home.id });
-  // An orphan: parentless, and not the home.
-  const orphan = store.createPage(marc.id, { collectionId: collection.id, type: 'spec', title: 'Loose spec' });
+  // An orphan: parentless, and not the home. Left unowned in as many words,
+  // because a page is otherwise created owned by whoever created it.
+  const orphan = store.createPage(marc.id, {
+    collectionId: collection.id,
+    type: 'spec',
+    title: 'Loose spec',
+    ownerId: null,
+  });
   // An old draft, and a fresh one. A Note needs no owner, so it is not counted
   // as unowned — TYPE_RULES decides that, not the health summary.
-  const oldDraft = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Forgotten plan' });
+  const oldDraft = store.createPage(marc.id, {
+    collectionId: collection.id,
+    type: 'plan',
+    title: 'Forgotten plan',
+    ownerId: null,
+  });
   store.movePage(marc.id, oldDraft.id, { parentId: home.id });
   db.prepare('UPDATE pages SET created_at = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', oldDraft.id);
   const freshNote = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Scratch' });

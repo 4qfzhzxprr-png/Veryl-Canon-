@@ -119,8 +119,20 @@ const routes: Route[] = [
   ),
 
   route('POST', '/collections', ({ store, actorId, body }) => store.createCollection(actorId, body)),
-  route('GET', '/collections', ({ store, actorId }) => store.listCollections(actorId)),
-  route('GET', '/collections/:id', ({ store, actorId, params }) => store.getCollection(actorId, params.id!)),
+  // Every collection carries what this actor may do IN it. The listing carries
+  // it too, and that is not padding: asserting that two pages conflict needs
+  // `edit` on BOTH pages' collections, so the dialog that asserts one has to
+  // know its answer for a collection the reader is not looking at — including
+  // the sentence naming who holds the role THERE (USER-TESTING.md T4.4, second
+  // round). A projection of the checks, never one of them; see
+  // `collectionAbilities`.
+  route('GET', '/collections', ({ store, actorId }) =>
+    store.listCollections(actorId).map((c) => ({ ...c, abilities: store.collectionAbilities(actorId, c.id) })),
+  ),
+  route('GET', '/collections/:id', ({ store, actorId, params }) => ({
+    ...store.getCollection(actorId, params.id!),
+    abilities: store.collectionAbilities(actorId, params.id!),
+  })),
   route('GET', '/collections/:id/tree', ({ store, actorId, params }) => store.tree(actorId, params.id!)),
   route('GET', '/collections/:id/members', ({ store, actorId, params }) => store.listMembers(actorId, params.id!)),
   route('PUT', '/collections/:id/members/:memberId', ({ store, actorId, params, body }) => {
@@ -278,8 +290,21 @@ const routes: Route[] = [
   // Federation (DATA-BACKBONE.md §6): registered sources, and resolving a
   // page's reference fields for the asking actor.
   route('POST', '/sources', ({ store, actorId, body }) => store.createSource(actorId, body)),
-  route('GET', '/sources', ({ store, actorId }) => store.listSources(actorId)),
-  route('GET', '/sources/:id', ({ store, actorId, params }) => store.getSource(actorId, params.id!)),
+  // Each row carries what this actor may do to it, so the register stops
+  // offering a red Delete to somebody the server refuses (USER-TESTING.md
+  // T4.4). Same projection as a page's `abilities`, same one rule: a mirror of
+  // the checks in sources.ts, never one of them.
+  route('GET', '/sources', ({ store, actorId }) =>
+    store.listSources(actorId).map((source) => ({ ...source, abilities: store.sourceAbilities(actorId, source) })),
+  ),
+  // The one control that exists before a source does. It sits above
+  // `/sources/:id` because `routes.find` takes the first match and a source id
+  // is a UUID, so the two can never be the same path.
+  route('GET', '/sources/new', ({ store, actorId }) => store.sourceRegisterAbility(actorId)),
+  route('GET', '/sources/:id', ({ store, actorId, params }) => {
+    const source = store.getSource(actorId, params.id!);
+    return { ...source, abilities: store.sourceAbilities(actorId, source) };
+  }),
   route('PUT', '/sources/:id', ({ store, actorId, params, body }) => store.updateSource(actorId, params.id!, body)),
   route('DELETE', '/sources/:id', ({ store, actorId, params }) => {
     store.deleteSource(actorId, params.id!);

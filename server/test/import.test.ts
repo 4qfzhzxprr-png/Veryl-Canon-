@@ -143,10 +143,13 @@ test('import: a reviewed type keeps its body in the draft rather than publishing
     const page = store.getPage(marc.id, file.pageId!);
     assert.equal(page.status, 'draft');
     assert.equal(page.currentVersion, null, 'nothing is published without the fields its type requires');
-    assert.equal(page.ownerId, null);
     const draft = store.getDraft(marc.id, page.id)!;
     assert.ok(draft.body.length > 0, 'the imported body waits in the draft');
     assert.equal(draft.fields.ownerId, marc.id, 'the importer is the initial owner');
+    // And the page says so too. The importer has always named itself as the
+    // initial owner in the draft; a page created by hand now does the same on
+    // the page itself (see `createPage`), so the two agree.
+    assert.equal(page.ownerId, marc.id);
   }
 });
 

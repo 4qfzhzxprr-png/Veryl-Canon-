@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { forbiddenRole } from './abilities.js';
 import { Actor, CanonError, DocType, PageStatus, Role, ROLE_RANK } from './model.js';
 
 // Page relations: the explicit edge Canon gains when two pages contradict each
@@ -228,8 +229,8 @@ export class RelationService {
     // Both ends, because a relation is a statement about both pages. The
     // Registry's half of the intersection never applies: these routes are not
     // available to agents at all.
-    this.requireRole(actorId, from.collectionId, 'edit');
-    this.requireRole(actorId, to.collectionId, 'edit');
+    this.requireRole(actorId, from.collectionId, 'edit', 'Asserting a relation');
+    this.requireRole(actorId, to.collectionId, 'edit', 'Asserting a relation');
     for (const page of [from, to]) {
       if (page.status === 'archived') {
         throw new CanonError('workflow', 'Archived pages are read-only', { pageId: page.id });
@@ -465,8 +466,8 @@ export class RelationService {
     const relation = this.get(relationId);
     const from = this.page(relation.fromPageId);
     const to = this.page(relation.toPageId);
-    this.requireRole(actorId, from.collectionId, 'edit');
-    this.requireRole(actorId, to.collectionId, 'edit');
+    this.requireRole(actorId, from.collectionId, 'edit', 'Withdrawing a relation');
+    this.requireRole(actorId, to.collectionId, 'edit', 'Withdrawing a relation');
 
     this.db.prepare('DELETE FROM page_relations WHERE id = ?').run(relationId);
     this.audit(actor, 'relation.remove', {
@@ -552,14 +553,19 @@ export class RelationService {
     return actor;
   }
 
-  private requireRole(actorId: string, collectionId: string, needed: Role): void {
+  /**
+   * `act` is named here and nowhere else, because this is the refusal that had
+   * to travel. Asserting needs `edit` on BOTH pages' collections, and a
+   * contributor pointing at a page in another collection was told "Requires
+   * edit access to this collection" — which collection? The one she was on,
+   * where she held edit, or the one she was pointing at? The sentence
+   * abilities.ts builds names the collection that refused, what she holds
+   * there, and who does hold it (USER-TESTING.md T4.4, second round).
+   */
+  private requireRole(actorId: string, collectionId: string, needed: Role, act?: string): void {
     const role = this.host.roleOf(actorId, collectionId);
     if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
-      throw new CanonError('forbidden', `Requires ${needed} access to this collection`, {
-        collectionId,
-        needed,
-        held: role,
-      });
+      throw forbiddenRole(this.db, collectionId, role, needed, act);
     }
   }
 

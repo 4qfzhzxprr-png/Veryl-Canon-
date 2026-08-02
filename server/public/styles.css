@@ -1249,6 +1249,10 @@ label.check input { width: auto; display: inline; margin: 0; }
   cursor: pointer;
 }
 .rel-pick:hover { border-color: var(--accent); background: var(--surface-2); }
+/* A page the caller could not assert against is still listed — it is in the
+   record — but it is marked, and it does not pretend to be pickable. */
+.rel-pick.is-refused:hover { border-color: var(--border); background: transparent; }
+.rel-pick-where { font-size: 0.8rem; margin-left: 0.35rem; }
 .rel-pick-empty { margin: 0.2rem 0; font-size: 0.86rem; }
 .rel-chosen { margin: 0.1rem 0 0.5rem; font-size: 0.84rem; }
 .rel-chosen.is-chosen { color: var(--accent); font-weight: 600; }
@@ -1975,7 +1979,27 @@ label.check input { width: auto; display: inline; margin: 0; }
   box-shadow: var(--shadow);
   animation: toast-in 0.18s ease;
 }
-.toast-error { background: var(--danger); color: #fff; }
+/* A refusal waits to be read. It used to leave after about three seconds,
+   which is how a contributor came to believe she had asserted a conflict she
+   had not (USER-TESTING.md T4.4, second round). */
+.toast-error {
+  background: var(--danger);
+  color: #fff;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+.toast-close {
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.toast-close:hover { opacity: 1; }
 .toast-ok { background: var(--accent); color: var(--accent-ink); }
 .toast-info { background: var(--text); color: var(--bg); }
 /* "It worked, and here is what you should know about it" — the withdrawal that
@@ -2008,6 +2032,15 @@ label.check input { width: auto; display: inline; margin: 0; }
   animation: toast-in 0.15s ease;
 }
 .modal h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+/* A refusal raised inside a dialog is drawn inside the dialog. It used to go to
+   a toast in the far corner, behind this dialog's own backdrop. */
+.modal-refusal {
+  margin: 1rem 0 0;
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--danger);
+  background: var(--surface-2, rgba(0, 0, 0, 0.03));
+  font-size: 0.9rem;
+}
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.25rem; }
 .type-help { font-size: 0.84rem; margin: 0.4rem 0 0; }
 
@@ -2163,6 +2196,36 @@ label.check input { width: auto; display: inline; margin: 0; }
    sentences in a `title`, which a keyboard and a phone never see. */
 .action-refusals { font-size: 0.87rem; margin: 0.3rem 0 0; padding: 0; list-style: none; }
 .action-refusals li { margin: 0.15rem 0; }
+/* ---------- refusals: one vocabulary, everywhere ------------------------ */
+/* A control the server would refuse. It is NOT `disabled`: a disabled button
+   cannot be focused, cannot be tapped, and announces nothing, so its `title`
+   is invisible to exactly the two readers who most need it. `aria-disabled`
+   says the same thing to assistive technology and leaves it reachable, which
+   is how somebody finds out why. */
+.is-refused {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.is-refused:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; opacity: 0.7; }
+
+/* One refusal is one line. Two or more collapse to a line and a "Why?", because
+   three or four grey sentences under a title are a paragraph of apology above
+   the thing somebody opened the page to read. */
+.refusal-note { font-size: 0.87rem; margin: 0.35rem 0 0; }
+.refusal-summary { margin: 0; }
+.refusal-list { font-size: 0.87rem; margin: 0.3rem 0 0; padding: 0 0 0 0.1rem; list-style: none; }
+.refusal-list li { margin: 0.2rem 0; padding-left: 0.7rem; border-left: 2px solid var(--border); }
+.refusal-list li.is-lit, .refusal-note.is-lit { border-left-color: var(--amber); color: var(--text); }
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .actions .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
 
 .comment-sentback { border-left: 2px solid var(--amber); padding-left: 0.7rem; }

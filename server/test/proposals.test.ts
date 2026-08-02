@@ -283,13 +283,16 @@ test('proposals: a reviewed type keeps its rules — Canonical only through its 
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Retention' });
 
   // A Policy needs an owner and a named approver before anything can publish,
-  // and an accepted proposal is a publish.
+  // and an accepted proposal is a publish. The page carries an owner from the
+  // moment Marc created it (see `createPage`), so what is missing here is the
+  // approver — the field nobody can default, because naming one is a decision
+  // about who is accountable for the mark.
   const bare = store.createProposal(bot.id, page.id, {
     rationale: 'The retention period in the source system is now 7 years.',
     body: 'Records are kept 7 years.',
   });
   const err = expectCode(() => store.acceptProposal(marc.id, bare.id, {}), 'workflow') as CanonError;
-  assert.match(err.message, /requires an owner/);
+  assert.match(err.message, /requires a named approver/);
   assert.equal(store.listProposals(marc.id, page.id)[0]!.status, 'open', 'a refused acceptance settles nothing');
 
   const complete = store.createProposal(bot.id, page.id, {

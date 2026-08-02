@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  CAN,
+  CollectionAbilities,
+  cannot,
+  collectionName,
+  forbiddenRole,
+  needsRoleHere,
+} from './abilities.js';
+import {
   Actor,
   ActorKind,
   AuditEvent,
@@ -45,7 +53,7 @@ import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 import { AUDIT_CSV_MAX_ROWS, AUDIT_CSV_PAGE_ROWS, RawResponse, auditCsvResponse } from './csv.js';
 import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './import.js';
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
-import { Source, SourceInput, SourceService } from './sources.js';
+import { Source, SourceAbilities, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
 import { Divergence, DivergenceFilter, DivergenceService, DivergenceState } from './divergence.js';
 import { Proposal, ProposalDecision, ProposalInput, ProposalService, ProposalStatus } from './proposals.js';
@@ -296,14 +304,21 @@ export class CanonStore {
     return row?.role ?? null;
   }
 
-  private requireRole(actorId: string, collectionId: string, needed: Role): void {
+  /**
+   * `act` names the act where the caller has one worth saying — "Removing a
+   * member" — so the sentence a request is refused with is the SAME sentence
+   * `collectionAbilities` showed before the button was pressed. Where it is
+   * left out the sentence begins "This needs…", which is still the collection,
+   * still what they hold, and still who can.
+   */
+  private requireRole(actorId: string, collectionId: string, needed: Role, act?: string): void {
     const role = this.roleOf(actorId, collectionId);
     if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
-      throw new CanonError('forbidden', `Requires ${needed} access to this collection`, {
-        collectionId,
-        needed,
-        held: role,
-      });
+      // One sentence, built in abilities.ts, and the same one the screen shows
+      // before the click (USER-TESTING.md T4.4, second round). It names the
+      // collection, what the caller holds there, and — to somebody who is
+      // already a member and could look it up anyway — who does hold the role.
+      throw forbiddenRole(this.db, collectionId, role, needed, act);
     }
   }
 
@@ -318,7 +333,7 @@ export class CanonStore {
   // a collection's last admin leaves; it is not silent, because the grant it
   // makes is this very audit event with the administrator's name on it.
   setMember(actorId: string, collectionId: string, memberId: string, role: Role): void {
-    this.requirePermissionAdmin(actorId, collectionId);
+    this.requirePermissionAdmin(actorId, collectionId, 'Adding a member');
     this.getActor(memberId);
     // The system actor holds no role anywhere and never will (system.ts). Its
     // authority to run maintenance is what it is, not something granted, so
@@ -348,7 +363,7 @@ export class CanonStore {
     collectionId: string,
     memberId: string,
   ): { removed: boolean; remaining: Role | null; groups: { group: string; role: Role }[] } {
-    this.requirePermissionAdmin(actorId, collectionId);
+    this.requirePermissionAdmin(actorId, collectionId, 'Removing a member');
     const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, null);
     this.audit(actorId, 'collection.member_removed', {
       collectionId,
@@ -362,7 +377,7 @@ export class CanonStore {
 
   // `admin` here, or `administrator` for the whole Canon. Kept in one place so
   // the two membership calls above can never drift apart.
-  private requirePermissionAdmin(actorId: string, collectionId: string): void {
+  private requirePermissionAdmin(actorId: string, collectionId: string, act?: string): void {
     if (this.roleOf(actorId, collectionId) === 'admin') return;
     if (isOrgAdministrator(this.db, actorId)) {
       // Existence is still checked, so an org administrator naming a collection
@@ -373,7 +388,7 @@ export class CanonStore {
       if (!row) throw new CanonError('not_found', `No such collection: ${collectionId}`);
       return;
     }
-    this.requireRole(actorId, collectionId, 'admin');
+    this.requireRole(actorId, collectionId, 'admin', act);
   }
 
   // ---- organisation-level roles (orgrole.ts) ---------------------------
@@ -564,13 +579,49 @@ export class CanonStore {
 
   // ---- pages and trees -------------------------------------------------
 
+  /**
+   * A NEW PAGE IS OWNED FROM THE MOMENT IT EXISTS.
+   *
+   * It used to be created with no owner and nothing ever asked for one: nine
+   * pages in one seeded collection showed "—" under Owner, and the first thing
+   * anybody heard about it was `submitForReview` refusing the page for want of
+   * an owner, days later and on a different screen.
+   *
+   * So `ownerId` is part of creating a page, and it DEFAULTS TO THE CREATOR
+   * rather than staying empty. The argument for the default over an empty
+   * required field: at the moment a page is created the creator is the only
+   * person Canon can honestly name as accountable for it, an empty owner is
+   * never a fact about the record but always a gap the product left, and
+   * ownership moves constantly — so the field has to be changeable everywhere
+   * it already was, and it is: the draft inherits it (see `draftSeed`), the
+   * editor's Owner field edits it, and an approver sees a change to it in the
+   * diff before granting the Canonical mark. Nothing is locked by this; a page
+   * simply stops being born unowned.
+   *
+   * The client asks anyway — the New page dialog shows Owner, filled in with
+   * the creator — because a default nobody is shown is a default nobody
+   * corrects.
+   *
+   * Only for types that HAVE an owner. A Note has no owner field, so a Note
+   * given one would carry it until its first publish and silently lose it
+   * there, and a value that disappears on its own is worse than none.
+   */
   createPage(
     actorId: string,
-    input: { collectionId: string; parentId?: string | null; type: DocType; title: string },
+    input: { collectionId: string; parentId?: string | null; type: DocType; title: string; ownerId?: string | null },
   ): Page {
-    this.requireRole(actorId, input.collectionId, 'edit');
+    this.requireRole(actorId, input.collectionId, 'edit', 'Creating a page');
     if (!DOC_TYPES.includes(input.type)) throw new CanonError('invalid', `Unknown document type: ${input.type}`);
     if (!input.title?.trim()) throw new CanonError('invalid', 'A page requires a title');
+    // Absent means the creator. An EXPLICIT null means "no owner named", which
+    // is left possible on purpose and is not the same thing: an importer
+    // bringing in a corpus whose ownership genuinely is not known must be able
+    // to say so, and `hasOwner: false` and the record-health count exist to
+    // find exactly those. What is no longer possible is creating an unowned
+    // page by not thinking about it.
+    const named = input.ownerId === undefined ? actorId : input.ownerId;
+    const ownerId = TYPE_RULES[input.type].requiresOwner ? named : null;
+    if (ownerId) this.getActor(ownerId); // an owner Canon cannot name is not an owner
     if (input.parentId) {
       const parent = this.pageRow(input.parentId);
       if (parent.collection_id !== input.collectionId) {
@@ -587,10 +638,20 @@ export class CanonStore {
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO pages (id, collection_id, parent_id, position, type, title, status, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+        `INSERT INTO pages (id, collection_id, parent_id, position, type, title, status, owner_id, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
       )
-      .run(id, input.collectionId, input.parentId ?? null, position, input.type, input.title.trim(), actorId, now());
+      .run(
+        id,
+        input.collectionId,
+        input.parentId ?? null,
+        position,
+        input.type,
+        input.title.trim(),
+        ownerId,
+        actorId,
+        now(),
+      );
     // A page is findable by its title from the moment it has one. Search used
     // to be built from published versions alone, so a page that had been
     // written and sent for review — visible in the tree, visible in the audit
@@ -600,7 +661,14 @@ export class CanonStore {
     this.audit(actorId, 'page.create', {
       collectionId: input.collectionId,
       pageId: id,
-      details: { type: input.type, title: input.title.trim() },
+      details: {
+        type: input.type,
+        title: input.title.trim(),
+        // Named in the log even when it is the default, because "who was this
+        // page born accountable to" is exactly the question an auditor asks of
+        // a page whose owner has since changed twice.
+        ...(ownerId ? { ownerId } : {}),
+      },
     });
     return this.getPage(actorId, id);
   }
@@ -724,7 +792,7 @@ export class CanonStore {
 
   archivePage(actorId: string, pageId: string): Page {
     const row = this.pageRow(pageId);
-    this.requireRole(actorId, row.collection_id as string, 'edit');
+    this.requireRole(actorId, row.collection_id as string, 'edit', 'Archiving');
     this.db.prepare("UPDATE pages SET status = 'archived' WHERE id = ?").run(pageId);
     this.searchIndex.indexPage(pageId); // archived pages leave search
     this.embeddings.indexPage(pageId); // and leave the vector index too
@@ -740,7 +808,7 @@ export class CanonStore {
     input: { title?: string; body?: string; fields?: PageFields },
   ): Draft {
     const row = this.pageRow(pageId);
-    this.requireRole(actorId, row.collection_id as string, 'edit');
+    this.requireRole(actorId, row.collection_id as string, 'edit', 'Editing');
     const page = this.toPage(row);
     if (page.status === 'archived') throw new CanonError('workflow', 'Archived pages are read-only');
     if (page.status === 'in_review') {
@@ -1520,14 +1588,17 @@ export class CanonStore {
     const fields = draft ? (JSON.parse(draft.fields_json as string) as PageFields) : null;
     const archived = page.status === 'archived';
 
-    const yes: PageAbility = { can: true, why: null };
-    const no = (why: string): PageAbility => ({ can: false, why });
+    const here = { id: page.collectionId, name: collectionName(this.db, page.collectionId) };
+    const yes: PageAbility = CAN;
+    const no = cannot;
     const holds = (needed: Role): boolean => rank >= ROLE_RANK[needed];
-    const needsRole = (act: string, needed: Role): PageAbility =>
-      no(
-        `${act} needs the ${needed} role on this collection; you hold ${role ?? 'none'}. ` +
-          this.whoHolds(page.collectionId, needed),
-      );
+    // One vocabulary, built in abilities.ts and shared with the Members screen,
+    // the source register and the relation dialog: what the act needs, what the
+    // caller holds, and who can. It names the collection rather than saying
+    // "this collection", so the same sentence can be repeated on a screen about
+    // a DIFFERENT collection — which is exactly what a cross-collection
+    // conflict needs (see `assertRelation` below).
+    const needsRole = (act: string, needed: Role): PageAbility => needsRoleHere(this.db, here, role, act, needed);
     const readOnly = 'This page is archived and read-only. Its history is preserved.';
 
     // Each block below mirrors one method above, in that method's own order —
@@ -1610,7 +1681,60 @@ export class CanonStore {
     // is that it says what the server would do.
     const archive: PageAbility = holds('edit') ? yes : needsRole('Archiving', 'edit');
 
-    return { role, edit, comment, submit, approve, sendBack, withdraw, archive };
+    // RelationService.assert, for THIS end of the relation. A relation needs
+    // `edit` on both pages' collections, and this half is the one a page view
+    // can answer on its own — the other end is a different collection, whose
+    // sentence comes from `collectionAbilities` for that collection and reads
+    // the same because it is built by the same function.
+    let assertRelation: PageAbility;
+    const actorKind = this.getActor(actorId).kind;
+    if (actorKind === 'agent') {
+      assertRelation = no(
+        'An agent may not assert a relation. It raises a proposal carrying its reasoning, and a person ' +
+          'settles it — asserting that two pages contradict each other is a person’s act.',
+      );
+    } else if (!holds('edit')) assertRelation = needsRole('Asserting a relation', 'edit');
+    else if (archived) assertRelation = no(readOnly);
+    else assertRelation = yes;
+
+    return { role, edit, comment, submit, approve, sendBack, withdraw, archive, assertRelation };
+  }
+
+  /**
+   * WHAT THIS ACTOR MAY DO TO THIS COLLECTION, in `pageAbilities`' own voice
+   * and under its one rule: it MIRRORS the checks and never makes one.
+   *
+   * The Members screen was the last one in the product still offering a control
+   * it would refuse — a fully enabled Remove beside every colleague's name and
+   * a live Add member form, for somebody holding `edit`, answered with a
+   * three-second toast in the far corner. It is also the screen where a wrong
+   * click would be most alarming. This is what it now draws its buttons from.
+   *
+   * Reading it needs `view`, like the membership table it describes.
+   */
+  collectionAbilities(actorId: string, collectionId: string): CollectionAbilities {
+    this.getCollection(actorId, collectionId); // existence, and `view`
+    const here = { id: collectionId, name: collectionName(this.db, collectionId) };
+    const role = this.roleOf(actorId, collectionId);
+    const rank = role ? ROLE_RANK[role] : 0;
+    const holds = (needed: Role): boolean => rank >= ROLE_RANK[needed];
+
+    // `requirePermissionAdmin`: `admin` here, OR the org-level `administrator`,
+    // which is the break-glass path for a collection whose last admin left. The
+    // mirror has to carry it or an administrator would be told they cannot do
+    // a thing the server accepts from them.
+    const orgAdmin = isOrgAdministrator(this.db, actorId);
+    const membership = (act: string): PageAbility =>
+      holds('admin') || orgAdmin ? CAN : needsRoleHere(this.db, here, role, act, 'admin');
+
+    return {
+      collectionId,
+      role,
+      createPage: holds('edit') ? CAN : needsRoleHere(this.db, here, role, 'Creating a page', 'edit'),
+      addMember: membership('Adding a member'),
+      removeMember: membership('Removing a member'),
+      assertRelation: holds('edit') ? CAN : needsRoleHere(this.db, here, role, 'Asserting a relation', 'edit'),
+    };
   }
 
   /** Why this draft could not publish as it stands, in `validateReadyToPublish`'s own words. */
@@ -1623,30 +1747,6 @@ export class CanonStore {
     }
   }
 
-  /**
-   * Who on this collection holds at least `needed`, as a sentence to hand
-   * somebody who does not. Capped at three names because the point is to give a
-   * person somebody to ask, not to print a directory.
-   */
-  private whoHolds(collectionId: string, needed: Role): string {
-    const rows = this.db
-      .prepare('SELECT actor_id, role FROM collection_members WHERE collection_id = ?')
-      .all(collectionId) as { actor_id: string; role: Role }[];
-    const names = rows
-      .filter((r) => ROLE_RANK[r.role] >= ROLE_RANK[needed])
-      .map((r) => this.getActor(r.actor_id).name)
-      .sort((a, b) => a.localeCompare(b));
-    if (!names.length) return 'Nobody here holds it; an administrator of this collection can grant it.';
-    const shown = names.slice(0, 3);
-    const rest = names.length - shown.length;
-    const list =
-      rest > 0
-        ? `${shown.join(', ')} and ${rest} other${rest === 1 ? '' : 's'}`
-        : shown.length > 1
-          ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]!}`
-          : shown[0]!;
-    return `${list} ${names.length === 1 ? 'holds' : 'hold'} it.`;
-  }
 
   // ---- audit -----------------------------------------------------------
 
@@ -2032,6 +2132,16 @@ export class CanonStore {
 
   deleteSource(actorId: string, id: string): void {
     this.sources.remove(actorId, id);
+  }
+
+  /** What this actor may do to this source, and where they may not, who can. */
+  sourceAbilities(actorId: string, source: Source): SourceAbilities {
+    return this.sources.abilities(actorId, source);
+  }
+
+  /** Whether this actor may register a source at all — the one control that exists before one does. */
+  sourceRegisterAbility(actorId: string): PageAbility {
+    return this.sources.registerAbility(actorId);
   }
 
   addReference(actorId: string, pageId: string, input: ReferenceInput): PageReference {

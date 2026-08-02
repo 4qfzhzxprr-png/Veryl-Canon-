@@ -435,14 +435,43 @@ function actorLabel(id) {
 
 // ---------------------------------------------------------------------------
 // Toasts
-
+//
+// A TOAST IS FOR NEWS, NEVER FOR A REFUSAL THAT VANISHES.
+//
+// The second round of user testing found the product saying no in two voices,
+// and the worse one was this: a red toast in the bottom-right corner, behind a
+// dimmed modal backdrop, gone in about three seconds. A contributor pressed a
+// solid green "Assert it", nothing happened, the dialog stayed open, and the
+// only explanation had already left the screen — "if I had blinked, I would
+// have gone home believing I had raised mine."
+//
+// Two things follow, and they are the whole of the fix here. A refusal that
+// arrives after a click STAYS until it is dismissed, because a message with a
+// three-second life is not a message. And a refusal raised inside a dialog is
+// drawn IN the dialog (see `openModal`), because a message behind the backdrop
+// is not on the reader's screen at all.
 function toast(message, kind = 'error') {
   const host = document.getElementById('toasts');
   const el = document.createElement('div');
   el.className = `toast toast-${kind}`;
-  el.textContent = message;
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.appendChild(text);
+  const leave = () => { el.classList.add('leaving'); setTimeout(() => el.remove(), 300); };
+  // Good news and warnings pass; a refusal waits to be read.
+  if (kind === 'error') {
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    close.addEventListener('click', leave);
+    el.appendChild(close);
+    el.setAttribute('role', 'alert');
+  } else {
+    setTimeout(leave, 4500);
+  }
   host.appendChild(el);
-  setTimeout(() => { el.classList.add('leaving'); setTimeout(() => el.remove(), 300); }, 4500);
 }
 
 function toastError(err) {
@@ -450,7 +479,105 @@ function toastError(err) {
 }
 
 // ---------------------------------------------------------------------------
+// Refusal — one vocabulary, everywhere (USER-TESTING.md T4.4, second round)
+//
+// The server writes the sentence: what the act needs, what the caller holds,
+// and who can. `abilities.ts` builds it once so a page, a collection and a
+// source all refuse in the same words, and the client's whole job is to put it
+// somewhere a person will actually read it. That is this section, and every
+// screen that greys a control uses it — the page view, Members, the source
+// register, and the relation dialog.
+//
+// WHY A REFUSED CONTROL IS NOT `disabled`
+//
+// A `disabled` button cannot be focused, cannot be tapped, and announces
+// nothing; its `title` is invisible to a keyboard and to a phone, which is why
+// the reason is written out as text as well. `aria-disabled` says the same
+// thing to assistive technology while leaving the control reachable, so tabbing
+// to it or tapping it is how somebody finds out why — and nothing is wired to
+// it, so pressing it does exactly what the server would have done: nothing.
+//
+// AND WHY THE REASONS DO NOT STACK
+//
+// Two greyed buttons used to produce two near-identical grey sentences under
+// the page title, differing only in the first word: "three or four of these and
+// there's a paragraph of apology above the thing I opened the page to read."
+// So: one refusal is one line, as it always was. Two or more collapse to a
+// single line with a "Why?" that opens them — and focusing, hovering or tapping
+// any greyed control opens the list and lights that control's own reason. The
+// text is never merely a tooltip; it is always in the document, one keystroke
+// or one tap away.
+
+let refusalSeq = 0;
+
+/** "Two", "Three" — a count that reads as prose up to the point it stops being one. */
+function countWord(n) {
+  return ['no', 'one', 'Two', 'Three', 'Four', 'Five', 'Six'][n] ?? String(n);
+}
+
+/**
+ * A group of controls that share one refusal note. `offer` returns the enabled
+ * HTML or a greyed control carrying the server's sentence; `noteHTML` returns
+ * the note to place under them; `wire` connects the two.
+ */
+function refusalGroup(what = 'these') {
+  const seq = ++refusalSeq;
+  const reasons = []; // { id, why }, deduplicated: one sentence, one line
+  let refused = 0; // CONTROLS refused, which is what the summary counts
+  const idFor = (why) => {
+    refused += 1;
+    const found = reasons.find((r) => r.why === why);
+    if (found) return found.id;
+    const id = `refusal-${seq}-${reasons.length + 1}`;
+    reasons.push({ id, why });
+    return id;
+  };
+  return {
+    get count() { return refused; },
+    /** A control the server would refuse, whatever the caller was about to press. */
+    refuse(label, why, { className = 'btn' } = {}) {
+      const id = idFor(why ?? 'You cannot do this here.');
+      return `<button type="button" class="${className} is-refused" aria-disabled="true"
+        data-refusal="${esc(id)}" aria-describedby="${esc(id)}"
+        title="${esc(why ?? '')}">${label}</button>`;
+    },
+    /** `ability` is the server's `{ can, why }`; anything absent is treated as permitted. */
+    offer(ability, label, enabledHTML, opts) {
+      if (!ability || ability.can !== false) return enabledHTML;
+      return this.refuse(label, ability.why, opts);
+    },
+    /**
+     * The reasons, as one line or as a line that opens onto them. The count is
+     * of CONTROLS — what the reader can see is greyed — while the list holds
+     * one line per distinct sentence: eight pages refused for the same two
+     * reasons are eight greyed rows and two lines, not eight.
+     */
+    noteHTML({ collapse = false, summary = null } = {}) {
+      if (!refused) return '';
+      if (refused === 1 && !collapse) {
+        const only = reasons[0];
+        return `<p class="muted refusal-note" id="${esc(only.id)}">${esc(only.why)}</p>`;
+      }
+      const listId = `refusal-list-${seq}`;
+      return `
+        <div class="refusal-note refusal-many">
+          <p class="muted refusal-summary">${esc(summary ?? `${countWord(refused)} of ${what} are greyed out.`)}
+            <button type="button" class="linkish" data-refusal-toggle
+              aria-expanded="false" aria-controls="${listId}">Why?</button></p>
+          <ul class="muted refusal-list" id="${listId}" hidden>
+            ${reasons.map((r) => `<li id="${esc(r.id)}">${esc(r.why)}</li>`).join('')}
+          </ul>
+        </div>`;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Modal — one at a time; onSubmit(form) may throw/reject to keep it open.
+//
+// A refusal raised in here is drawn IN here. It used to go to a toast in the
+// far corner, behind this dialog's own backdrop, and disappear — which is how a
+// contributor came to believe she had asserted a conflict she had not.
 
 function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit }) {
   const root = document.getElementById('modal-root');
@@ -460,6 +587,7 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
         <h2>${esc(title)}</h2>
         <form>
           ${body}
+          <p class="modal-refusal" data-modal-error role="alert" hidden></p>
           <div class="modal-actions">
             <button type="button" class="btn" data-cancel>${esc(cancelLabel)}</button>
             <button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(submitLabel)}</button>
@@ -469,6 +597,7 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
     </div>`;
   const backdrop = root.querySelector('.modal-backdrop');
   const form = root.querySelector('form');
+  const problem = form.querySelector('[data-modal-error]');
   const close = () => { root.innerHTML = ''; };
   backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
   root.querySelector('[data-cancel]').addEventListener('click', close);
@@ -476,17 +605,22 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
     e.preventDefault();
     const submitBtn = form.querySelector('button[type=submit]');
     submitBtn.disabled = true;
+    problem.hidden = true;
     try {
       await onSubmit(form);
       close();
     } catch (err) {
       submitBtn.disabled = false;
-      toastError(err);
+      // In the dialog, and it stays there. The dialog is still open because the
+      // act did not happen, and this is the sentence that says why.
+      problem.textContent = err?.message ?? 'Something went wrong.';
+      problem.hidden = false;
+      problem.scrollIntoView({ block: 'nearest' });
     }
   });
   const first = form.querySelector('input, textarea, select');
   if (first) first.focus();
-  return { close };
+  return { close, form, showRefusal: (message) => { problem.textContent = message; problem.hidden = false; } };
 }
 
 // ---------------------------------------------------------------------------
@@ -1680,30 +1814,43 @@ function treeHTML(nodes, currentPageId) {
 // layout broke it: below about 900px the two columns become one, the sidebar
 // is first in the source, and an 82-page tree therefore rendered 4,500 pixels
 // of navigation above the page itself. A compliance director, at 420px: "on a
-// phone I'd approve without scrolling back up to read anything." The page under
-// review, the diff of what it would change and the Approve button were all a
-// long scroll below a list he had not asked for.
+// phone I'd approve without scrolling back up to read anything."
 //
-// The fix is not to drop the tree — the tree is the only navigation there is —
-// and it is not to move it below the page, which would put it a full document's
-// scroll away from the one place a reader looks for navigation. It collapses:
-// at a narrow width the sidebar is the collection's name and one button reading
-// how many pages are behind it, and the content starts under that. One tap
-// opens the tree in place, where it has always been.
+// The fix is not to drop the tree — it is the only navigation there is — and
+// not to move it below the page, which would put it a document's scroll from
+// where a reader looks for navigation. It collapses: at a narrow width the
+// sidebar is the collection's name and one button saying how many pages are
+// behind it. One tap opens the tree in place.
 //
-// The button ships hidden and is revealed by `wireSidebar` only where the
-// media query matches, so a browser that runs no JavaScript gets exactly what
-// it got before: the whole tree, open, with no control that does nothing.
+// The button ships hidden and is revealed by `wireSidebar` only where the media
+// query matches, so a browser running no JavaScript gets what it always got:
+// the whole tree, open, with no control that does nothing.
+//
+// The New page control is drawn through the refusal group like every other
+// control (USER-TESTING.md T4.4): creating a page needs `edit`, and it used to
+// be offered to everybody and refused at the click.
 function sidebarHTML(collection, tree, currentPageId) {
   const count = flattenTree(tree).length;
+  const group = refusalGroup('these controls');
+  const newPage = group.offer(
+    collection.abilities?.createPage ?? null,
+    '+ New page',
+    '<button class="btn subtle sidebar-new" id="sidebar-new-page">+ New page</button>',
+    { className: 'btn subtle sidebar-new' },
+  );
   return `
-    <aside class="sidebar">
+    <aside class="sidebar" data-refusal-host>
       <a class="sidebar-collection" href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a>
       ${collection.restricted ? '<span class="restricted-tag">restricted</span>' : ''}
       <button class="btn subtle tree-toggle" id="tree-toggle" type="button" hidden
         aria-expanded="true" aria-controls="sidebar-tools"></button>
       <div id="sidebar-tools">
-        <button class="btn subtle sidebar-new" id="sidebar-new-page">+ New page</button>
+        ${newPage}
+        ${/* Collapsed even at one reason. The sidebar is four inches wide and
+              the tree is what it is for: a four-line sentence about a button
+              somebody is not pressing would push the navigation off the screen,
+              which is the stacking complaint in miniature. */ ''}
+        ${group.noteHTML({ collapse: true, summary: 'New page is greyed out here.' })}
         <nav class="tree-nav">${treeHTML(tree, currentPageId)}</nav>
       </div>
     </aside>`;
@@ -1769,10 +1916,43 @@ function wireSidebar(collection, tree) {
   // collection is reachable by the gesture the reader is already using.
   const fits = aside.scrollHeight <= window.innerHeight - 96;
   aside.classList.toggle('is-long', !fits);
+  // The greyed New page needs no wiring of its own: refusals are delegated on
+  // the document, once, at the bottom of this file.
 }
 
-function openNewPageModal(collection, tree, presetParentId = null) {
+// A NEW PAGE IS OWNED FROM THE MOMENT IT EXISTS.
+//
+// Nine pages in one seeded collection showed "—" under Owner, and nothing had
+// ever asked for one: the first anybody heard of it was Submit for review
+// refusing the page for want of an owner, days later, on another screen.
+//
+// The server defaults the owner to the creator (`createPage`, which sets out
+// the argument). This dialog ASKS as well, filled in with the creator, because
+// a default nobody is shown is a default nobody corrects — and because the
+// person who creates a page very often knows it belongs to somebody else.
+//
+// Who may be named: the collection's own members, the same narrowing the
+// approver picker uses. An owner who is not in the collection cannot act on
+// the page they are accountable for, and the picker used to offer the whole
+// directory. If the membership cannot be read, it falls back to the directory
+// rather than to nothing.
+async function openNewPageModal(collection, tree, presetParentId = null) {
   const flat = flattenTree(tree);
+  await loadActors().catch(() => null);
+  let members = null;
+  try {
+    const rows = await api('GET', `/collections/${collection.id}/members`);
+    members = rows.map((m) => ({ id: m.actorId, name: actorName(m.actorId) })).sort((a, b) => a.name.localeCompare(b.name));
+  } catch { members = null; }
+  const people = members ?? (state.actors ?? []).map((a) => ({ id: a.id, name: a.name }));
+  const me = state.actor?.id ?? '';
+  const ownerOptions = people.map((p) =>
+    `<option value="${esc(p.id)}" ${p.id === me ? 'selected' : ''}>${esc(p.name)}${p.id === me ? ' (you)' : ''}</option>`,
+  ).join('');
+  // A Note carries no owner (TYPE_RULES), so the field follows the type rather
+  // than asking for something the record would then quietly drop.
+  const ownerTypes = Object.keys(TYPE_LABELS).filter((t) => (TYPE_FIELDS[t] ?? {}).owner);
+
   openModal({
     title: `New page in ${collection.name}`,
     submitLabel: 'Create page',
@@ -1784,6 +1964,12 @@ function openNewPageModal(collection, tree, presetParentId = null) {
         </select>
       </label>
       <p class="muted type-help" data-type-help>${esc(TYPE_HELP.policy)}</p>
+      <label data-owner-field>Owner
+        <select name="ownerId">${ownerOptions}</select>
+      </label>
+      <p class="muted type-help" data-owner-help>Who is accountable for this page. It starts as you and
+        can be changed here or in the editor at any time; a page with nobody's name on it is the one
+        thing the record should never hold.</p>
       <label>Parent page
         <select name="parentId">
           <option value="">(top level)</option>
@@ -1791,20 +1977,27 @@ function openNewPageModal(collection, tree, presetParentId = null) {
         </select>
       </label>`,
     onSubmit: async (form) => {
+      const type = form.type.value;
       const page = await api('POST', '/pages', {
         collectionId: collection.id,
         parentId: form.parentId.value || null,
-        type: form.type.value,
+        type,
         title: form.title.value.trim(),
+        ...(ownerTypes.includes(type) ? { ownerId: form.ownerId.value || null } : {}),
       });
       toast(`Page "${page.title}" created as a ${TYPE_LABELS[page.type]}.`, 'ok');
       location.hash = `#/pages/${page.id}`;
     },
   });
   const form = document.querySelector('#modal-root form');
-  form.type.addEventListener('change', () => {
+  const syncType = () => {
     form.querySelector('[data-type-help]').textContent = TYPE_HELP[form.type.value];
-  });
+    const wanted = ownerTypes.includes(form.type.value);
+    form.querySelector('[data-owner-field]').hidden = !wanted;
+    form.querySelector('[data-owner-help]').hidden = !wanted;
+  };
+  form.type.addEventListener('change', syncType);
+  syncType();
 }
 
 // ---------------------------------------------------------------------------
@@ -1894,6 +2087,15 @@ async function viewCollection(id) {
       ? ` · ${archived} archived, not listed below (the attestation register counts ${flat.length + archived} including them)`
       : '');
 
+  // Same mirror as everywhere else: creating a page needs `edit` here.
+  const group = refusalGroup('these actions');
+  const newPageHTML = group.offer(
+    collection.abilities?.createPage ?? null,
+    'New page',
+    '<button class="btn primary" id="main-new-page">New page</button>',
+    { className: 'btn primary' },
+  );
+
   app.innerHTML = `
     <div class="layout">
       ${sidebarHTML(collection, tree, null)}
@@ -1909,9 +2111,10 @@ async function viewCollection(id) {
             <span id="map-affordance"></span>
             <span id="ask-affordance"></span>
             <a class="btn subtle" href="#/collections/${esc(collection.id)}/members">Members</a>
-            <button class="btn primary" id="main-new-page">New page</button>
+            ${newPageHTML}
           </div>
         </div>
+        ${group.noteHTML()}
 
         ${tree.length ? `
           <section class="panel">
@@ -1936,7 +2139,7 @@ async function viewCollection(id) {
     </div>`;
 
   wireSidebar(collection, tree);
-  app.querySelector('#main-new-page').addEventListener('click', () => openNewPageModal(collection, tree));
+  app.querySelector('#main-new-page')?.addEventListener('click', () => openNewPageModal(collection, tree));
   renderMapAffordance('map-affordance', collection.id);
   renderAskAffordance('ask-affordance', collection.id);
   renderAttestationAffordance('attestation-affordance', {
@@ -1948,6 +2151,19 @@ async function viewCollection(id) {
 
 // ---------------------------------------------------------------------------
 // Collection members — the administration screen the front page used to be
+//
+// THE LAST SCREEN THAT OFFERED WHAT IT WOULD REFUSE, and the one where a wrong
+// click would be most alarming. Holding only `edit`, a contributor was shown a
+// fully enabled **Remove** beside every colleague's name and a live Add member
+// form; pressing Remove produced a three-second toast in the far corner reading
+// "Requires admin access to this collection", and nothing happened. She could
+// not tell whether she had removed somebody.
+//
+// It is the page view's treatment, from the same source: the server says who
+// may administer membership here (`collection.abilities`, a mirror of
+// `requirePermissionAdmin` and never a gate), the controls it would refuse are
+// greyed and carry its sentence, and the sentence names the collection, what
+// she holds, and who can.
 
 async function viewCollectionMembers(id) {
   const [collection, tree] = await Promise.all([
@@ -1957,6 +2173,13 @@ async function viewCollectionMembers(id) {
   await loadActors().catch(() => null);
   let members = [];
   try { members = await api('GET', `/collections/${id}/members`); } catch { /* view-only edge */ }
+
+  // Absent on a server older than this screen, in which case every control is
+  // offered exactly as it was before — nothing here turns an offer ON.
+  const can = collection.abilities ?? null;
+  const group = refusalGroup('these controls');
+  const removeAbility = can?.removeMember ?? null;
+  const addAbility = can?.addMember ?? null;
 
   app.innerHTML = `
     <div class="layout">
@@ -1982,21 +2205,31 @@ async function viewCollectionMembers(id) {
                   <tr>
                     <td>${actorLabel(m.actorId)}</td>
                     <td><span class="role-tag">${esc(m.role)}</span></td>
-                    <td class="t-right"><button class="btn subtle" data-remove-member="${esc(m.actorId)}">Remove</button></td>
+                    <td class="t-right">${group.offer(
+                      removeAbility,
+                      'Remove',
+                      `<button class="btn subtle" data-remove-member="${esc(m.actorId)}">Remove</button>`,
+                      { className: 'btn subtle' },
+                    )}</td>
                   </tr>`).join('')}
               </tbody>
             </table>` : '<p class="muted">Membership is not visible to you.</p>'}
+          ${/* The form goes with the buttons. A live "Add member" beside a row
+                of greyed Removes would be the same defect wearing the other
+                half of the screen, so its fields are disabled too and the
+                submit carries the same sentence. */ ''}
           <form id="add-member-form" class="inline-form">
-            <select name="actorId" required>
+            <select name="actorId" required ${addAbility?.can === false ? 'disabled' : ''}>
               <option value="">Add member…</option>
               ${(state.actors ?? []).filter((a) => !members.some((m) => m.actorId === a.id))
                 .map((a) => `<option value="${esc(a.id)}">${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('')}
             </select>
-            <select name="role">
+            <select name="role" ${addAbility?.can === false ? 'disabled' : ''}>
               ${ROLES.map((r) => `<option value="${r}" ${r === 'view' ? 'selected' : ''}>${r}</option>`).join('')}
             </select>
-            <button class="btn" type="submit">Add</button>
+            ${group.offer(addAbility, 'Add', '<button class="btn" type="submit">Add</button>')}
           </form>
+          ${group.noteHTML()}
         </section>
       </section>
     </div>`;
@@ -2463,20 +2696,22 @@ async function viewPage(id) {
     </div>` : '';
 
   // USER-TESTING.md T4.4: "Every action is offered then refused." An action the
-  // server would refuse is now GREYED and carries the server's own sentence,
-  // and that sentence is repeated as text under the row — a `title` attribute
-  // is invisible to a keyboard and to a phone, and "who can do this instead" is
-  // the half of the answer that was missing.
+  // server would refuse is GREYED and carries the server's own sentence, and
+  // that sentence is in the document as text — a `title` attribute is invisible
+  // to a keyboard and to a phone, and "who can do this instead" is the half of
+  // the answer that was missing.
+  //
+  // The group is the shared one (see `refusalGroup`): the same greying, the
+  // same sentence, and the same collapse when more than one action is refused,
+  // as the Members screen, the source register and the relation dialog. Three
+  // or four of these used to be a paragraph of apology above the thing somebody
+  // opened the page to read.
   //
   // What is NOT done here: deciding anything. Every one of these is
   // `page.abilities`, which store.ts computes beside the checks it mirrors, and
   // the button being enabled has never been what makes the act legal.
-  const refusals = [];
-  const offer = (ability, label, enabledHTML) => {
-    if (ability.can) return enabledHTML;
-    if (ability.why) refusals.push(ability.why);
-    return `<button class="btn" disabled aria-disabled="true" title="${esc(ability.why ?? '')}">${label}</button>`;
-  };
+  const group = refusalGroup('these actions');
+  const offer = (ability, label, enabledHTML) => group.offer(ability, label, enabledHTML);
 
   const actions = ['<span id="attestation-affordance"></span>', '<span id="ask-affordance"></span>'];
   if (!isArchived && !inReview) {
@@ -2516,12 +2751,10 @@ async function viewPage(id) {
   if (!isArchived) {
     actions.push(offer(ability('archive'), 'Archive', '<button class="btn subtle" id="act-archive">Archive</button>'));
   }
-  // One line per refusal rather than a paragraph of them: somebody holding
-  // `view` on a page in review is refused three separate things, and three
-  // sentences run together read as a wall rather than as three answers.
-  const refusalNote = refusals.length
-    ? `<ul class="muted action-refusals">${[...new Set(refusals)].map((why) => `<li>${esc(why)}</li>`).join('')}</ul>`
-    : '';
+  // Somebody holding `view` on a page in review is refused three separate
+  // things. One reason is one line; three become one line and a "Why?", so the
+  // page opens on the page rather than on an apology for it.
+  const refusalNote = group.noteHTML();
 
   app.innerHTML = `
     <div class="layout">
@@ -3309,15 +3542,29 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
   if (!host.isConnected) return;
 
   const archived = page?.status === 'archived';
+  // Whether this actor may assert one AT THIS END. Asserting needs `edit` on
+  // both pages' collections; this is the half the page can answer, and the
+  // other half is answered inside the dialog, per page picked (see
+  // `openRelationModal`). Absent on an older server, and then offered as before.
+  const group = refusalGroup('these controls');
+  const assertHTML = archived
+    ? ''
+    : group.offer(
+        page?.abilities?.assertRelation ?? null,
+        'Assert a relation…',
+        '<button class="btn subtle" type="button" id="rel-assert">Assert a relation…</button>',
+        { className: 'btn subtle' },
+      );
   host.innerHTML = `
     <section class="panel relations ${rows.some((r) => r.reads === 'conflicts_with') ? 'has-conflict' : ''}" id="relations-panel">
       <div class="rel-panel-head">
         <h2 class="h-small">Conflicts and supersessions</h2>
-        ${archived ? '' : '<button class="btn subtle" type="button" id="rel-assert">Assert a relation…</button>'}
+        ${assertHTML}
       </div>
       <p class="rel-lede">Explicit relations between pages, written down by a person. Canon draws a contradiction
         rather than deciding it: nothing here changes what either page says, the standing it holds, or whether it can
         be cited.</p>
+      ${group.noteHTML()}
       ${rows.length
         ? `<ul class="rel-list">${rows.map(relationEntryHTML).join('')}</ul>`
         : '<p class="muted rel-empty">The record does not hold a conflict or a supersession for this page.</p>'}
@@ -3347,8 +3594,57 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
 // Asserting one. The other page is chosen through the search the record
 // already has; where search is not served, its id is typed in, because a
 // relation names a page and a page has an id.
+//
+// AND WHICH COLLECTION SAID NO.
+//
+// Asserting a relation needs `edit` on BOTH pages' collections, because a
+// relation is a statement about two pages and somebody who may edit only one of
+// them would be writing a claim onto a page they have no standing over. A
+// contributor holding `edit` here picked a page in another collection, wrote
+// the note, pressed the solid green **Assert it** — and nothing happened. The
+// dialog stayed open, the panel still said the record held no conflict, and the
+// only explanation was a toast behind this dialog's own backdrop that had
+// already gone: "Requires edit access to this collection." *Which* collection?
+// "The one I'm on, where I hold edit? Or the one I'm pointing at? It doesn't
+// say, and it names nobody to ask."
+//
+// This matters more than the other two refusals in the same round, because the
+// one real contradiction in the seeded record is cross-collection, and
+// cross-boundary is where contradictions come from.
+//
+// So the far end is answered the way the near end is: from the server. Every
+// collection this actor can see carries `abilities.assertRelation` —
+// `collectionAbilities`, a mirror of relations.ts and never a gate — and its
+// sentence names that collection, what they hold there, and who does hold it.
+// The picker marks a page it would be refused against rather than letting
+// somebody write a note first, the way the approver picker lists only real
+// approvers. The server still decides; nothing here is the check.
 function openRelationModal(pageId, page) {
   const searchable = state.features.search === true;
+  // Collection id -> what the server says about asserting a relation there.
+  // Fetched once, beside the dialog rather than before it, so opening it is
+  // never held up by a request; the picker reads whatever has arrived and the
+  // server is the backstop either way.
+  let byCollection = new Map();
+  api('GET', '/collections')
+    .then((list) => {
+      byCollection = new Map(
+        (Array.isArray(list) ? list : []).map((c) => [c.id, { name: c.name, assert: c.abilities?.assertRelation ?? null }]),
+      );
+    })
+    .catch(() => { /* an older server answers for both ends at the last click */ });
+
+  // Why this actor could not assert against that page, in the server's words —
+  // or null where nothing says they cannot.
+  const whyNot = (item) => {
+    if (item.status === 'archived') {
+      return 'That page is archived and read-only, so no relation may be asserted against it.';
+    }
+    const c = byCollection.get(item.collectionId);
+    if (!c || !c.assert || c.assert.can !== false) return null;
+    return c.assert.why;
+  };
+
   openModal({
     title: 'Assert a relation between two pages',
     submitLabel: 'Assert it',
@@ -3367,6 +3663,11 @@ function openRelationModal(pageId, page) {
           <input name="q" type="search" autocomplete="off" placeholder="Search the record by title&hellip;">
         </label>
         <div class="rel-picks" id="rel-picks" hidden></div>
+        ${/* OUTSIDE the scrolling list. It lived inside it for one draft, where
+              it was a sentence you had to scroll a 12rem box to find — which is
+              the same defect as a toast in the corner, wearing a different
+              coat. */ ''}
+        <div id="rel-pick-note"></div>
         <p class="rel-chosen muted" id="rel-chosen">No page chosen yet.</p>
         <input type="hidden" name="toPageId">`
         : `<label>&hellip;this one, by page id
@@ -3411,6 +3712,7 @@ function openRelationModal(pageId, page) {
 
   const q = form.querySelector('[name=q]');
   const picks = root.querySelector('#rel-picks');
+  const note = root.querySelector('#rel-pick-note');
   const chosen = root.querySelector('#rel-chosen');
   const hidden = form.querySelector('[name=toPageId]');
   let timer = null;
@@ -3426,16 +3728,36 @@ function openRelationModal(pageId, page) {
           .filter((it) => (it.pageId ?? it.id) !== pageId)
           .slice(0, 8);
       } catch { picks.hidden = true; return; }
+      // A page this actor could not assert against is still LISTED — it is in
+      // the record and hiding it would be its own kind of lie — but it is
+      // marked, unselectable, and carries the sentence that says which
+      // collection refused and who holds the role there.
+      const group = refusalGroup('these pages');
+      const rows = items.map((it) => {
+        const id = it.pageId ?? it.id;
+        const title = it.title ?? '(untitled)';
+        const where = byCollection.get(it.collectionId)?.name ?? null;
+        const label = `${esc(title)} ${it.status ? badge(it.status, 'sm') : ''}
+          ${where ? `<span class="muted rel-pick-where">${esc(where)}</span>` : ''}`;
+        return group.offer(
+          whyNot(it) ? { can: false, why: whyNot(it) } : null,
+          label,
+          `<button type="button" class="rel-pick" data-id="${esc(id)}"
+            data-title="${esc(title)}" data-where="${esc(where ?? '')}">${label}</button>`,
+          { className: 'rel-pick' },
+        );
+      });
       picks.innerHTML = items.length
-        ? items.map((it) => `<button type="button" class="rel-pick" data-id="${esc(it.pageId ?? it.id)}"
-            data-title="${esc(it.title ?? '(untitled)')}">${esc(it.title ?? '(untitled)')}
-            ${it.status ? badge(it.status, 'sm') : ''}</button>`).join('')
+        ? rows.join('')
         : '<p class="muted rel-pick-empty">Nothing in the record matches.</p>';
       picks.hidden = false;
-      picks.querySelectorAll('.rel-pick').forEach((btn) => {
+      note.innerHTML = items.length ? group.noteHTML() : '';
+      picks.querySelectorAll('.rel-pick:not(.is-refused)').forEach((btn) => {
         btn.addEventListener('click', () => {
           hidden.value = btn.dataset.id;
-          chosen.textContent = `Chosen: ${btn.dataset.title}`;
+          chosen.textContent = btn.dataset.where
+            ? `Chosen: ${btn.dataset.title} — in ${btn.dataset.where}`
+            : `Chosen: ${btn.dataset.title}`;
           chosen.classList.add('is-chosen');
           picks.hidden = true;
           q.value = btn.dataset.title;
@@ -4708,11 +5030,21 @@ function sourceFormBody(source, collections = []) {
     ${collections.length ? `
       <label>Which collections may reference this source
         <select name="collectionIds" multiple size="${Math.min(5, Math.max(3, collections.length))}">
-          ${collections.map((c) => `<option value="${esc(c.id)}" ${scope.includes(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+          ${/* A source cannot be walked into a collection you do not administer
+                — the server refuses it both before and after a change — so the
+                picker says so where the choice is made rather than after the
+                Save. A collection this source is ALREADY scoped to stays
+                selectable, or an administrator could not take it out again. */ ''}
+          ${collections.map((c) => {
+            const mine = !c.abilities || c.abilities.role === 'admin' || scope.includes(c.id);
+            return `<option value="${esc(c.id)}" ${scope.includes(c.id) ? 'selected' : ''} ${mine ? '' : 'disabled'}
+              >${esc(c.name)}${mine ? '' : ' — you do not administer this collection'}</option>`;
+          }).join('')}
         </select>
       </label>
       <p class="muted type-help">Select none to leave it Canon-wide — every collection may reference
-        it. Selecting collections limits it to those, and a page anywhere else cannot ask this
+        it, and that is an act at the altitude of the whole Canon: it takes the operator role.
+        Selecting collections limits it to those, and a page anywhere else cannot ask this
         source at all.</p>` : ''}`;
 }
 
@@ -4793,24 +5125,27 @@ async function viewSources() {
   state.sourcesById = new Map(sources.map((s) => [s.id, s]));
   let collections = [];
   try { collections = await api('GET', '/collections'); } catch { /* names are a nicety */ }
+  // USER-TESTING.md T4.4 named "a red Delete on a live data source, offered to
+  // people the server refuses", and it was the last of the three still open.
+  // Each row now carries what this actor may do to it, written by the same
+  // function that writes a page's refusals; `GET /sources/new` answers for the
+  // one control that exists before a source does. Both are absent on an older
+  // server, and everything is then offered exactly as it was.
+  let register = null;
+  try { register = await api('GET', '/sources/new'); } catch { register = null; }
+  const group = refusalGroup('these controls');
 
-  app.innerHTML = `
-    <div class="page-wide">
-      <div class="page-head">
-        <div>
-          <h1>Sources</h1>
-          <p class="muted sources-lede">External systems Canon reads from and never copies. A page
-            holds a reference — the key to ask with — and the value is resolved when the page is
-            read, shown with the source that answered and the time it answered.</p>
-        </div>
-        <div class="actions"><button class="btn primary" id="new-source">Register a source</button></div>
-      </div>
-
-      ${sources.length ? `
-        <div class="table-scroll"><table class="table sources-table">
-          <thead><tr><th>Name</th><th>Kind</th><th>Resolved as</th><th>Referenceable from</th><th>Freshness window</th><th></th></tr></thead>
-          <tbody>
-            ${sources.map((s) => `
+  // The rows are built BEFORE the page, so every refusal is known by the time
+  // the note is written and the note can sit under the heading — beside the
+  // controls it explains rather than below a table somebody has scrolled past.
+  const registerHTML = group.offer(
+    register,
+    'Register a source',
+    '<button class="btn primary" id="new-source">Register a source</button>',
+    { className: 'btn primary' },
+  );
+  const rowsHTML = sources.length
+    ? sources.map((s) => `
               <tr>
                 <td>
                   <span class="source-name">${esc(s.name ?? '(unnamed)')}</span>
@@ -4821,10 +5156,45 @@ async function viewSources() {
                 <td class="source-scope">${sourceScopeCell(s, collections)}</td>
                 <td class="nowrap">${esc(fmtDuration(s.freshnessWindowMs))}</td>
                 <td class="t-right nowrap">
-                  <button class="btn subtle" data-edit-source="${esc(s.id)}">Edit</button>
-                  <button class="btn subtle" data-delete-source="${esc(s.id)}">Delete</button>
+                  ${group.offer(
+                    s.abilities?.edit ?? null,
+                    'Edit',
+                    `<button class="btn subtle" data-edit-source="${esc(s.id)}">Edit</button>`,
+                    { className: 'btn subtle' },
+                  )}
+                  ${group.offer(
+                    s.abilities?.delete ?? null,
+                    'Delete',
+                    `<button class="btn subtle" data-delete-source="${esc(s.id)}">Delete</button>`,
+                    { className: 'btn subtle' },
+                  )}
                 </td>
-              </tr>`).join('')}
+              </tr>`).join('')
+    : group.offer(
+        register,
+        'Register the first source',
+        '<button class="btn primary" id="new-source-empty">Register the first source</button>',
+        { className: 'btn primary' },
+      );
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <div>
+          <h1>Sources</h1>
+          <p class="muted sources-lede">External systems Canon reads from and never copies. A page
+            holds a reference — the key to ask with — and the value is resolved when the page is
+            read, shown with the source that answered and the time it answered.</p>
+        </div>
+        <div class="actions">${registerHTML}</div>
+      </div>
+      ${group.noteHTML()}
+
+      ${sources.length ? `
+        <div class="table-scroll"><table class="table sources-table">
+          <thead><tr><th>Name</th><th>Kind</th><th>Resolved as</th><th>Referenceable from</th><th>Freshness window</th><th></th></tr></thead>
+          <tbody>
+            ${rowsHTML}
           </tbody>
         </table></div>` : `
         <div class="empty-state">
@@ -4832,7 +5202,7 @@ async function viewSources() {
           <p>Register the system that owns a fact — the HRIS for headcount, the benefits
             administrator for a deductible — and pages can reference its values instead of
             asserting numbers Canon does not own and cannot keep true.</p>
-          <p><button class="btn primary" id="new-source-empty">Register the first source</button></p>
+          <p>${rowsHTML}</p>
         </div>`}
     </div>`;
 
@@ -7605,6 +7975,49 @@ document.addEventListener('click', (e) => {
   const target = document.getElementById(btn.dataset.scrollTo);
   if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+
+// Refusals, everywhere, wired once (see `refusalGroup`). Delegated on the
+// document rather than wired per screen for two reasons: the markup is
+// self-describing — a greyed control points at its reason with
+// `aria-describedby`, and a "Why?" points at its list with `aria-controls` —
+// and a dialog's controls live in `#modal-root`, outside the app element every
+// view renders into. Focus it, tap it, or click the "Why?": all three land here.
+function revealRefusal(control) {
+  const id = control.getAttribute('aria-describedby');
+  const reason = id ? document.querySelector(`[id="${cssEscape(id)}"]`) : null;
+  if (!reason) return;
+  const list = reason.closest('.refusal-list');
+  if (list?.hidden) {
+    list.hidden = false;
+    document.querySelector(`[aria-controls="${cssEscape(list.id)}"]`)?.setAttribute('aria-expanded', 'true');
+  }
+  (list ?? reason.parentElement)?.querySelectorAll('.is-lit').forEach((el) => el.classList.remove('is-lit'));
+  reason.classList.add('is-lit');
+}
+
+document.addEventListener('click', (e) => {
+  const toggle = e.target.closest?.('[data-refusal-toggle]');
+  if (toggle) {
+    const list = document.querySelector(`[id="${cssEscape(toggle.getAttribute('aria-controls'))}"]`);
+    if (list) {
+      list.hidden = !list.hidden;
+      toggle.setAttribute('aria-expanded', String(!list.hidden));
+    }
+    return;
+  }
+  const control = e.target.closest?.('[data-refusal]');
+  if (control) revealRefusal(control);
+});
+const onRefusalFocus = (e) => {
+  const control = e.target.closest?.('[data-refusal]');
+  if (control) revealRefusal(control);
+};
+// Both, deliberately. `focusin` bubbles and is the ordinary path; `focus`
+// does not bubble, so it is taken in the capture phase, which is what fires
+// when focus is moved programmatically or by a browser that is not the
+// foreground window.
+document.addEventListener('focusin', onRefusalFocus);
+document.addEventListener('focus', onRefusalFocus, true);
 
 window.addEventListener('hashchange', route);
 // Ask the server which door is open before drawing anything: a cookie session

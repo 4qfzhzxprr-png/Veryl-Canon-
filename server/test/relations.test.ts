@@ -248,6 +248,53 @@ test('asserting takes edit on BOTH pages collections, and so does withdrawing', 
   assert.equal(store.listRelations(dana.id, policy).length, 0);
 });
 
+// USER-TESTING.md T4.4, second round. The refusal above is the one a
+// contributor met at the last click, and all it said was "Requires edit access
+// to this collection": which collection — the one she was on, where she held
+// edit, or the one she was pointing at? It named nobody to ask, and it arrived
+// in a toast behind the dialog's own backdrop, three seconds long.
+test('the cross-collection refusal names the collection that refused and who holds edit there', () => {
+  const { store, dana, marc, vera, compliance, engineering } = setup();
+  store.setMember(dana.id, engineering.id, vera.id, 'edit'); // somebody to be told about
+  const policy = note(store, dana.id, compliance.id, 'Records Retention Schedule');
+  const spec = note(store, dana.id, engineering.id, 'Data Retention in the Platform');
+
+  // What the screen is told BEFORE the click. The near end is Marc's own
+  // collection, where he holds edit, so it is a yes.
+  assert.equal(store.pageAbilities(marc.id, policy).assertRelation.can, true);
+
+  // The far end is a different collection, and the sentence is about THAT one.
+  store.setMember(dana.id, engineering.id, marc.id, 'view');
+  const far = store.collectionAbilities(marc.id, engineering.id).assertRelation;
+  assert.equal(far.can, false);
+  assert.match(far.why!, /Asserting a relation needs the edit role on Engineering/);
+  assert.match(far.why!, /you hold view there/);
+  assert.match(far.why!, /Dana and Vera hold it\.$/);
+
+  // And what the server says at the click is the SAME sentence, which is the
+  // whole point: one vocabulary, not two.
+  const refused = expectCode(
+    () =>
+      store.assertRelation(marc.id, policy, {
+        toPageId: spec,
+        kind: 'conflicts_with',
+        note: 'Seven years against twenty-four months.',
+      }),
+    'forbidden',
+  );
+  assert.equal(refused.message, far.why);
+  assert.equal(refused.details.collectionId, engineering.id);
+});
+
+test('an agent is told why it may not assert one, in the abilities it is given', () => {
+  const { store, dana, bot, compliance } = setup();
+  const page = note(store, dana.id, compliance.id, 'Records Retention Schedule');
+  const can = store.pageAbilities(bot.id, page).assertRelation;
+  assert.equal(can.can, false);
+  assert.match(can.why!, /An agent may not assert a relation/);
+  assert.match(can.why!, /raises a proposal/);
+});
+
 test('a relation whose other end the asker cannot see is absent, never a placeholder', () => {
   const { store, dana, marc, compliance, engineering } = setup();
   const policy = note(store, dana.id, compliance.id, 'Records Retention Schedule');

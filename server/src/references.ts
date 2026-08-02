@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { forbiddenRole } from './abilities.js';
 import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
 import { Asker, ConnectorRegistry, ResolveRequest } from './connectors.js';
 import { Source, SourceAuthMode, SourceService } from './sources.js';
@@ -567,11 +568,9 @@ export class ReferenceService {
   private requireRole(actorId: string, collectionId: string, needed: Role): void {
     const role = this.host.roleOf(actorId, collectionId);
     if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
-      throw new CanonError('forbidden', `Requires ${needed} access to this collection`, {
-        collectionId,
-        needed,
-        held: role,
-      });
+      // One sentence, built in abilities.ts, and the same one the screen shows
+      // before the click (USER-TESTING.md T4.4, second round).
+      throw forbiddenRole(this.db, collectionId, role, needed);
     }
   }
 

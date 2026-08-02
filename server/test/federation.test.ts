@@ -208,6 +208,51 @@ test('sources: update and delete are admin-gated and audited; delete refuses whi
   assert.equal(deletes[0]!.details.sourceId, source.id);
 });
 
+// USER-TESTING.md T4.4 named "a red Delete on a live data source, offered to
+// people the server refuses", and it was the last of the three left open. The
+// register now asks the same question the delete asks, before drawing the
+// button — and the answer is the same sentence, in the same words, as
+// everywhere else in the product.
+test('abilities: the red Delete is not offered to somebody the server would refuse', () => {
+  const { store, dana, marc, vera, collection } = setup();
+  const { source, reference } = federated(store, {
+    admin: dana.id,
+    editor: marc.id,
+    collectionId: collection.id,
+    fixtures: { deductible: { 'PLAN-7': 1500 } },
+  });
+
+  // Marc holds `edit` here and administers nothing. Both controls are refused,
+  // and the sentence names the collection, what he holds, and who does.
+  const his = store.sourceAbilities(marc.id, store.getSource(marc.id, source.id));
+  assert.equal(his.edit.can, false);
+  assert.equal(his.delete.can, false);
+  assert.match(his.edit.why!, /Changing this source needs the admin role on Benefits/);
+  assert.match(his.edit.why!, /you hold edit there/);
+  assert.match(his.edit.why!, /Dana holds it\.$/);
+  // A mirror, not a gate: what it reports as refused, the server refuses.
+  assert.equal(expectCode(() => store.updateSource(marc.id, source.id, { name: 'x' }), 'forbidden').message, his.edit.why);
+
+  // Dana administers it and may still not delete it, because a page is
+  // pointing at it — a rule the register would otherwise offer and then break.
+  const hers = store.sourceAbilities(dana.id, store.getSource(dana.id, source.id));
+  assert.equal(hers.edit.can, true);
+  assert.equal(hers.delete.can, false);
+  assert.match(hers.delete.why!, /1 page reference still points at this source/);
+  expectCode(() => store.deleteSource(dana.id, source.id), 'conflict');
+
+  store.removeReference(marc.id, reference.id);
+  assert.equal(store.sourceAbilities(dana.id, store.getSource(dana.id, source.id)).delete.can, true);
+
+  // And the one control that exists before a source does.
+  assert.equal(store.sourceRegisterAbility(dana.id).can, true);
+  const nobody = store.sourceRegisterAbility(vera.id);
+  assert.equal(nobody.can, false);
+  assert.match(nobody.why!, /Registering a source needs the admin role on the collections it is scoped to/);
+  assert.match(nobody.why!, /operator role for this Canon/);
+  assert.match(nobody.why!, /Dana holds it for this Canon\.$/);
+});
+
 test('sources: a scoped source is listed and visible only to members of its collections', () => {
   const { store, dana, vera, outsider, collection } = setup();
   const scoped = store.createSource(dana.id, {

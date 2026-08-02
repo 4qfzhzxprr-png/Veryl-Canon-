@@ -1,8 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
+import {
+  CAN,
+  cannot,
+  collectionName,
+  forbiddenRole,
+  needsOrgRole,
+  needsRoleHere,
+  whoHoldsOrgRole,
+} from './abilities.js';
+import { Actor, CanonError, PageAbility, Role, ROLE_RANK } from './model.js';
 import { OutboundPolicy, OutboundRefused, assertRegistrableBaseUrl, defaultOutboundPolicy } from './outbound.js';
-import { requireOrgRole } from './orgrole.js';
+import { ORG_ROLE_RANK, isOrgOperator, orgRoleOf } from './orgrole.js';
 
 // Federation, part one: the registered external systems Canon may resolve a
 // value from (DATA-BACKBONE.md §6). A Source is a governed object, registered
@@ -86,6 +95,24 @@ export interface Source {
   createdBy: string;
   createdAt: string;
 }
+
+/**
+ * What the asking actor may do to one registered source. Same shape and same
+ * discipline as `PageAbilities` (model.ts): a mirror of the checks in this
+ * file, never one of them.
+ */
+export interface SourceAbilities {
+  edit: PageAbility;
+  delete: PageAbility;
+}
+
+// The three acts on a source, each in its own words, so the sentence a screen
+// SHOWS and the sentence a request GETS are the same sentence. `wide` is the
+// same act aimed at a Canon-wide source, which is an org-level act rather than
+// a collection one and says so.
+const REGISTER_SOURCE = { scoped: 'Registering this source', wide: 'Registering a Canon-wide source' };
+const EDIT_SOURCE = { scoped: 'Changing this source', wide: 'Changing a Canon-wide source' };
+const DELETE_SOURCE = { scoped: 'Deleting this source', wide: 'Deleting a Canon-wide source' };
 
 export interface SourceInput {
   name: string;
@@ -179,8 +206,8 @@ export class SourceService {
     });
     // Admin under both the old scope and the new one: a source cannot be
     // walked out of a collection you administer, nor into one you do not.
-    this.requireSourceAdmin(actorId, before.collectionIds);
-    this.requireSourceAdmin(actorId, merged.collectionIds);
+    this.requireSourceAdmin(actorId, before.collectionIds, EDIT_SOURCE);
+    this.requireSourceAdmin(actorId, merged.collectionIds, EDIT_SOURCE);
 
     this.db
       .prepare(
@@ -210,7 +237,7 @@ export class SourceService {
     const actor = this.host.getActor(actorId);
     const source = this.row(id);
     this.requireVisible(actorId, source); // see `update`, and SECURITY.md R4
-    this.requireSourceAdmin(actorId, source.collectionIds);
+    this.requireSourceAdmin(actorId, source.collectionIds, DELETE_SOURCE);
     // Pages referencing this source would resolve to nothing. Refuse visibly
     // rather than leave dangling references behind; the table belongs to
     // references.ts, which is why this reads it rather than writing it.
@@ -250,6 +277,97 @@ export class SourceService {
       )
       .all(actorId) as { id: string }[];
     return rows.map((r) => this.row(r.id));
+  }
+
+  /**
+   * WHAT THIS ACTOR MAY DO TO THIS SOURCE, AND WHERE THEY MAY NOT, WHO CAN.
+   *
+   * USER-TESTING.md T4.4 named "a red Delete on a live data source, offered to
+   * people the server refuses" and it was the last of the three still standing:
+   * pressing it produced a three-second toast reading "Requires admin access to
+   * this collection", behind the confirmation dialog that had just opened, in
+   * the far corner of the screen. It named no collection and nobody to ask.
+   *
+   * Same discipline as `CanonStore.pageAbilities`: this MIRRORS the checks
+   * `update` and `remove` make above and never makes one. `can: true` where the
+   * act would refuse is a bug; `can: false` where it would succeed is merely
+   * unhelpful, so where a rule is fiddly this restates it in the same order the
+   * act applies it, and the refusal-with-references below is the act's own
+   * sentence.
+   */
+  abilities(actorId: string, source: Source): SourceAbilities {
+    const admin = this.whyNotSourceAdmin(actorId, source.collectionIds, EDIT_SOURCE);
+    // `remove` asks the same question in its own words, and then one more: a
+    // source with references still pointing at it is refused whoever asks,
+    // because deleting it would leave a page asking a question of nothing.
+    let remove = this.whyNotSourceAdmin(actorId, source.collectionIds, DELETE_SOURCE);
+    if (remove.can) {
+      const used = (
+        this.db.prepare('SELECT COUNT(*) AS n FROM page_references WHERE source_id = ?').get(source.id) as {
+          n: number;
+        }
+      ).n;
+      if (used > 0) {
+        remove = cannot(
+          `${used} page reference${used === 1 ? '' : 's'} still point${used === 1 ? 's' : ''} at this source. ` +
+            'Remove them from their pages first: a reference is never silently dropped, because a missing ' +
+            'value must not read as “there is no such value”.',
+        );
+      }
+    }
+    return { edit: admin, delete: remove };
+  }
+
+  /**
+   * Whether this actor could register ANY source at all, for the one control
+   * that exists before a source does. Registering takes admin on the scope
+   * chosen, or the org-level `operator` role for a Canon-wide one — so somebody
+   * who administers a collection may register a source scoped to it, and the
+   * modal's own scope picker mirrors the rest (see the client).
+   */
+  registerAbility(actorId: string): PageAbility {
+    this.host.getActor(actorId);
+    if (isOrgOperator(this.db, actorId)) return CAN;
+    const admins = this.db
+      .prepare("SELECT COUNT(*) AS n FROM collection_members WHERE actor_id = ? AND role = 'admin'")
+      .get(actorId) as { n: number };
+    if (admins.n > 0) return CAN;
+    return cannot(
+      'Registering a source needs the admin role on the collections it is scoped to, and you administer none. ' +
+        'A source referenceable from every collection needs the operator role for this Canon. ' +
+        whoHoldsOrgRole(this.db, 'operator'),
+    );
+  }
+
+  /**
+   * `requireSourceAdmin`, asked rather than enforced. The two are deliberately
+   * adjacent: they take the same argument in the same order, and the sentence
+   * names the collection that failed rather than "this collection", because the
+   * reader is on the source register looking at a row that may be scoped to a
+   * collection they are not in.
+   */
+  private whyNotSourceAdmin(
+    actorId: string,
+    collectionIds: string[],
+    act: { scoped: string; wide: string },
+  ): PageAbility {
+    if (collectionIds.length === 0) {
+      const held = orgRoleOf(this.db, actorId);
+      if (ORG_ROLE_RANK[held] >= ORG_ROLE_RANK.operator) return CAN;
+      return needsOrgRole(this.db, held, `${act.wide} (one with no collection scope)`, 'operator');
+    }
+    for (const collectionId of collectionIds) {
+      const role = this.host.roleOf(actorId, collectionId);
+      if (role && ROLE_RANK[role] >= ROLE_RANK.admin) continue;
+      return needsRoleHere(
+        this.db,
+        { id: collectionId, name: collectionName(this.db, collectionId) },
+        role,
+        act.scoped,
+        'admin',
+      );
+    }
+    return CAN;
   }
 
   // Used by references.ts on both the write and the read path: a reference may
@@ -350,12 +468,25 @@ export class SourceService {
   // an org-level role arrived. It has arrived, and this is that change: a
   // source referenceable from every collection in the record is an act at the
   // altitude of the whole Canon, so it takes a role at that altitude.
-  private requireSourceAdmin(actorId: string, collectionIds: string[]): void {
+  private requireSourceAdmin(actorId: string, collectionIds: string[], act = REGISTER_SOURCE): void {
+    // Enforced by asking `whyNotSourceAdmin` — which is the mirror the register
+    // draws its greyed buttons from — so the two can never disagree about
+    // either the answer or the words. This is the direction that is safe: the
+    // mirror never decides, the check just borrows its sentence.
+    const answer = this.whyNotSourceAdmin(actorId, collectionIds, act);
+    if (answer.can) return;
     if (collectionIds.length === 0) {
-      requireOrgRole(this.db, actorId, 'operator', 'Registering a Canon-wide source (one with no collection scope)');
-      return;
+      throw new CanonError('forbidden', answer.why!, {
+        reason: 'org_role_required',
+        neededOrgRole: 'operator',
+        heldOrgRole: orgRoleOf(this.db, actorId),
+      });
     }
-    for (const collectionId of collectionIds) this.requireRole(actorId, collectionId, 'admin');
+    const failed = collectionIds.find((id) => {
+      const role = this.host.roleOf(actorId, id);
+      return !role || ROLE_RANK[role] < ROLE_RANK.admin;
+    })!;
+    throw forbiddenRole(this.db, failed, this.host.roleOf(actorId, failed), 'admin', act.scoped);
   }
 
   // Reading a source's registration is not reading its values: metadata only,
@@ -380,11 +511,9 @@ export class SourceService {
   private requireRole(actorId: string, collectionId: string, needed: Role): void {
     const role = this.host.roleOf(actorId, collectionId);
     if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
-      throw new CanonError('forbidden', `Requires ${needed} access to this collection`, {
-        collectionId,
-        needed,
-        held: role,
-      });
+      // One sentence, built in abilities.ts, and the same one the screen shows
+      // before the click (USER-TESTING.md T4.4, second round).
+      throw forbiddenRole(this.db, collectionId, role, needed);
     }
   }
 
