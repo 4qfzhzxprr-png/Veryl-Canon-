@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import { openDb } from '../src/db.js';
 import { CanonStore } from '../src/store.js';
@@ -19,14 +21,21 @@ import { validateConfig } from '../src/config.js';
 // The two ways a real embedding model is plugged in (embeddingproviders.ts).
 //
 // WHAT IS EXERCISED HERE AND WHAT IS NOT, stated plainly because the gap
-// matters. The HTTP provider is tested end to end against a substituted
-// transport: the request it forms, the answer it accepts, and every answer it
-// refuses. The in-process provider's WIRING is tested against a substituted
-// module — which module it loads, what it says when the optional dependency is
-// absent, how it batches, that it checks the width of what comes back — but the
-// MODEL has never run in this environment, because fetching its weights needs a
-// host this environment cannot reach. That path wants one run somewhere with
-// network access before anybody trusts it, and it is the default nowhere.
+// matters.
+//
+// The HTTP provider is exercised twice over. Against a substituted transport,
+// for the request it forms and every answer it refuses; and against a real
+// server on a real port, driving a real record end to end, because a
+// substituted transport cannot tell you whether the process can actually speak
+// — the POST body is new plumbing and a body that is never written looks fine
+// to a stub and hangs a server.
+//
+// The in-process provider's WIRING is tested against a substituted module —
+// which module it loads, what it says when the optional dependency is absent,
+// how it batches, that it checks the width of what comes back. The MODEL has
+// never run in this environment, because fetching its weights needs a host this
+// environment cannot reach. That path wants one run somewhere with network
+// access before anybody trusts it, and it is the default nowhere.
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -178,6 +187,99 @@ test('http provider: a refusal from the model is a failure, not an empty vector'
       // can carry the request that caused it, and the request is the record.
       !err.message.includes('your text'),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Over a real socket
+//
+// Every test above substitutes the transport, which proves the provider forms
+// the right request and reads the answer correctly and proves nothing about
+// whether it can talk. The POST body is new plumbing in pinnedhttp.ts — that
+// module had only ever issued GETs — and a body that is never written produces
+// a request a substituted transport is perfectly happy with and a real server
+// hangs on. So: an actual server, on an actual port, driving an actual record.
+
+test('http provider: end to end against a server, and the index is built from what it said', async () => {
+  // Two dimensions is enough to be a vector space: this stands in for a model
+  // by scoring one axis for retention words and one for claims words, so a
+  // paraphrase lands near the page it paraphrases. It is not a model and does
+  // not pretend to be — what is under test is the wire, the record, and the
+  // rebuild, all of which are Canon's.
+  const seen: { model: string; input: string[] }[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      assert.equal(req.method, 'POST');
+      assert.equal(req.url, '/v1/embeddings');
+      assert.equal(req.headers.authorization, 'Bearer sk-test');
+      const sent = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string; input: string[] };
+      seen.push(sent);
+      const axis = (text: string, words: string[]) =>
+        words.reduce((n, w) => n + (text.toLowerCase().includes(w) ? 1 : 0), 0);
+      const body = JSON.stringify({
+        data: sent.input.map((text, index) => {
+          const a = axis(text, ['retain', 'retention', 'keep', 'years', 'destroy']);
+          const b = axis(text, ['claim', 'appeal', 'member', 'decide']);
+          const norm = Math.sqrt(a * a + b * b) || 1;
+          return { index, embedding: [a / norm, b / norm] };
+        }),
+      });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(body);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+
+  try {
+    const provider = httpEmbeddingProvider({
+      url: `http://127.0.0.1:${port}/v1/embeddings`,
+      model: 'stand-in-2d',
+      dimensions: 2,
+      apiKey: 'sk-test',
+    });
+
+    // The body really is written: a request whose body never reaches the
+    // server produces an empty JSON parse there, and this would be `undefined`.
+    const vectors = await provider.embed(['records are retained for seven years', 'a claim is decided']);
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0]!.input, ['records are retained for seven years', 'a claim is decided']);
+    assert.equal(seen[0]!.model, 'stand-in-2d');
+    assert.ok(cosine(vectors[0]!, vectors[1]!) < 0.5, 'the two texts are about different things');
+
+    // And the whole record indexes through it. The store is built with this
+    // provider, so every published page is embedded by the server above.
+    const store = new CanonStore(openDb(':memory:'), { deliver() {} }, provider);
+    const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'd@example.com' });
+    const iris = store.createActor({ kind: 'person', name: 'Iris', email: 'i@example.com' });
+    const collection = store.createCollection(dana.id, { name: 'Compliance' });
+    store.setMember(dana.id, collection.id, iris.id, 'approve');
+    const page = store.createPage(dana.id, {
+      collectionId: collection.id,
+      type: 'policy',
+      title: 'Retention of records',
+    });
+    store.editDraft(dana.id, page.id, {
+      body: 'Records are retained for seven years and then destroyed.',
+      fields: { ownerId: dana.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
+    });
+    store.submitForReview(dana.id, page.id);
+    store.approve(iris.id, page.id);
+    await store.embeddings.ready();
+
+    assert.equal(store.embeddings.error, null, 'nothing failed on the way to the model');
+    const stored = store.embeddings.chunksFor(page.id);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0]!.provider, 'http:stand-in-2d', 'the model is stamped on the row');
+    assert.equal(stored[0]!.dimensions, 2);
+
+    // The semantic channel finds it from words the page does not use.
+    const hits = await store.embeddings.similar(dana.id, { question: 'how long do we keep things' });
+    assert.deepEqual(hits.map((h) => h.pageId), [page.id]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 // ---------------------------------------------------------------------------
