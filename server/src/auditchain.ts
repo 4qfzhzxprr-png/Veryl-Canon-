@@ -42,17 +42,30 @@ import type { DatabaseSync } from 'node:sqlite';
 //     log has not changed since it was written; it says nothing about whether
 //     the application wrote a complete log in the first place.
 //
-// WHAT WOULD BE NEEDED FOR MORE — recommended, deliberately not built here:
-// PERIODIC EXTERNAL ANCHORING of the head hash. Publish `(headEventId,
-// headHash, takenAt)` on a schedule to somewhere Canon cannot write: a
-// write-once log, a counter-signed email to the compliance owner, a
-// transparency log, a customer-held file. Once an anchor exists, a wholesale
-// recomputation stops working — the recomputed chain cannot reproduce a head
-// hash that was published before the tampering, so every event up to the last
-// anchor becomes genuinely immutable rather than merely consistent. Canon
-// gives an anchor everything it needs (`GET /audit/verify` returns the head)
-// and takes no view on where a deployment publishes it, because that choice is
-// the customer's trust boundary, not ours.
+// WHAT WOULD BE NEEDED FOR MORE: PERIODIC EXTERNAL ANCHORING of the head hash.
+// Publish `(headEventId, headHash, takenAt)` on a schedule to somewhere Canon
+// cannot write: a write-once log, a counter-signed email to the compliance
+// owner, a transparency log, a customer-held file. Once an anchor exists, a
+// wholesale recomputation stops working — the recomputed chain cannot reproduce
+// a head hash that was published before the tampering, so every event up to the
+// last anchor becomes genuinely immutable rather than merely consistent.
+//
+// Canon now produces that value on a schedule (headanchor.ts: a log line every
+// hour by default, and a file where `CANON_ANCHOR_FILE` names one) and
+// OPERATIONS.md gives the recipe for carrying it off the box. It still takes no
+// view on WHERE a deployment publishes it, because that choice is the
+// customer's trust boundary and not ours — and, more to the point, because the
+// anchor Canon writes is inside Canon's own trust boundary and proves nothing
+// by itself. An attacker who can recompute this chain can rewrite that log line
+// and that file too. Only the copy that has left the machine is evidence.
+//
+// The same is true, and usefully so, of an attestation bundle: it carries the
+// head hash at the moment it was generated, so a bundle somebody RETAINED is an
+// external anchor that happens to be readable. USER-TESTING.md T3.2's
+// counter-test is exactly this — comparing a retained bundle against a fresh one
+// named the forged event, the reattributed actor and the recomputed hashes,
+// against a log that verified clean. attestcompare.ts is that comparison,
+// written down so nobody has to do it by hand.
 //
 // ---------------------------------------------------------------------------
 // THE MECHANISM
@@ -270,7 +283,14 @@ export function ensureAuditChain(db: DatabaseSync): AuditChainMeta {
   return meta;
 }
 
-function readChainMeta(db: DatabaseSync): AuditChainMeta | null {
+/**
+ * The chain's metadata, or null on a database that has never had a chain. A
+ * read and only a read — `ensureAuditChain` is the one that creates. Exported
+ * because an anchor (headanchor.ts) has to say WHICH record's head it carries,
+ * and `startedAt` is the only thing in the record that distinguishes one
+ * Canon's chain from another's.
+ */
+export function readChainMeta(db: DatabaseSync): AuditChainMeta | null {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'audit_chain_meta'")
     .get() as { name: string } | undefined;
@@ -327,9 +347,24 @@ export interface AuditChainVerification {
   partial: boolean;
   head: AuditChainHead | null;
   firstBreak: AuditChainBreak | null;
+  /**
+   * What `ok` MEANS, travelling in the same object as `ok` itself.
+   *
+   * USER-TESTING.md T3.2: a competently forged log — an event deleted, an
+   * approval reattributed, every later link recomputed — answers this endpoint
+   * `ok: true, firstBreak: null`. That is the correct answer to the question
+   * this check asks, and "ok: true" is a dangerously reassuring way to say it
+   * to somebody who did not read the field names. A reader who takes nothing
+   * from this response but a boolean must not be able to mistake internal
+   * consistency for authenticity, so the sentence that distinguishes them
+   * travels beside the boolean rather than in a document elsewhere.
+   */
+  okMeans: string;
   /** What a clean result does and does not entitle a reader to conclude. */
   proves: string;
   limits: string;
+  /** The one thing that would turn this check into a statement about authenticity. */
+  externalAnchor: string;
 }
 
 export const CHAIN_PROVES =
@@ -337,12 +372,28 @@ export const CHAIN_PROVES =
   'content: no event has been altered, deleted, reordered, or inserted between two existing events since it ' +
   'was written.';
 
+export const CHAIN_OK_MEANS =
+  'ok: true means this log is internally consistent with itself: every chained event still hashes to its recorded ' +
+  'link and the links still join up. It is NOT a statement that the log is authentic or complete. Somebody with ' +
+  'write access to this database who deletes an event and recomputes every later link produces a log that answers ' +
+  'ok: true, and this check cannot tell that log from an untouched one — no self-contained chain can. To turn this ' +
+  'into a statement about authenticity, compare `head` against a head hash that was recorded outside Canon before ' +
+  'the period you are asking about.';
+
+export const CHAIN_EXTERNAL_ANCHOR =
+  'Canon records its chain head periodically (a log line, and a file where CANON_ANCHOR_FILE is set) so that an ' +
+  'operator can ship it off-box; see OPERATIONS.md, "Anchor the chain head". An anchor Canon wrote and Canon could ' +
+  'rewrite proves nothing — the value is entirely in the copy that has been carried somewhere Canon cannot write. ' +
+  'A retained attestation bundle is the same anchor in another form and works the same way: it carries this head ' +
+  'hash, and comparing a retained bundle against a fresh one names any rewriting of the events it covers exactly.';
+
 export const CHAIN_LIMITS =
   'The chain lives in the same database as the events it protects, so somebody who can write to that database ' +
   'and knows how the links are computed can delete an event and recompute every later link, and this check ' +
-  'would then report a clean chain. It also says nothing about events that were never written. To close the ' +
-  'first gap, publish the head hash periodically somewhere Canon cannot write (an external anchor); tampering ' +
-  'before an anchor then cannot reproduce the anchored head.';
+  'would then report a clean chain — this is not hypothetical: it was done to a Canon record during review, and ' +
+  'this check answered ok: true. It also says nothing about events that were never written. To close the first ' +
+  'gap, keep the head hash periodically somewhere Canon cannot write (an external anchor, or a retained ' +
+  'attestation bundle, which carries one); tampering before an anchor then cannot reproduce the anchored head.';
 
 export interface VerifyOptions {
   /** Stop after this many events. Verification is a full walk by default. */
@@ -491,8 +542,10 @@ export function verifyAuditChain(db: DatabaseSync, options: VerifyOptions = {}):
     partial,
     head,
     firstBreak,
+    okMeans: CHAIN_OK_MEANS,
     proves: CHAIN_PROVES,
     limits: CHAIN_LIMITS,
+    externalAnchor: CHAIN_EXTERNAL_ANCHOR,
   };
 }
 

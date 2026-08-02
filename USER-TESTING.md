@@ -236,18 +236,65 @@ defensible, and that caps her reliance however good everything else is.
 **T3.1 · Attestations do not record how identity was established.** *(Ruth
 #12.)* She searched every bundle for any mention of authentication mode and
 found none, so a dev-auth bundle is indistinguishable from a federated one and
-the hash chain will faithfully protect a false attribution. Fix: every
-attestation states on its face "identity established by SSO, issuer X" or
-"identity asserted and unverified".
+the hash chain will faithfully protect a false attribution. **Fixed.** Every
+bundle now answers the question twice, because the two answers can disagree.
+**The doors**, on the face of the document directly under the title and again
+in the manifest: the OIDC issuer that vouched for these people, or —
+where `CANON_DEV_AUTH=true` — "identity in this deployment was asserted and not
+verified… read every attribution as *the record says this actor did it*". Its
+placement is the finding: a paragraph on page four would have failed the same
+test, because a reader who does not suspect there is a question never goes
+looking. **And each actor**, read from the record's own `actors.sso_subject`
+rather than from configuration, so it describes the history rather than today:
+federated, with the issuer and the provider's subject identifier printed beside
+the name, or asserted, with no subject and a sentence saying that no provider
+has ever vouched for them here. That column is what separates the real Nadia
+Haddad from the second one carrying her email address — the impostor has no
+subject — and on an SSO deployment an actor without one is named as the
+exception it is. The habit of naming exclusions is extended while we are here:
+nothing in a bundle is signed, Canon attests to nothing that happened outside
+it, separation of duties is enforced within Canon only, and federation is not
+evidence that a person was at the keyboard. Verified against a running Canon
+behind a real OIDC provider and against one with the dev door open.
 
 **T3.2 · Nothing anchors the chain head outside Canon.** *(Ruth #8.)* Her
 naive tamper was refused by the triggers and then caught precisely by
 `/audit/verify` (`content_mismatch, eventId: 726`). Her competent forgery —
 delete an event, reattribute the approval, recompute all 1,171 links — returned
 `ok: true`. Her counter-test is the answer: a *retained* attestation named the
-forgery exactly. So the mitigation is real and cheap: publish the head hash on
-a schedule somewhere Canon cannot write, and tell users to keep bundles. We
-already recommend this in the artefact; we should do it.
+forgery exactly. **Fixed, in the order the finding puts them.**
+
+*The anchor.* Canon writes an `audit head anchor` line — head event id, head
+hash, event count, time — hourly and at start-up, to a file as well where
+`CANON_ANCHOR_FILE` names one, with `scripts/anchor-head.js` for a scheduler
+that would rather take one beside the nightly backup. It is deliberately not
+sold as more than it is, in the code, in the log line, in the bundle and in
+OPERATIONS.md: **an anchor Canon writes and Canon could rewrite proves
+nothing.** The line is inside the same trust boundary as the database it
+describes; the value is entirely in the copy an operator ships somewhere Canon
+has no credentials for, and OPERATIONS.md gives the test for whether a
+destination counts, along with the instruction to keep the series rather than
+the latest.
+
+*The half that does not need an operator.* Every bundle now says **keep this
+file** and says what keeping it buys, since a retained attestation is an anchor
+already in the reader's own custody. `scripts/compare-attestations.js
+<retained.json> <fresh.json>` performs her counter-test in one command against
+two files — no database, no network, no running Canon — checking each file
+against its own digest and chain links and then naming every difference an
+append-only record cannot make: a deleted event, a changed actor with both
+values, a hash recomputed over unchanged content, an event moved into the past,
+a rewritten version, an approval a register lost. It reports and does not
+adjudicate: it cannot know which copy is honest, and the person holding one from
+their own custody does.
+
+*And `/audit/verify` stops being reassuring about the wrong thing.* Its response
+now carries `okMeans` beside `ok` — "internally consistent… NOT a statement that
+the log is authentic; somebody who deletes an event and recomputes every later
+link produces a log that answers ok: true" — with `externalAnchor` saying what
+would change that. The whole forgery is reproduced in the test suite, including
+the `ok: true` it must still return, so the day it stops being true of us we
+find out from a test rather than from an auditor.
 
 **T3.3 · Three green lights on a broken database.** *(Ade B1.)* A corrupted
 database left `/health` 200, `/ready` 200 with `database ok=true`, the log

@@ -5,6 +5,7 @@ import { assertConfigValid, ConfigError } from './config.js';
 import { defaultConnectorRegistry } from './connectors.js';
 import { MIGRATIONS, openDb } from './db.js';
 import { DEFAULT_SWEEP_INTERVAL_MS, startFreshnessSweeps } from './freshness.js';
+import { headAnchorOptionsFromEnv, startHeadAnchors } from './headanchor.js';
 import { HttpConnector } from './httpconnector.js';
 import { smtpTransportFromEnv } from './email.js';
 import { attachRequestLog, loggerFromEnv, redactUrl, requestLogEnabled } from './log.js';
@@ -130,6 +131,22 @@ const recordWatch = startRecordWatch(recordChecks(db, { path: dbPath }), {
 });
 if (recordWatch.timer) timers.push(recordWatch.timer);
 
+// The head anchor (headanchor.ts, USER-TESTING.md T3.2). Canon cannot prove its
+// own log to itself — a competent forgery recomputes every link and verifies
+// clean — so the only thing worth building is the value an operator ships off
+// the box: `(headEventId, headHash, takenAt)`, on a schedule, in a shape a log
+// collector or a cron line can carry away.
+//
+// Before `listen`, like the record watch, so the first anchor describes the head
+// as it was BEFORE this run served anything. That is the anchor that bounds the
+// whole run.
+//
+// It is deliberately not sold as more than it is, here or anywhere else: the
+// line below is written by Canon, to Canon's log, and Canon could rewrite it.
+// Only the copy that leaves this machine is evidence.
+const anchors = startHeadAnchors(headAnchorOptionsFromEnv(db, log));
+if (anchors.timer) timers.push(anchors.timer);
+
 const sweeps = startFreshnessSweeps(store, {
   intervalMs: Number(process.env.CANON_FRESHNESS_INTERVAL_MS ?? DEFAULT_SWEEP_INTERVAL_MS),
   actorId: process.env.CANON_MAINTENANCE_ACTOR_ID,
@@ -239,6 +256,22 @@ server.listen(port, () => {
     }
   } else {
     log.warn('freshness sweep NOT running', { detail: sweeps.schedule.reason });
+  }
+  // Anchoring, said out loud beside the sweep, and said with its caveat: an
+  // operator who reads "anchoring on" and stops there has a scheduled log line
+  // and no anchor at all.
+  if (anchors.schedule.scheduled) {
+    log.info('audit head anchor running', {
+      everyMs: anchors.schedule.intervalMs,
+      sink: anchors.schedule.sink,
+      file: anchors.schedule.file,
+      headEventId: anchors.first?.headEventId ?? null,
+      shipItOffBox:
+        'this line is inside Canon’s trust boundary and proves nothing here; carry a copy somewhere Canon ' +
+        'cannot write (OPERATIONS.md, "Anchor the chain head")',
+    });
+  } else {
+    log.warn('audit head anchor NOT running', { detail: anchors.schedule.reason });
   }
   log.info('probes', {
     liveness: 'GET /health',

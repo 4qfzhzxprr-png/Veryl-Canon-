@@ -164,6 +164,21 @@ required; each variable exists to turn that off or to change whose name is on it
 | `CANON_FRESHNESS_INTERVAL_MS` | optional | `3600000` (hourly) | How often the sweep runs, in addition to one immediate pass at start-up. `0` turns the timer off and hands review dates to your own scheduler calling `POST /maintenance/freshness`. | With it off and no scheduler, **"stale knowledge announces itself" is not true of this deployment** — and Canon says so at start-up, on `GET /maintenance/freshness`, and in the editor beside the review-date field, so the policy author finds out as well as the operator. |
 | `CANON_MAINTENANCE_ACTOR_ID` | optional, and normally left unset | unset = `system:canon` | The actor the timed sweep runs as. Unset, it is Canon itself: a `system` actor that cannot be signed in as, granted a role, or created a second time. Set it only if you deliberately want a named service account's name on this work; it must hold the org-level `operator` role. An id this record does not hold logs an error and falls back to `system:canon` rather than stopping the sweep. | **Naming a person here puts their name on work they did not do.** The audit log's whole value is that it does not say that, so an event Canon wrote says `system:canon` / `actorKind: system` and reads as *Canon* wherever an actor is rendered. Attribution stays universal (DATA-BACKBONE.md §2, principle 5) — it is now also true. |
 
+## Anchoring the audit chain head
+
+**Canon records where its audit chain had got to, on a schedule, so that an
+operator can carry that value off the box.** Read the honesty note before
+turning either of these into a control you rely on: *an anchor Canon writes, and
+Canon could rewrite, proves nothing.* The line below is inside the same trust
+boundary as the database it describes; the value appears only in the copy that
+has left this machine. OPERATIONS.md, "Anchor the chain head", is the recipe and
+the argument.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_ANCHOR_INTERVAL_MS` | optional | `3600000` (hourly) | How often Canon writes an `audit head anchor` line — `headEventId`, `headHash`, `events`, `takenAt` — in addition to one at start-up. `0` turns it off. | With it off, this deployment publishes nothing that would contradict a wholesale recomputation of the chain (USER-TESTING.md T3.2, where exactly that returned `ok: true` from `GET /audit/verify`). With it on and nobody shipping the line anywhere, the position is the same: **the schedule is not the control, the retention is.** |
+| `CANON_ANCHOR_FILE` | optional | unset | A file each anchor is also appended to, one JSON object per line. For a deployment whose log shipper is easier to point at a file than at stdout, or whose cron rsyncs the file to a store Canon has no credentials for. | Appended, never rewritten, because a file holding only the latest head is a file an attacker overwrites with the head they want. A path Canon can write is a path Canon can rewrite: put the file where a shipper *takes* it from, and treat the destination as the anchor. A write failure is a `warn` and does not stop the line reaching the log. |
+
 ## Not Canon's: the stubs
 
 These configure the **test doubles** in `idp-stub/`, `registry-stub/`,

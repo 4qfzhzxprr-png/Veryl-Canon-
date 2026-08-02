@@ -19,7 +19,9 @@ import {
   EffectiveDateStanding,
   effectiveDateStanding,
 } from './effectivedate.js';
+import { AnchorDisclosure, anchorDisclosure } from './headanchor.js';
 import { renderMarkdownHtml } from './html.js';
+import { IdentityProvenance, identityProvenance } from './identityprovenance.js';
 import {
   Actor,
   ActorKind,
@@ -198,6 +200,13 @@ export interface AttestationManifest {
   /** The audit event recording that this bundle was generated. */
   generationEventId: number | null;
   at: string | null;
+  /**
+   * How the identity of everybody named in this bundle was established
+   * (USER-TESTING.md T3.1). In the manifest AND on the face of the rendered
+   * document, because the finding was not that the fact was hard to find — it
+   * was that a reader holding the file had to come and ask us for it.
+   */
+  identity: IdentityProvenance;
   auditChain: {
     format: string;
     algorithm: string;
@@ -206,13 +215,27 @@ export interface AttestationManifest {
     head: AuditChainHead | null;
     chainedFromEventId: number;
     unchainedEventsBefore: number;
-    verifiedAtGeneration: { ok: boolean; verified: number; firstBreak: AuditChainVerification['firstBreak'] };
+    verifiedAtGeneration: {
+      ok: boolean;
+      verified: number;
+      firstBreak: AuditChainVerification['firstBreak'];
+      /** What that `ok` does and does not mean. Travels with the boolean. */
+      okMeans: string;
+    };
     proves: string;
     limits: string;
+    /** Whether this deployment publishes its head anywhere, and what that is worth. */
+    anchoring: AnchorDisclosure;
   };
   /** SHA-256 over the canonical JSON of everything in this bundle but the manifest. */
   contentDigest: string;
   howToVerify: string[];
+  /**
+   * Why keeping this file matters, and what keeping it buys (USER-TESTING.md
+   * T3.2). The mitigation that was demonstrated to work, said in the artefact
+   * it applies to rather than in a manual nobody was handed with it.
+   */
+  keepThis: string[];
   limits: string[];
 }
 
@@ -347,9 +370,18 @@ export interface AttestationHost {
 export const REGISTER_PAGE_CAP = 2000;
 
 export class AttestationService {
+  /**
+   * `env` is here for one reason: a bundle has to state which identity doors
+   * this deployment has open (USER-TESTING.md T3.1), and that fact lives in the
+   * environment rather than in the record. It defaults to the process's own
+   * environment — the same shape `devAuthEnabled(env)` and
+   * `oidcConfigFromEnv(env)` take in auth.ts — so no caller has to plumb it and
+   * a test can hand in a deployment that does not exist.
+   */
   constructor(
     private readonly db: DatabaseSync,
     private readonly host: AttestationHost,
+    private readonly env: NodeJS.ProcessEnv = process.env,
   ) {}
 
   // ---- point in time ---------------------------------------------------
@@ -606,6 +638,7 @@ export class AttestationService {
             ? [`What this page said at ${instant}, what standing it held then, and who had granted that standing.`]
             : []),
         ],
+        actorIds: content.actors.map((a) => a.id),
       }),
       ...content,
     };
@@ -726,6 +759,7 @@ export class AttestationService {
             `of which ${unexplainedEntries} record no basis for it. Both are named per row rather than left for a ` +
             'reader to spot by comparing columns, which is how USER-TESTING.md T1.5 was missed.',
         ],
+        actorIds: content.actors.map((a) => a.id),
       }),
       ...content,
     };
@@ -740,17 +774,24 @@ export class AttestationService {
     generationEventId: number | null;
     content: unknown;
     asserts: string[];
+    /** Everyone the bundle names, so identity can be answered for each. */
+    actorIds: readonly string[];
   }): AttestationManifest {
     const by = this.host.getActor(input.actorId);
     const verification = verifyAuditChain(this.db);
+    // The actor who asked is always in the identity section, even where the
+    // bundle names nobody else: "who generated this, and how do we know it was
+    // them" is the first question asked of an evidence artefact.
+    const identity = identityProvenance(this.db, [input.actorId, ...input.actorIds], this.env);
     return {
       format: 'veryl-canon-attestation-v1',
       subject: input.subject,
-      asserts: input.asserts,
+      asserts: [...input.asserts, identityAssertion(identity)],
       generatedAt: new Date().toISOString(),
       generatedBy: { id: by.id, name: by.name, kind: by.kind },
       generationEventId: input.generationEventId,
       at: input.at,
+      identity,
       auditChain: {
         format: AUDIT_CHAIN_FORMAT,
         algorithm: AUDIT_CHAIN_ALGORITHM,
@@ -763,13 +804,16 @@ export class AttestationService {
           ok: verification.ok,
           verified: verification.verified,
           firstBreak: verification.firstBreak,
+          okMeans: verification.okMeans,
         },
         proves: CHAIN_PROVES,
         limits: CHAIN_LIMITS,
+        anchoring: anchorDisclosure(this.env),
       },
       contentDigest: contentDigest(input.content),
       howToVerify: HOW_TO_VERIFY,
-      limits: BUNDLE_LIMITS,
+      keepThis: KEEP_THIS_BUNDLE,
+      limits: [...identity.limits, ...BUNDLE_LIMITS],
     };
   }
 
@@ -1014,6 +1058,78 @@ export class AttestationService {
 // act on. "Tamper-evident" in a feature list is marketing; a recipe a reader
 // can run is a claim.
 
+/**
+ * The identity line in `asserts` — what this bundle actually claims about the
+ * names in it, phrased as an assertion rather than as a caveat.
+ *
+ * It is generated rather than fixed because the honest sentence differs: on a
+ * federated deployment Canon asserts that a named issuer vouched for these
+ * people, and on an open one it asserts precisely the opposite, which is a
+ * thing worth asserting rather than admitting.
+ */
+export function identityAssertion(identity: IdentityProvenance): string {
+  const doors = identity.doors;
+  if (doors.devAuthOpen) {
+    return (
+      'That the identity of the actors named here was ASSERTED AND NOT VERIFIED at the time this bundle was ' +
+      'generated: this Canon accepts an X-Actor-Id header naming any actor, so the attributions in this document ' +
+      'are what the record says and not what Canon can vouch for.' +
+      (doors.ssoConfigured
+        ? ` Single sign-on is also configured here (issuer ${doors.issuer}), and the actors below say individually ` +
+          'whether a provider ever vouched for them.'
+        : '')
+    );
+  }
+  if (doors.ssoConfigured) {
+    return (
+      `That identity on this Canon is established by single sign-on against the OpenID Connect issuer ` +
+      `${doors.issuer}, and that ${identity.federated} of the person-actors named here ` +
+      `${identity.federated === 1 ? 'carries' : 'carry'} a subject issued by it` +
+      `${identity.asserted ? `, while ${identity.asserted} do not and are named as exceptions` : ''}. What Canon ` +
+      'attests to is the provider’s assertion, verified; it is not a claim about who was at the keyboard.'
+    );
+  }
+  return (
+    'That no door for people is open on this Canon (no identity provider is configured and the dev door is shut), ' +
+    'so nobody could have signed in while this bundle was generated. How each actor named here was originally ' +
+    'established is stated per actor, from what the record itself holds.'
+  );
+}
+
+/**
+ * Keep this file. USER-TESTING.md T3.2, and the only mitigation in that finding
+ * that was actually demonstrated to work.
+ *
+ * The auditor forged the log competently — deleted an event, reattributed an
+ * approval, recomputed all 1,171 links — and `GET /audit/verify` reported a
+ * clean chain, as it must. What named the forgery exactly was the attestation
+ * she had kept from BEFORE it: event 724 missing, 726's actor changed, four
+ * hashes changed. Her sentence was "a retained attestation is an effective
+ * external anchor, but the system anchors nothing itself and nothing tells a
+ * user to keep one". This is the second half of that, said in the artefact,
+ * because a reader who is handed the file is the only person who can act on it.
+ */
+export const KEEP_THIS_BUNDLE: string[] = [
+  'KEEP THIS FILE, somewhere Canon cannot write. Store it with your other evidence, not on the Canon server: an ' +
+    'attestation you retained is the cheapest external anchor there is, and on a record with no other anchor it ' +
+    'is the only one you have.',
+  'What retaining it buys: this bundle fixes the audit-chain head (event id and hash), the content of every event ' +
+    'it covers, and every hash link over them, as they stood at the moment it was generated. Nobody can later ' +
+    'change those events without the change showing up against this copy — including somebody who recomputed the ' +
+    'whole chain, which is the one attack an internal consistency check cannot see.',
+  'How to use it later: generate the same bundle again (same page, same `at`) and compare the two. An event ' +
+    'present here and missing there is a deletion; an event whose actor or details differ is a reattribution; a ' +
+    'chain hash that differs over identical content is a recomputation. `node ' +
+    'dist/server/scripts/compare-attestations.js <retained.json> <fresh.json>` does exactly that comparison and ' +
+    'names each one, and it reads only the two files — it asks Canon nothing and trusts Canon with nothing.',
+  'Keep the JSON as well as the printed page if you can. The HTML rendering is what a person reads; the JSON is ' +
+    'what a comparison runs against, and it carries the same facts under the same content digest.',
+  'A retained bundle is evidence about the events it covers and no others. It is filtered to one page or one ' +
+    'collection and to what its generator could see, so it cannot show a change to something it never contained. ' +
+    'Retaining bundles is not a substitute for the operator publishing the chain head on a schedule; it is the ' +
+    'half of that job a reader can do without them.',
+];
+
 export const HOW_TO_VERIFY: string[] = [
   '1. Recompute the content digest. Take this bundle, remove the `manifest` key, serialise what is left with ' +
     'JSON.stringify over keys in the order they appear, and SHA-256 it. It must equal manifest.contentDigest. ' +
@@ -1034,6 +1150,16 @@ export const HOW_TO_VERIFY: string[] = [
   '5. Ask Canon to reproduce it. The bundle is derived from immutable history, not stored: request the same ' +
     'page and the same `at` again and the versions, approvals and point-in-time answer must be identical. ' +
     'Anything that differs did not come from the record.',
+  '6. Compare this bundle against one you kept earlier. This is the strongest check on the list and the only one ' +
+    'that survives an attacker who can write to Canon’s database: steps 2 to 4 all ask the record about itself, ' +
+    'and a wholesale recomputation of the chain answers them all cleanly. Two bundles generated at different ' +
+    'times do not — a deleted event, a changed actor, a recomputed hash over unchanged content all show up as a ' +
+    'difference between the copies. `node dist/server/scripts/compare-attestations.js <earlier.json> <later.json>` ' +
+    'performs the comparison offline against the two files alone. See "Keep this file".',
+  '7. Read the identity section before you read anything else. It states how the names in this document were ' +
+    'established — the OpenID Connect issuer that vouched for them, or that identity here was asserted and not ' +
+    'verified. Every other check on this list is a check on whether the record CHANGED; that one is the only ' +
+    'statement about whether the names in it mean anything.',
 ];
 
 export const BUNDLE_LIMITS: string[] = [
@@ -1042,8 +1168,23 @@ export const BUNDLE_LIMITS: string[] = [
     'nothing else exists.',
   'The audit chain proves the log has not been altered since it was written. It cannot prove that the ' +
     'application wrote a complete log in the first place, and it cannot survive an attacker who can write to ' +
-    'Canon’s database and recompute the chain wholesale. Periodic external anchoring of the head hash is what ' +
-    'closes that gap; Canon recommends it and does not perform it.',
+    'Canon’s database and recompute the chain wholesale — done to a Canon record during review, after which ' +
+    '`GET /audit/verify` reported a clean chain. What closes that gap is a head hash held where Canon cannot ' +
+    'write it. Canon produces one on a schedule for an operator to carry off-box, and cannot itself know whether ' +
+    'anybody did; a bundle you retained is the same anchor in a form you hold yourself.',
+  'Nothing in this bundle was signed. There is no key, no counter-signature and no timestamping authority ' +
+    'anywhere in Canon, so this file proves nothing about its own origin: a bundle can be edited by anyone ' +
+    'holding it, and the content digest inside it recomputed to match. Its evidential weight comes from being ' +
+    'reproducible from a record other people can also read, and from copies retained by different parties — not ' +
+    'from the file itself.',
+  'Canon attests to what its own record holds. It cannot attest to anything that happened outside it: a policy ' +
+    'circulated by email before it was entered here, an approval given in a meeting, a version edited elsewhere ' +
+    'and pasted in. Where the record’s history begins is stated in this bundle; before that point Canon has ' +
+    'nothing and says so rather than inferring.',
+  'Separation of duties is enforced within Canon only, and only as its permission rules define it. That an ' +
+    'approver is not the author is a fact this bundle can support; that the approver was a person the ' +
+    'organization had authorised to approve this material is not — role grants are membership rows, and a bundle ' +
+    'cannot say whether the grant behind one was deliberate.',
   'Where `manifest.auditChain.unchainedEventsBefore` is greater than zero, this record was chained from its ' +
     'head forward at some point after it was created. Events before that point carry no link and are not ' +
     'attested to by the chain. Their content is still in the log; it simply is not proven unchanged.',
@@ -1282,7 +1423,99 @@ function chainSection(manifest: AttestationManifest): string {
     <dt>Link recipe</dt><dd class="small">${esc(chain.recipe)}</dd>
   </dl>
   <h3>What a clean chain proves</h3><p class="small">${esc(chain.proves)}</p>
-  <h3>What it does not</h3><p class="small">${esc(chain.limits)}</p>`;
+  <h3>What it does not</h3><p class="small">${esc(chain.limits)}</p>
+  <h3>What "verified" meant above</h3><p class="small">${esc(verdict.okMeans)}</p>
+  <h3>Anchoring on this deployment</h3>
+  <div class="${chain.anchoring.emitted ? 'note' : 'note warn'}">
+    <p class="small">${esc(chain.anchoring.statement)}</p>
+  </div>
+  <p class="small"><strong>An anchor proves:</strong> ${esc(chain.anchoring.proves)}</p>
+  <p class="small"><strong>And does not:</strong> ${esc(chain.anchoring.limits)}</p>`;
+}
+
+/**
+ * How identity was established — on the FACE of the document, immediately under
+ * the title, before the reader has read a single attribution.
+ *
+ * Its placement is the finding (USER-TESTING.md T3.1). The auditor searched
+ * every bundle for this and found nothing; a paragraph buried in the manifest
+ * on page four would have been a different way of failing the same test, since
+ * a reader who does not already suspect there is a question to ask never goes
+ * looking. It is loudest where it should be loudest: an open dev door gets the
+ * marked box, because that is a document whose every attribution is an
+ * assertion.
+ */
+function identitySection(identity: IdentityProvenance): string {
+  const doors = identity.doors;
+  const tone = doors.devAuthOpen ? 'note bad' : doors.ssoConfigured ? 'note' : 'note warn';
+  const heading = doors.devAuthOpen
+    ? 'Identity here was ASSERTED AND NOT VERIFIED'
+    : doors.ssoConfigured
+      ? `Identity here was established by single sign-on — ${doors.issuer}`
+      : 'No sign-in door is open on this Canon';
+  return `
+  <div class="${tone}"><h3>${esc(heading)}</h3><p>${esc(identity.statement)}</p></div>`;
+}
+
+/** The per-actor detail, in the manifest, beside everything else it qualifies. */
+function identityDetail(identity: IdentityProvenance): string {
+  const rows = identity.actors
+    .map(
+      (a) =>
+        `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td>` +
+        `<td>${esc(a.basis.replace(/_/g, ' '))}</td>` +
+        `<td class="small">${esc(a.issuer ?? '—')}</td>` +
+        `<td class="small">${esc(a.subject ?? '—')}</td>` +
+        `<td class="small">${esc(a.statement)}</td></tr>`,
+    )
+    .join('');
+  return `
+  <h2>How identity was established</h2>
+  ${identitySection(identity)}
+  <dl class="fields">
+    <dt>Door</dt><dd>${esc(identity.doors.mode.replace(/_/g, ' '))}</dd>
+    <dt>Identity provider</dt><dd>${esc(identity.doors.issuer ?? 'none configured')}</dd>
+    <dt>Dev door (X-Actor-Id)</dt><dd>${identity.doors.devAuthOpen ? 'OPEN — nothing is verified' : 'closed'}</dd>
+    <dt>People from a verified sign-in</dt><dd>${esc(identity.federated)}</dd>
+    <dt>People with no verified sign-in</dt><dd>${esc(identity.asserted)}</dd>
+  </dl>
+  <table><thead><tr><th>Name</th><th>Kind</th><th>Established by</th><th>Issuer</th><th>Provider subject</th>
+  <th>What that means</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/**
+ * Everyone the bundle names, with how their name was established in the same
+ * row. The column is here and not only in the identity section because this is
+ * the table a reader consults when they are checking a name against their own
+ * records, and "which of these two people called Nadia Haddad is the one in our
+ * directory" is answered by the subject column or by nothing.
+ */
+function peopleTable(actors: NamedActor[], identity: IdentityProvenance): string {
+  const byId = new Map(identity.actors.map((a) => [a.actorId, a]));
+  return `<table><thead><tr><th>Name</th><th>Kind</th><th>Id</th><th>Established by</th><th>Provider subject</th>
+    </tr></thead><tbody>${actors
+      .map((a) => {
+        const who = byId.get(a.id);
+        const basis = who ? who.basis.replace(/_/g, ' ') : 'not stated';
+        const detail = who?.issuer ? `${basis} <span class="muted small">${esc(who.issuer)}</span>` : esc(basis);
+        return (
+          `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="small">${esc(a.id)}</td>` +
+          `<td class="small">${detail}</td><td class="small">${esc(who?.subject ?? '—')}</td></tr>`
+        );
+      })
+      .join('')}</tbody></table>`;
+}
+
+/** Keep this file: the mitigation, in the artefact it applies to. */
+function keepThisSection(manifest: AttestationManifest): string {
+  return `
+  <h2>Keep this document</h2>
+  <div class="note"><h3>A retained attestation is an external anchor</h3>
+  <p>${esc(manifest.keepThis[0] ?? '')}</p></div>
+  <ul class="plain small">${manifest.keepThis
+    .slice(1)
+    .map((k) => `<li>${esc(k)}</li>`)
+    .join('')}</ul>`;
 }
 
 function manifestSection(manifest: AttestationManifest): string {
@@ -1301,9 +1534,11 @@ function manifestSection(manifest: AttestationManifest): string {
     <dt>As at</dt><dd>${manifest.at ? esc(manifest.at) : 'not a point-in-time query'}</dd>
     <dt>Content digest</dt><dd class="hash">sha256:${esc(manifest.contentDigest)}</dd>
   </dl>
+  ${identityDetail(manifest.identity)}
   ${chainSection(manifest)}
   <h2>How to verify this without trusting it</h2>
   <ol class="steps small">${manifest.howToVerify.map((s) => `<li>${esc(s.replace(/^\d+\.\s*/, ''))}</li>`).join('')}</ol>
+  ${keepThisSection(manifest)}
   <h2>What this document does not prove</h2>
   <ul class="plain small">${manifest.limits.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>`;
 }
@@ -1411,6 +1646,7 @@ export function renderPageAttestationHtml(bundle: PageAttestation): string {
     <div class="rule"></div>
     <h1>${esc(p.title)} ${badge(p.status)}</h1>
     <p class="lede">${esc(p.type)} in ${esc(p.collectionName)} · page ${esc(p.id)} · created ${esc(p.createdAt)}</p>
+    ${identitySection(bundle.manifest.identity)}
     ${bundle.asOf ? asOfSection(bundle.asOf, names) : ''}
     <h2>The page today</h2>
     <dl class="fields">
@@ -1436,9 +1672,7 @@ export function renderPageAttestationHtml(bundle: PageAttestation): string {
     <h2>Audit events naming this page</h2>${events}
     <h2>What each version said</h2>${bodies || '<p class="muted">Nothing has been published.</p>'}
     <h2>People and agents named here</h2>
-    <table><thead><tr><th>Name</th><th>Kind</th><th>Id</th></tr></thead><tbody>${bundle.actors
-      .map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="small">${esc(a.id)}</td></tr>`)
-      .join('')}</tbody></table>
+    ${peopleTable(bundle.actors, bundle.manifest.identity)}
     ${manifestSection(bundle.manifest)}
     <footer>Generated by Veryl Canon at ${esc(bundle.manifest.generatedAt)} for ${esc(
       bundle.manifest.generatedBy.name,
@@ -1504,6 +1738,7 @@ export function renderCollectionAttestationHtml(bundle: CollectionAttestation): 
       bundle.collection.id,
     )}${bundle.collection.restricted ? ' · restricted' : ''}</p>
     ${bundle.collection.description ? `<p>${esc(bundle.collection.description)}</p>` : ''}
+    ${identitySection(bundle.manifest.identity)}
     ${
       bundle.truncated
         ? `<div class="note warn"><h3>Truncated</h3><p>This register lists the first ${esc(
@@ -1519,9 +1754,7 @@ export function renderCollectionAttestationHtml(bundle: CollectionAttestation): 
     alongside "and these were not".</p>
     ${rows(bundle.notCanonical)}
     <h2>People and agents named here</h2>
-    <table><thead><tr><th>Name</th><th>Kind</th><th>Id</th></tr></thead><tbody>${bundle.actors
-      .map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="small">${esc(a.id)}</td></tr>`)
-      .join('')}</tbody></table>
+    ${peopleTable(bundle.actors, bundle.manifest.identity)}
     ${manifestSection(bundle.manifest)}
     <footer>Generated by Veryl Canon at ${esc(bundle.manifest.generatedAt)} for ${esc(
       bundle.manifest.generatedBy.name,

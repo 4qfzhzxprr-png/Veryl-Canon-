@@ -42,7 +42,13 @@ function main(): number {
   ];
 
   if (result.ok) {
-    lines.push('', `  RESULT: intact. No break found${result.partial ? ' in the part that was walked' : ''}.`);
+    lines.push(
+      '',
+      `  RESULT: internally consistent. No break found${result.partial ? ' in the part that was walked' : ''}.`,
+      '',
+      '  What that word is doing there:',
+      `    ${result.okMeans}`,
+    );
   } else {
     const b = result.firstBreak!;
     lines.push(
@@ -71,8 +77,12 @@ function main(): number {
     '  What it does not:',
     `    ${result.limits}`,
     '',
-    '  Recommended: publish the head hash above, with its event id and the time, somewhere Canon cannot',
-    '  write. Once an anchor exists, a wholesale recomputation of the chain can no longer hide a deletion.',
+    '  The anchor:',
+    `    ${result.externalAnchor}`,
+    '',
+    '  Take one now:  node dist/server/scripts/anchor-head.js --db <record> >> anchors.ndjson',
+    '  Then ship anchors.ndjson somewhere this server has no credentials for. OPERATIONS.md,',
+    '  "Anchor the chain head", is the whole recipe.',
   );
 
   console.log(lines.join('\n'));
