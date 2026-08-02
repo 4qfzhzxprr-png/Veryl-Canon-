@@ -55,6 +55,34 @@ fight to keep the part of Canon that tells me a page is past its review date
 and that two official pages contradict each other, because our Confluence has
 been quietly lying to me about both for years."*
 
+## Where this stands
+
+All twenty-five findings have been worked. Twenty-three were fixed; one
+(**T3.6**) was answered by design once the answer was documented, and one
+(**T4.4**) is fixed apart from two named controls. Each entry below carries what
+was done and, where something was deliberately left, what and why.
+
+Three of them turned out to be worse than reported once someone looked:
+**T1.1** was wrong by construction rather than intermittently, and the same
+guess was found in two more places; **T4.9**'s privacy half was not closed at
+all, despite a comment in the code saying it was; **T4.1** was hiding two other
+silent drops — thematic breaks and nested lists — that had been reported
+separately as unrelated mysteries.
+
+Two were fixed by *not* doing the obvious thing. **T1.5** does not refuse
+backdated effective dates, because a policy adopted in 2019 and migrated in
+2026 is the ordinary case and refusing it would teach people to type today's
+date; it requires the claim to say where the date comes from instead. **T3.7**
+draws its distinction only for an ask that already names a collection, because
+the same indistinguishability the integrator complained about is why the
+auditor's nine probes found no leakage.
+
+Each fix was exercised against a running server, not only against its tests.
+That caught defects the suite did not: an ambiguous SQL column that made every
+paged request a 500 while every unpaged one passed, and a `studio-stub` that
+had been failing since the effective-date rule landed because only the server
+suite was being run.
+
 ## Findings, in the order we should fix them
 
 ### Tier 1 — Canon says something untrue
@@ -230,6 +258,26 @@ action dropdown is a hard-coded 16 that omits ten recorded action types. There
 is no export. Ruth reconstructed the full history only by iterating all eleven
 actors and merging. Until this is fixed no sample drawn from the log is
 defensible, and that caps her reliance however good everything else is.
+**Fixed.** Paging is a CURSOR on the event id, not an offset, for a reason
+particular to this table: `audit_events` is append-only, is read newest first,
+and is being written to by the very people whose acts are being sampled — so
+under an OFFSET every event written mid-walk shifts the tail down by one, and
+the reader silently sees a row twice while never seeing the one it displaced.
+`GET /audit/summary` answers the two questions the screen cannot honestly draw
+without: how many events matched, and which actions are in the population —
+computed *without* the action filter applied, so choosing one does not collapse
+the list to the choice already made. The ignored filters now filter, and what
+cannot be honoured is refused by name rather than dropped: `?from=last Tuesday`
+is a 400, because a filter accepted and ignored returns an answer that *looks*
+narrowed. The export walks the same cursor and carries the whole filtered
+population — once the listing gained a page size, a `limit` on the export
+meant handing an auditor the most recent thousand rows of a filter with nothing
+on the file to say so, which is the screen's silent truncation reproduced in
+the one artefact that leaves the building. `limit` is refused there too. WHERE
+names the page rather than reading the bare word "page", joined at read time
+and never stored, because a page renamed next year did not retroactively carry
+that name when the event happened. Verified against Ruth's own test: 1,170 of
+1,170 reachable, zero duplicates, export equal to the count.
 
 ### Tier 3 — trust, evidence, and the deployment
 
@@ -329,6 +377,16 @@ including `CANON_GROUP_MAP` and `CANON_BOOTSTRAP_ADMIN_SUBJECT`. *(Ade.)* Sam
 adds: the contracts' worked example does not work against the seeded corpus,
 and `disagreement` and `pastReview` are returned but undocumented. These matter
 disproportionately because both of them otherwise *trusted* the docs.
+**Fixed, and the completeness claim is now enforced rather than asserted:** a
+test scans `server/src` and `server/scripts` for `CANON_` names and fails on
+any the page omits, so the gap cannot reopen — it caught two variables before
+they were written up. The worked example was rebuilt and confirmed twice end to
+end against freshly seeded corpora, reading every id out of a response rather
+than writing it down, because they are UUIDs and differ per record. Along the
+way the optional answer fields turned out to be documented *twice*, with the
+two copies disagreeing about how many there were. `disagreement` and
+`pastReview` are written up. `REGISTRY-CONTRACT.md` was read against
+`agentauth.ts` and the stub and found accurate.
 **The configuration half is closed, and closed in a way that stays closed:**
 every `CANON_…` name is present, and a test scans `server/src` and
 `server/scripts` and fails when one is missing, so the page's claim of
@@ -349,6 +407,22 @@ looked like the Knowledge API. The fixture now asserts itself.
 **T3.6 · Hand-granting cannot scale under SSO.** *(Ade.)* Actors are
 JIT-provisioned on first sign-in and `POST /actors` is 404 under SSO, so an
 administrator cannot grant a role to somebody who has not yet logged in.
+**Answered by design, and the answer was undocumented — which is the real
+defect.** Granting one person at a time in advance is not a thing Canon does:
+there is no actor for somebody who has never arrived, and minting one from an
+email address typed by an administrator would put a person in the record that
+nobody's identity provider has vouched for. The scaling path is
+`CANON_GROUP_MAP` — a directory group your provider already maintains becomes
+a role here, applied on first sign-in and re-evaluated on every session
+confirmation, so a joiner has access the first time they open Canon and a
+leaver loses it inside the session window. It was built, it has fifteen tests,
+and Ade never found it, because it was one of the six variables
+`CONFIGURATION.md` omitted while claiming completeness. It is now documented
+there and, more usefully, in the first-hour checklist in `OPERATIONS.md` where
+an administrator is actually standing when the question arises.
+**Deliberately not built:** pre-granting to a named individual who has not
+signed in — an invitation. That needs a decision about what an un-arrived
+person *is* in the record, and it is better absent than approximated.
 
 **T3.7 · `/ask` cannot distinguish "not permitted" from "record silent".**
 *(Sam.)* Four different situations return byte-identical responses, and
@@ -555,6 +629,23 @@ mark is granted by one person alone. Verified against a running server.
 logged verbatim and visible to everyone; rows show raw UUID arrays,
 `generator: extractive-v1`, and a WHERE column whose only value is the word
 "page". Timestamps display to the minute and 1,100+ events share one.
+**Both halves fixed, and the privacy half was worse than reported.** The
+permission rules already restricted an ask that named no collection to the
+asker and to operators — but an ask *scoped* to a collection is an event naming
+that collection, so it reached every member. Measured on a running server: a
+colleague holding only `view` could read "how do I raise a grievance about my
+manager". The question text is now withheld from everybody but the person who
+typed it and an operator who can already see the event, while the event itself
+stays whole and visible, because *that* an ask happened and which pages it drew
+on is exactly what Ruth needs to answer "who looked at the coverage criteria
+before that denial". Redaction is on the way out, never at write time: the
+stored event must stay whole for an operator, and the hash chain covers the row
+as written. Writing the test turned up a rule worth recording — an operator
+holding no role in a collection cannot see a collection-scoped event *at all*,
+so the second reader is not "any operator" but "somebody who can already see
+the event and is also one". Legibility: the detail column says its keys in
+words and resolves ids to names where the client holds them, never guessing
+one; WHERE names the page; timestamps carry seconds.
 **The legibility half is fixed** (the WHERE column earlier, the detail column
 now); the privacy half is being closed separately in `store.ts`. The detail
 column printed the event's details object more or less as JSON. It now says the

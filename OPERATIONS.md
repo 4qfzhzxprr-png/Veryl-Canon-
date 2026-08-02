@@ -125,7 +125,31 @@ that is invisible later.
     plus what Canon says about itself. Nothing in them is a secret, and nothing
     in them is a query string; see "Read the logs". Alert on
     `msg: "the record cannot be read"`.
-11. **Decide where the chain head goes.** Canon writes `msg: "audit head
+11. **Decide how people get access, before the first of them signs in.** This
+    is the step an administrator testing Canon reported missing, and the answer
+    is not the one they reached for. People are provisioned on their FIRST
+    sign-in, from the claims your provider sends — Canon has no actor for
+    somebody who has never arrived, so there is nobody to hand a role to, and
+    `POST /actors` is absent from an SSO deployment by design (SECURITY.md R1).
+    Granting one by one, in advance, is therefore not a thing this product
+    does, and it would not scale if it were.
+
+    **Map your directory groups instead.** `CANON_GROUP_MAP` turns a group your
+    provider already maintains into a role here, applied on first sign-in and
+    re-evaluated on every session confirmation, so a joiner has the right
+    access the first time they open Canon and a leaver loses it inside the
+    session window without anybody touching Canon. That is the scaling path;
+    hand grants are for the exceptions. Group grants are stored separately, so
+    removing a group removes exactly what the group gave and leaves any hand
+    grant underneath standing (SECURITY.md R10). See CONFIGURATION.md.
+
+    What is genuinely not built: pre-granting a role to a NAMED individual who
+    has not signed in yet — an invitation. If your organisation needs that, it
+    needs a decision about what an un-arrived person is in the record, and it
+    is better absent than approximated by minting an actor from an email
+    address somebody typed.
+
+12. **Decide where the chain head goes.** Canon writes `msg: "audit head
     anchor"` hourly and at start-up; on its own that line proves nothing,
     because it lives on the machine it describes. Point something at it that
     this server cannot reach back into, keep the series rather than the latest,
