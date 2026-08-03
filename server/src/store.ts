@@ -1698,6 +1698,12 @@ export class CanonStore {
       } else submit = yes;
     }
 
+    // The submission is read once, above the two blocks that need it: `approve`
+    // mirrors separation of duties from it and `withdraw` mirrors whose act is
+    // being undone, and both must read the same event or the two buttons could
+    // disagree about who put this page forward.
+    const submitted = page.status === 'in_review' ? this.lastSubmission(pageId) : null;
+
     // approve — the draft's approver, per the invariant at the top of this
     // section. This answer and that refusal read the same row.
     let approve: PageAbility;
@@ -1708,6 +1714,14 @@ export class CanonStore {
       approve = fields.approverId
         ? no(`Only ${this.getActor(fields.approverId).name}, the named approver on this draft, can approve it.`)
         : no('This draft names no approver, so there is nobody the server would accept; it has to name one.');
+    } else if (submitted && submitted.actorId === actorId) {
+      // Separation of duties, in the mirror as well as the gate. `approve`
+      // reads the submission from the log and refuses the submitter; a
+      // projection that stops one clause short shows that person a live
+      // Approve button whose press dies in silence — which is the exact
+      // defect this method exists to end, on the one rule where the refusal
+      // most needs explaining.
+      approve = no('The person who submitted a page for review cannot grant it the Canonical mark.');
     } else approve = yes;
 
     // sendBack
@@ -1718,7 +1732,6 @@ export class CanonStore {
 
     // withdrawFromReview
     let withdraw: PageAbility;
-    const submitted = page.status === 'in_review' ? this.lastSubmission(pageId) : null;
     if (!holds('edit')) withdraw = needsRole('Withdrawing a submission', 'edit');
     else if (page.status !== 'in_review') withdraw = no('Only a page In Review can be withdrawn.');
     else if (!submitted) {

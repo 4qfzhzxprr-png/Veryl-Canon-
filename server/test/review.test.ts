@@ -222,6 +222,31 @@ test('abilities: an approver is not offered a submit they would be refused', () 
   expectCode(() => store.submitForReview(nadia.id, page.id), 'workflow');
 });
 
+test('abilities: the submitter is not offered an approve the server would refuse', () => {
+  const fx = setup();
+  const { store, marc, nadia, grace, collection } = fx;
+  // A Plan names no approver, so any approve-holder may accept it — except the
+  // one who submitted it. `approve` has always enforced that from the audit
+  // log; this pins the mirror to the gate, because the gap between them was a
+  // live green button that silently no-oped for the person it refused
+  // (USER-TESTING.md, third round, finding 9).
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Migration plan' });
+  store.editDraft(grace.id, page.id, { body: 'Cut over on the first Saturday.', fields: { ownerId: marc.id } });
+  store.submitForReview(grace.id, page.id);
+
+  const hers = store.pageAbilities(grace.id, page.id).approve;
+  assert.equal(hers.can, false);
+  // The mirror speaks in the gate's own sentence, so the greyed button and the
+  // refusal it predicts can never drift apart.
+  const refusal = expectCode(() => store.approve(grace.id, page.id, {}), 'forbidden');
+  assert.equal(hers.why, `${(refusal as CanonError).message}.`);
+
+  // Anybody else holding approve is still offered it, and the server agrees.
+  assert.equal(store.pageAbilities(nadia.id, page.id).approve.can, true);
+  store.approve(nadia.id, page.id, {});
+  assert.equal(store.getPage(nadia.id, page.id).status, 'canonical');
+});
+
 test('abilities: a page lock is a sentence with a name in it', () => {
   const fx = setup();
   const { store, dana, marc } = fx;
