@@ -5120,7 +5120,13 @@ async function viewAudit(query = {}) {
     <div class="page-wide">
       <div class="page-head">
         <h1>Audit log</h1>
-        <div class="actions"><a class="btn" id="audit-export" href="#">Export CSV</a></div>
+        ${/* A button, not an anchor. A bare link to the CSV route is a
+              navigation the app never sees, so it carries no X-Actor-Id —
+              under header auth the export failed for exactly the person it
+              exists for (third round, Ruth). The click goes through
+              downloadFromApi, which attaches identity the way api() does in
+              both auth modes. */ ''}
+        <div class="actions"><button class="btn" id="audit-export" type="button">Export CSV</button></div>
       </div>
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
       material, attributed to its actor.</p>
@@ -5271,11 +5277,8 @@ async function viewAudit(query = {}) {
       shown = append ? shown.concat(events) : events;
       fillActions(summary.actions, f.action);
       render(summary.matching);
-      const exportLink = app.querySelector('#audit-export');
-      exportLink.setAttribute('href', `/audit.csv${paramsOf(f).toString() ? `?${paramsOf(f)}` : ''}`);
-      // The export carries the FILTERS, never the page — so what downloads is
-      // the population the count above describes, not the rows on screen.
-      exportLink.title = `Downloads all ${summary.matching.toLocaleString()} matching events, not just the ones shown.`;
+      const exportBtn = app.querySelector('#audit-export');
+      exportBtn.title = `Downloads all ${summary.matching.toLocaleString()} matching events, not just the ones shown.`;
     } catch (err) {
       tableHost.innerHTML = `<div class="empty-state"><h2>Could not load the log</h2><p>${esc(err.message)}</p></div>`;
     }
@@ -5292,6 +5295,23 @@ async function viewAudit(query = {}) {
         .map((a) => `<option value="${esc(a.action)}"${a.action === selected ? ' selected' : ''}>${esc(a.action)} (${a.count.toLocaleString()})</option>`)
         .join('');
   };
+
+  // The export carries the FILTERS, never the page — so what downloads is
+  // the population the count above describes, not the rows on screen.
+  app.querySelector('#audit-export').addEventListener('click', async () => {
+    const q = paramsOf(current()).toString();
+    try {
+      const res = await downloadFromApi(`/audit.csv${q ? `?${q}` : ''}`, 'canon-audit.csv');
+      // The server marks a file that exactly filled its row cap, because an
+      // auditor who assumes they hold the whole log has been handed a sample
+      // presented as a population. The mark is a response header, so the one
+      // place it can be surfaced is here, at the moment of download.
+      if (res.headers.get('x-canon-truncated') === 'true') {
+        const cap = Number(res.headers.get('x-canon-row-cap'));
+        toast(`The export hit the server's row cap${Number.isFinite(cap) ? ` of ${cap.toLocaleString()} events` : ''} — this file is NOT the whole filtered log. Narrow with From/To and export the windows in turn.`, 'error');
+      }
+    } catch (err) { toastError(err); }
+  });
 
   for (const name of ['action', 'actor', 'collection', 'from', 'to']) {
     form[name].addEventListener('change', () => load());
@@ -8261,6 +8281,10 @@ async function downloadFromApi(path, fallbackName) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // The response rides back so a caller can read what the server said ABOUT
+  // the file — the audit export's truncation mark, for one — without a second
+  // request. The body is spent; the headers are not.
+  return res;
 }
 
 function attestationPreviewHTML(asOf) {

@@ -240,3 +240,49 @@ test('audit: a question is readable by the person who asked it and by an operato
   };
   assert.equal(JSON.parse(stored.details_json).question, QUESTION);
 });
+
+// ---------------------------------------------------------------------------
+// The export in the browser (third round, Ruth — confirmed at source): a bare
+// <a href="/audit.csv"> is a navigation, not an app request, so it carried no
+// X-Actor-Id and the export failed under header auth for exactly the person
+// it exists for. Pinned in the shipped file, the way pageview.test.ts pins
+// the editor: the anchor is gone, the click goes through the one helper that
+// attaches identity in both auth modes, and the server's truncation mark is
+// surfaced rather than dropped on the floor.
+
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function findPublicFile(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let up = 0; up < 8; up += 1) {
+    const candidate = join(dir, 'public', name);
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error(`server/public/${name} not found above the compiled test file`);
+}
+
+test('audit export: no bare anchor — the CSV is fetched with the caller’s identity attached', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  // The defect, pinned as its absence: nothing may point a plain link at the
+  // CSV route, because a navigation bypasses every header the app attaches.
+  assert.ok(!/href=["'`]\/audit\.csv/.test(source), 'a bare audit.csv anchor carries no X-Actor-Id');
+  assert.ok(!source.includes("setAttribute('href', `/audit.csv"), 'nor one assembled at runtime');
+  // The road it takes instead: downloadFromApi, which mirrors api()'s rule —
+  // X-Actor-Id under the dev door, ambient cookie under SSO, never both.
+  assert.match(source, /downloadFromApi\(`\/audit\.csv/);
+  const helper = source.slice(source.indexOf('async function downloadFromApi('), source.indexOf('function attestationPreviewHTML('));
+  assert.match(helper, /headers\['X-Actor-Id'\] = actorId/);
+  assert.match(helper, /credentials: 'same-origin'/, 'the cookie mode rides on the same call');
+  assert.match(helper, /return res;/, 'the response comes back so the caller can read what the server said about the file');
+});
+
+test('audit export: the truncation mark survives the download as a sentence, not a lost header', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const view = source.slice(source.indexOf('async function viewAudit('), source.indexOf('// Sources — registered external systems'));
+  assert.match(view, /x-canon-truncated/);
+  assert.match(view, /NOT the whole filtered log/, 'the header becomes the sentence an auditor needs');
+  assert.match(view, /Narrow with From\/To/, 'and the way out is named beside it');
+});
