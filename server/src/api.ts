@@ -10,7 +10,7 @@ import {
   visibleActors,
 } from './auth.js';
 import { freshnessScheduleFor } from './freshness.js';
-import { countParam, idParam, instantParam, objectBody, optionalCount, requiredCount } from './input.js';
+import { countParam, idParam, instantParam, objectBody, optionalCount, optionalString, requiredCount } from './input.js';
 import { loggerFromEnv, noteRequest, requestPath, type Logger } from './log.js';
 import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
 import { CanonError } from './model.js';
@@ -257,6 +257,20 @@ const routes: Route[] = [
   ),
 
   route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
+
+  // The refused-questions loop (gaps.ts): operator-only, because a gap is a
+  // question's text and question text is operators' to read — the same rule
+  // the audit log applies. The asker is never in the payload; the table that
+  // feeds this has no column for one.
+  route('GET', '/gaps', ({ store, actorId, query }) =>
+    store.listGaps(actorId, { status: query.get('status') ?? undefined }),
+  ),
+  route('POST', '/gaps/:id/close', ({ store, actorId, params, body }) =>
+    store.closeGap(actorId, params.id!, {
+      outcome: optionalString(body?.outcome, 'outcome'),
+      note: optionalString(body?.note, 'note') ?? null,
+    }),
+  ),
   route('GET', '/pages/:id/related', ({ store, actorId, params, query }) =>
     store.related(actorId, params.id!, {
       canonicalOnly: query.get('canonical') === 'true',

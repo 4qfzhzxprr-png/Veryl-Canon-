@@ -2300,3 +2300,10 @@ label.check input { width: auto; display: inline; margin: 0; }
 .refusal-nearest h3 { margin: 0 0 0.25rem; }
 .nearest-list { margin: 0.4rem 0 0.1rem; padding-left: 1.1rem; }
 .nearest-list li { margin: 0.25rem 0; }
+
+/* Gaps: one card per refused question, with the triage actions inline. */
+.gap-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1rem; margin: 0.7rem 0; background: var(--surface); }
+.gap-question { margin: 0; font-family: var(--serif); font-size: 1.05rem; }
+.gap-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
+.gap-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+.gap-actions .gap-note { flex: 1 1 16rem; }

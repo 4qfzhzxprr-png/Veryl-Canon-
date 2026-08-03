@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { GapService, type Gap } from './gaps.js';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   CAN,
@@ -180,6 +181,9 @@ export class CanonStore {
   // Retrieval and grounded answers (Epic D, M3) live in retrieval.ts and
   // answers.ts; delegates at the end of this class.
   private readonly retrieval: RetrievalService;
+  // The refused-questions loop (gaps.ts): every refusal is a gap report, held
+  // until an operator closes it. Owns its own table; asker never stored.
+  private readonly gapService: GapService;
   private readonly answers: AnswerService;
   // Federation (DATA-BACKBONE.md §6) lives in sources.ts, connectors.ts and
   // references.ts. The connector registry is a deployment's seam: it defaults
@@ -215,6 +219,7 @@ export class CanonStore {
     connectors: ConnectorRegistry = defaultConnectorRegistry(),
   ) {
     this.searchIndex = new SearchIndex(db);
+    this.gapService = new GapService(db);
     this.embeddings = new EmbeddingStore(db, embeddingProvider);
     this.notifier = new Notifier(db, this, transport);
     this.commentService = new CommentService(db, this, this.notifier);
@@ -2085,8 +2090,53 @@ export class CanonStore {
   // ---- retrieval and grounded answers (Epic D, M3) ---------------------
   // Thin delegates; the logic lives in retrieval.ts and answers.ts.
 
-  ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
-    return this.answers.ask(actorId, request);
+  async ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
+    const response = await this.answers.ask(actorId, request);
+    // The refused-questions loop (gaps.ts). Recording the gap must never cost
+    // the asker their refusal: a correct "the record is silent" that 500s
+    // because a bookkeeping row failed is the wrong trade, so failures here
+    // are logged by being swallowed — the audit event above already holds the
+    // question for an operator investigating.
+    if (response.refused && request?.question) {
+      try {
+        this.gapService.recordRefusal(
+          String(request.question),
+          typeof request.collectionId === 'string' ? request.collectionId : null,
+          response.nearest ?? [],
+        );
+      } catch {
+        // Deliberately nothing: see above.
+      }
+    }
+    return response;
+  }
+
+  /**
+   * The open gaps — questions the record refused — for the people who triage
+   * them. OPERATORS ONLY, and this is the redaction rule from
+   * `redactAuditDetails` carried forward rather than a new decision: question
+   * text is private to the asker and to operators, and a gap IS question
+   * text. It arrives here with no asker attached — the gaps table has no such
+   * column — so what an operator sees is "asked four times", never by whom.
+   */
+  listGaps(actorId: string, filter: { status?: string } = {}): Gap[] {
+    requireOrgRole(this.db, actorId, 'operator', 'Reading the record’s gaps');
+    return this.gapService.list(filter);
+  }
+
+  closeGap(
+    actorId: string,
+    gapId: string,
+    input: { outcome?: string; note?: string | null } = {},
+  ): Gap {
+    requireOrgRole(this.db, actorId, 'operator', 'Closing a gap');
+    const outcome = input.outcome === 'dismissed' ? 'dismissed' : input.outcome === 'resolved' ? 'resolved' : null;
+    if (!outcome) throw new CanonError('invalid', "Closing a gap is 'resolved' or 'dismissed'");
+    const gap = this.gapService.close(actorId, gapId, outcome, input.note ?? null);
+    this.audit(actorId, `gap.${outcome}`, {
+      details: { gapId, question: gap.question, ...(gap.resolution ? { note: gap.resolution } : {}) },
+    });
+    return gap;
   }
 
   retrieve(actorId: string, request: RetrieveRequest): Promise<RetrievalCandidate[]> {

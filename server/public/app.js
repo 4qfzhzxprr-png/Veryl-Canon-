@@ -129,7 +129,7 @@ const state = {
     // off the answer payload rather than probed — a disagreement between two
     // Canonical passages. A Canon that serves one and not the others shows
     // exactly the one it serves.
-    relations: null, divergences: null,
+    relations: null, divergences: null, gaps: null,
     // The queue (GET /queue). Not probed on its own: the first load of the nav
     // badge answers the question, and a 404 hides the entry.
     queue: null,
@@ -147,8 +147,9 @@ function resetFeatures() {
   state.features = {
     search: null, comments: null, ask: null, related: null, references: null, sources: null,
     map: null, wholeGraph: null, attestation: null,
-    relations: null, divergences: null, queue: null,
+    relations: null, divergences: null, queue: null, gaps: null,
   };
+  gapsProbe = null;
   askProbe = null;
   sourcesProbe = null;
   attestationProbe = null;
@@ -967,6 +968,7 @@ function renderChrome() {
     detectSearch();
     detectAsk();
     detectSources();
+    detectGaps();
     detectMap();
     detectFreshness();
     // The queue's badge is part of the chrome: the first thing somebody who
@@ -1115,6 +1117,25 @@ async function detectAsk() {
 // the Sources nav entry and the whole admin screen simply are not there.
 let sourcesProbe = null;
 
+// Gaps are operator-only, so the probe's 403 is an answer — "the endpoint is
+// there and it is not for you" — and the nav entry stays hidden without the
+// operator role rather than leading to a refusal.
+let gapsProbe = null;
+
+async function detectGaps() {
+  if (state.features.gaps === null) {
+    gapsProbe ??= api('GET', '/gaps')
+      .then(() => true)
+      .catch(() => false);
+    const found = await gapsProbe;
+    gapsProbe = null;
+    if (state.features.gaps === null) state.features.gaps = found;
+  }
+  const link = document.getElementById('nav-gaps');
+  if (link) link.hidden = state.features.gaps !== true;
+  return state.features.gaps === true;
+}
+
 async function detectSources() {
   if (state.features.sources === null) {
     sourcesProbe ??= api('GET', '/sources')
@@ -1248,6 +1269,7 @@ async function route() {
     return;
   }
   const section = parts[0] === 'audit' ? 'audit'
+    : parts[0] === 'gaps' ? 'gaps'
     : parts[0] === 'ask' ? 'ask'
     : parts[0] === 'sources' ? 'sources'
     : parts[0] === 'queue' ? 'queue'
@@ -1265,6 +1287,7 @@ async function route() {
     if (parts[0] === 'identity') return await render(viewIdentity);
     if (parts[0] === 'queue') return await render(viewQueue);
     if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
+    if (parts[0] === 'gaps') return await render(() => viewGaps(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
@@ -4711,6 +4734,64 @@ function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
   // selectable in the CSV export, which is where an auditor would use it.
   if (looksLikeId(text)) return `<code class="action-code" title="${esc(text)}">${esc(text.slice(0, 8))}…</code>`;
   return esc(text);
+}
+
+// The refused-questions view: what people asked and the record could not
+// answer, for the operators who close the loop. Each row is a decision —
+// teach the record a word (the nearest page's "Also known as" field), write
+// the missing page, or record that the record owes no answer. No asker is
+// shown because none is stored: the gaps table has no such column.
+async function viewGaps(query = {}) {
+  const status = query.status ?? 'open';
+  let gaps;
+  try {
+    gaps = await api('GET', `/gaps?status=${encodeURIComponent(status)}`);
+  } catch (err) {
+    renderErrorPage(err);
+    return;
+  }
+  const tabs = ['open', 'resolved', 'dismissed']
+    .map((t) => `<a class="btn ${t === status ? 'primary' : ''}" href="#/gaps${t === 'open' ? '' : `?status=${t}`}">${t[0].toUpperCase()}${t.slice(1)}</a>`)
+    .join(' ');
+  const rows = gaps.map((g) => `
+    <article class="gap-card" data-gap="${esc(g.id)}">
+      <div class="gap-head">
+        <p class="gap-question">&ldquo;${esc(g.question)}&rdquo;</p>
+        <p class="muted">Asked ${g.timesAsked === 1 ? 'once' : `${g.timesAsked} times`} · last ${fmtDateTime(g.lastAskedAt)}</p>
+      </div>
+      ${g.nearest.length ? `<p class="muted">Came closest: ${g.nearest.map((n) => `<a href="#/pages/${esc(n.pageId)}">${esc(n.title)}</a>`).join(' · ')}</p>` : ''}
+      ${g.status === 'open' ? `
+        <div class="gap-actions">
+          <input type="text" class="gap-note" placeholder="What was done — e.g. added ‘urgent’ as an alias on Claims Processing Standard">
+          <button class="btn primary" data-close="resolved">Resolved</button>
+          <button class="btn subtle" data-close="dismissed">Not the record’s business</button>
+        </div>` : `
+        <p class="muted">${g.status === 'resolved' ? 'Resolved' : 'Dismissed'}${g.resolution ? `: ${esc(g.resolution)}` : ''}</p>`}
+    </article>`).join('');
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head"><h1>Gaps</h1><div class="actions">${tabs}</div></div>
+      <p class="muted">Questions the record refused. Each one is a decision: teach a page the
+        asker&rsquo;s word (its &ldquo;Also known as&rdquo; field), write the missing page, or record that this
+        record owes no answer. Who asked is not shown because it is not stored.</p>
+      ${gaps.length ? rows : `<div class="empty-state"><p>No ${esc(status)} gaps. Every question the record refused has been looked at.</p></div>`}
+    </div>`;
+
+  app.querySelectorAll('[data-close]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest('[data-gap]');
+      const note = card.querySelector('.gap-note').value.trim();
+      try {
+        await api('POST', `/gaps/${card.dataset.gap}/close`, {
+          outcome: btn.dataset.close,
+          ...(note ? { note } : {}),
+        });
+        toast(btn.dataset.close === 'resolved' ? 'Gap resolved.' : 'Gap dismissed.', 'ok');
+        await viewGaps(query);
+      } catch (err) { toastError(err); }
+    });
+  });
 }
 
 async function viewAudit(query = {}) {
