@@ -570,5 +570,17 @@ test('editor: the alias field speaks to every collection, not just claims', () =
   assert.doesNotMatch(editor, /placeholder="e\.g\. urgent claims, COB"/);
   assert.match(editor, /placeholder="other names people use for this subject"/);
   assert.match(editor, /Searchable names people actually use/);
-  assert.match(editor, /steer search and Ask/);
+});
+
+test('editor: the alias caption says when a name starts working, truthfully', () => {
+  // "They steer search and Ask … once approved" was wrong in the half that
+  // matters: a published alias steers search AT ONCE, badged with the page's
+  // standing so nothing passes as official, and only Ask's official answers
+  // wait for the Canonical mark (fourth round, Ruth and Priya). The caption
+  // now states both moments, and the false one is pinned out.
+  const editor = source.slice(source.indexOf('async function viewEditor('), source.indexOf('async function renderEditorReferences('));
+  assert.doesNotMatch(editor, /once approved/);
+  assert.match(editor, /steer search to this page as soon as they publish/);
+  assert.match(editor, /badged with the page's standing/);
+  assert.match(editor, /official answers use them only while the page holds the Canonical mark/);
 });

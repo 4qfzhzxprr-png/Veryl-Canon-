@@ -4432,12 +4432,21 @@ async function viewEditor(id) {
                   which is where the missing words come from. The placeholder
                   and the help line are collection-neutral on purpose: a new
                   joiner in HR was shown claims examples and read the field as
-                  not for her (third round, Ada). */ ''}
+                  not for her (third round, Ada).
+
+                  The help line states the two moments precisely, because its
+                  previous sentence promised approval before any effect — and
+                  that was false in the half that matters: a published alias
+                  steers SEARCH at once, with the page's standing badged on
+                  the result so nothing passes as official; only the record's
+                  official answers wait for the Canonical mark (fourth round,
+                  Ruth and Priya). */ ''}
             <label>Also known as <span class="muted">(comma-separated)</span>
               <input type="text" name="aliases" value="${esc((draft.fields.aliases ?? []).join(', '))}"
                 placeholder="other names people use for this subject"></label>
             <p class="muted type-help">Searchable names people actually use for what this page covers.
-              They steer search and Ask to this page once approved.</p>
+              They steer search to this page as soon as they publish, badged with the page's standing;
+              the record's official answers use them only while the page holds the Canonical mark.</p>
             <p id="alias-live" class="muted type-help" aria-live="polite"></p>
             <div id="alias-warnings" aria-live="polite"></div>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
