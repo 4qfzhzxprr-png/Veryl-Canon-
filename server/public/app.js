@@ -5093,8 +5093,14 @@ async function viewGaps(query = {}) {
       ${g.nearest.length ? `<p class="muted">Came closest: ${g.nearest.map((n) => `<a href="#/pages/${esc(n.pageId)}">${esc(n.title)}</a>`).join(' · ')}</p>` : ''}
       ${g.status === 'open' ? `
         <div class="gap-actions">
+          ${/* One note, both closures. It used to be required only for
+                resolving, which made a dismissal the one closure with no
+                reason on it — unauditable forever (fourth round, Dana). The
+                server refuses an empty note either way now; the placeholder
+                offers both sentences so neither button reads as the one
+                without homework. */ ''}
           <input type="text" class="gap-note" value="${g.nowAnswers === true ? 'Re-asked: the record answers this now.' : ''}"
-            placeholder="What was done — e.g. added the asker’s word as an alias on the page that answers">
+            placeholder="What was done, or why the record owes no answer — required either way">
           <button class="btn primary" data-close="resolved">Resolved</button>
           <button class="btn subtle" data-close="dismissed">Not the record’s business</button>
         </div>
@@ -5120,12 +5126,19 @@ async function viewGaps(query = {}) {
   app.querySelectorAll('[data-close]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const card = btn.closest('[data-gap]');
-      const note = card.querySelector('.gap-note').value.trim();
+      const noteField = card.querySelector('.gap-note');
+      const note = noteField.value.trim();
+      // The server refuses an empty note for either outcome; saying so here
+      // saves the round trip and puts the cursor where the sentence goes.
+      if (!note) {
+        toast(btn.dataset.close === 'resolved'
+          ? 'Resolving a gap records what was done; say it in a sentence.'
+          : 'Dismissing a gap records why the record owes no answer; say it in a sentence.');
+        noteField.focus();
+        return;
+      }
       try {
-        await api('POST', `/gaps/${card.dataset.gap}/close`, {
-          outcome: btn.dataset.close,
-          ...(note ? { note } : {}),
-        });
+        await api('POST', `/gaps/${card.dataset.gap}/close`, { outcome: btn.dataset.close, note });
         toast(btn.dataset.close === 'resolved' ? 'Gap resolved.' : 'Gap dismissed.', 'ok');
         await viewGaps(query);
       } catch (err) { toastError(err); }

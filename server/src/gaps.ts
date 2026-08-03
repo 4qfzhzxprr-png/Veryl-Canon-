@@ -160,16 +160,26 @@ export class GapService {
 
   /**
    * Close a gap, with the sentence that says how — "how" is the record this
-   * table exists to keep, so it is required for resolution. A dismissal's
-   * note is optional: "not our material" repeated forty times is noise.
+   * table exists to keep, so it is required either way the gap closes. A
+   * dismissal's note used to be optional on the theory that "not our
+   * material" forty times over is noise; the fourth round showed the cost of
+   * that theory: a dismissal was the ONE closure nobody could audit later,
+   * and "dismissed, and still asked monthly" — the exact case that gets a
+   * dismissal revisited — arrived with no reason to revisit. Forty short
+   * reasons beat one unexplained silence.
    */
   close(actorId: string, gapId: string, outcome: 'resolved' | 'dismissed', note: string | null): Gap {
     const row = this.db.prepare('SELECT * FROM gaps WHERE id = ?').get(gapId) as
       | Record<string, unknown>
       | undefined;
     if (!row) throw new CanonError('not_found', `No such gap: ${gapId}`);
-    if (outcome === 'resolved' && !note?.trim()) {
-      throw new CanonError('invalid', 'Resolving a gap records what was done; say it in a sentence');
+    if (!note?.trim()) {
+      throw new CanonError(
+        'invalid',
+        outcome === 'resolved'
+          ? 'Resolving a gap records what was done; say it in a sentence'
+          : 'Dismissing a gap records why the record owes no answer; say it in a sentence',
+      );
     }
     this.db
       .prepare('UPDATE gaps SET status = ?, resolution = ?, resolved_by = ?, resolved_at = ? WHERE id = ?')

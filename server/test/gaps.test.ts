@@ -187,12 +187,23 @@ test('gaps: a resolution that did not take reopens; a dismissal stands and count
   const dismissed = await store.listGaps(dana.id, { status: 'dismissed' });
   assert.equal(dismissed[0]!.timesAsked, 3, 'and the asking is still counted');
 
-  // Resolving demands the sentence; dismissing does not.
+  // Closing a gap demands the sentence, whichever way it closes. A dismissal
+  // used to be the one closure with no reason on it — "not the record's
+  // business" decided in silence is precisely the decision somebody reviews
+  // later (fourth round, Dana: "my Wi-Fi dismissal is now reasonless
+  // forever") — so both outcomes now refuse an empty note.
   await store.ask(marc.id, { question: 'Which airline do we book?' });
   const other = (await store.listGaps(dana.id, { status: 'open' }))[0]!;
   expectCode(() => store.closeGap(dana.id, other.id, { outcome: 'resolved' }), 'invalid');
   expectCode(() => store.closeGap(dana.id, other.id, { outcome: 'archived' }), 'invalid');
-  assert.equal(store.closeGap(dana.id, other.id, { outcome: 'dismissed' }).status, 'dismissed');
+  expectCode(() => store.closeGap(dana.id, other.id, { outcome: 'dismissed' }), 'invalid');
+  expectCode(() => store.closeGap(dana.id, other.id, { outcome: 'dismissed', note: '   ' }), 'invalid');
+  const closed = store.closeGap(dana.id, other.id, { outcome: 'dismissed', note: 'travel booking is not this record’s business' });
+  assert.equal(closed.status, 'dismissed');
+  assert.equal(closed.resolution, 'travel booking is not this record’s business');
+  // And the reason is auditable where every other closure is.
+  const audited = store.queryAudit(dana.id, { action: 'gap.dismissed' });
+  assert.equal(audited[0]!.details.note, 'travel booking is not this record’s business');
 });
 
 test('gaps: recording never costs the asker their answer', async () => {
