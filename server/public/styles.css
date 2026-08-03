@@ -2294,13 +2294,6 @@ label.check input { width: auto; display: inline; margin: 0; }
    not collecting it. */
 .field-basis { margin-top: 0.2rem; font-size: 0.86rem; line-height: 1.45; }
 
-/* A thin answer — one page addressed the question and the rest came through the
-   graph. It reads as quotations rather than as a finding: no accent bar, and
-   the heading says "Closest passages". The citations and warnings are
-   unchanged; only the claim is withdrawn. */
-.answer.is-thin { border-left-color: var(--border); background: var(--surface-2); }
-.answer.is-thin .answer-grounding { font-style: italic; }
-
 /* A refusal's pointers: places to look, styled as a list of links rather than
    as results — a refusal must not dress up as an answer. */
 .refusal-nearest { margin: 0.85rem 0 0.35rem; padding: 0.7rem 0.9rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }

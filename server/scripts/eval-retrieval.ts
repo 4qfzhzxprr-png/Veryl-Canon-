@@ -475,15 +475,15 @@ export interface EvalReport {
   /** The cases with no relevant page in the whole returned list. */
   misses: readonly CaseResult[];
   /**
-   * Unanswerable questions that were answered anyway, with what was cited and
-   * how confidently.
+   * Unanswerable questions that were answered anyway, with what was cited.
    *
-   * THESE ARE TWO DIFFERENT FAILURES AND ONLY ONE OF THEM IS SERIOUS. A
-   * `direct` answer to a question the record cannot answer is the confident
-   * non-answer this product exists to avoid — a page presented under "The
-   * record says". A `thin` one opens with "Nothing in the record answers this
-   * directly. The closest it comes:", which is a disclaimer, on screen, in the
-   * first sentence. Counting them together made a hedge look like a lie.
+   * Every entry here is serious now. This list used to hold two different
+   * failures — a `direct` answer to a question the record cannot answer (the
+   * confident non-answer this product exists to avoid), and a `thin` hedge
+   * that disclaimed itself in its first sentence — and only the first was
+   * asserted empty. The hedge no longer exists: an answer below the grounding
+   * bar refuses, so anything that lands here answered under "The record says"
+   * and the floor for this list is empty, full stop.
    */
   overreach: readonly { question: string; cited: readonly string[]; grounding?: string }[];
 }
@@ -697,10 +697,11 @@ export function formatReport(report: EvalReport, pages: number): string {
     '',
     'what Ask then does with it',
     `answered          ${pct(report.answered)}   of the questions the record answers`,
-    `direct            ${pct(report.direct)}   of those said "the record says", not "the closest it comes"`,
+    `direct            ${pct(report.direct)}   of those cleared the grounding bar (anything less refuses — this is 100% by construction)`,
     `cited relevant    ${pct(report.citedRelevant)}   cited a page the labels call relevant`,
     `quoted answer     ${pct(report.quotedAnswer)}   of ${report.quotableCases} with a checkable answer, the quotation contains it`,
     `refused           ${pct(report.refused)}   of questions the record cannot answer`,
+    `pointed right     ${pct(report.refusalPointedRight)}   of refusals named a relevant page as a place to look`,
   ];
   if (report.overreach.length) {
     lines.push('', 'ANSWERED WHAT IT SHOULD HAVE REFUSED');

@@ -147,9 +147,30 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
   // more — so the measured half improved and the half a reader actually
   // experiences did not. A floor on ranking alone would have let all of that
   // through, and did.
-  assert.ok(report.answered >= 0.88, `answered fell to ${report.answered.toFixed(3)}${summary}`);
-  assert.ok(report.direct >= 0.87, `direct fell to ${report.direct.toFixed(3)}${summary}`);
-  assert.ok(report.citedRelevant >= 0.78, `cited-relevant fell to ${report.citedRelevant.toFixed(3)}${summary}`);
+  //
+  // THE FLOORS BELOW WERE RE-BASED ONCE, DELIBERATELY, when the hedge stopped
+  // counting as an answer. "Nothing in the record answers this directly. The
+  // closest it comes:" carried refused:false, and the fourth persona round
+  // showed what that bought: a screen "answering" with irrelevant pages, an
+  // audit log disagreeing with the screen it describes, and a gaps probe
+  // annotating gaps as answerable that a re-ask refused. Thin now refuses,
+  // so the four labelled cases that were hedges became refusals — each one
+  // pointing at the page it used to quote (see the pointed-right floor) —
+  // and `answered` fell from 0.907 to 0.814 by definition, not by regression.
+  // The number to push `answered` back up with is aliases, not hedges.
+  assert.ok(report.answered >= 0.79, `answered fell to ${report.answered.toFixed(3)}${summary}`);
+  // Direct is an equality now, not a floor: an answer below the grounding bar
+  // is refused before generation, so an answered case that is not `direct`
+  // means the hedge came back.
+  assert.equal(report.direct, 1, `an answer below the grounding bar was returned${summary}`);
+  assert.ok(report.citedRelevant >= 0.72, `cited-relevant fell to ${report.citedRelevant.toFixed(3)}${summary}`);
+  // A refusal that names a relevant page is a refusal the reader can act on —
+  // and for the four re-based cases above it is the honest version of what
+  // the hedge used to do. Measured 0.875 (seven of eight) when set.
+  assert.ok(
+    report.refusalPointedRight >= 0.7,
+    `refusals stopped pointing at the right page: ${report.refusalPointedRight.toFixed(3)}${summary}`,
+  );
 
   // The same record answers the same question the same way. Two corpora built
   // from one seed hold the same pages with the same words and different page
@@ -176,23 +197,16 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
   assert.ok(report.quotedAnswer >= 0.68, `quoted-answer fell to ${report.quotedAnswer.toFixed(3)}${summary}`);
 
   // AN EQUALITY, AND THE ONE THAT MATTERS MOST. Not one question the record
-  // cannot answer may be answered under "The record says". That is the
-  // confident non-answer this product exists to avoid, and no gain anywhere
-  // else on this page is worth one of them.
-  const confident = report.overreach.filter((o) => o.grounding === 'direct');
-  assert.deepEqual(confident, [], `answered a question the record is silent on, confidently${summary}`);
-
-  // A hedged answer to such a question is a different thing: it opens with
-  // "Nothing in the record answers this directly. The closest it comes:", which
-  // is a disclaimer in the first sentence rather than a claim. It is allowed,
-  // and it is bounded, because "here is the nearest page" stops being helpful
-  // if it happens to everything. One of the fifteen does this today — the
-  // canteen's opening hours, against a page about claims timeframes, because
-  // the only word of that question the record has never seen is the subject.
-  assert.ok(
-    report.overreach.length <= 2,
-    `too much reaching for the nearest page on questions the record cannot answer${summary}`,
-  );
+  // cannot answer may be answered at all. This used to be two assertions —
+  // confident overreach empty, hedged overreach bounded at two — because the
+  // hedge was a permitted middle state: a disclaimer in the first sentence,
+  // "allowed, and bounded". The hedge is gone (thin refuses, see the re-based
+  // floors above), so the middle state is gone with it: every answer asserts
+  // "The record says", and an unanswerable question that gets one is the
+  // confident non-answer this product exists to avoid. The canteen's opening
+  // hours and the three-days-a-week question — the two hedges this bound used
+  // to admit — now refuse.
+  assert.deepEqual(report.overreach, [], `answered a question the record is silent on${summary}`);
 });
 
 // ---------------------------------------------------------------------------

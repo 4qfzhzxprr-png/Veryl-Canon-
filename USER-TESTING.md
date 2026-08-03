@@ -1016,6 +1016,9 @@ the product working as a record: claims verified, not presumed.
    `!refused` — wrong on three of four gaps. One root fix: a hedge is not
    an answer, in the API, in the audit log, and in the probe. (Ada, Marcus,
    Dana; adjudicated against the code — `wouldAnswer` returns `!refused`.)
+   *Fixed: thin grounding now refuses, with the pages the hedge would have
+   quoted as the refusal's pointers — verified live on all three cases, and
+   the former hedges now land in the Gaps queue, which they never did.*
 2. **Staff phrasing still refuses where the record answers.** "How fast do
    we have to turn around an urgent claim?" refused while the pointer's own
    page says "an expedited claim… is decided within seventy-two hours".

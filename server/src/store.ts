@@ -2266,6 +2266,13 @@ export class CanonStore {
    * row, no pointers. It runs with `actorId`'s own permissions — there is no
    * other identity to run it as — which is right for its one caller, because
    * the operator reading the annotation is the person who would re-ask.
+   *
+   * `!refused` is an honest signal here only because a hedge is not an
+   * answer. When "Nothing in the record answers this directly" still carried
+   * refused:false, this probe said yes to questions a re-ask would show as
+   * disowned — the operator's amber "the record now answers this" note was
+   * wrong on three of its four gaps in the fourth persona round. Thin
+   * grounding refuses now (answers.ts), so yes means "The record says".
    */
   wouldAnswer(actorId: string, question: string, collectionId?: string | null): Promise<boolean> {
     return this.answers

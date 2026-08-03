@@ -327,28 +327,29 @@ export interface AnswerResponse {
    */
   disagreement?: Disagreement;
   /**
-   * How much of this answer actually addresses the question.
+   * Always `direct` on an answer, and that is the point: an answer below the
+   * grounding bar is refused, never returned.
    *
-   * `direct` — more than one page addressed the question on its own terms.
-   * `thin`   — ONE page did, and anything else here arrived with it through the
-   *            graph rather than by answering. The quotations are real and the
-   *            citations are real; what is not established is that the record
-   *            answers the question at all.
+   * There used to be a second value. `thin` marked an answer whose evidence
+   * was one weak match and its graph neighbours, and the prose opened with
+   * "Nothing in the record answers this directly. The closest it comes:" —
+   * an answer in the API, a refusal to the person reading it. The fourth
+   * persona round caught that split honesty in three places at once: a new
+   * joiner "answered" about working from home with three irrelevant hiring
+   * pages, the audit log recording refused:false while the screen disowned
+   * the answer, and the gaps triage annotating gaps as answerable — it
+   * trusts `!refused` — that a re-ask still refused, three times out of
+   * four. One root fix: a hedge is not an answer. Thin grounding now takes
+   * the refusal path, and the pages the hedge would have quoted travel as
+   * the refusal's `nearest` pointers instead — which also lets the refusal
+   * land in the gaps table, where an operator can actually fix it; a hedge
+   * never became a gap.
    *
-   * It exists because the two ways of being wrong point in opposite directions.
-   * A compliance director was refused a policy that plainly exists, and — from
-   * the product's own suggested question — handed three unrelated pages under
-   * "ANSWER … The record says:", one of which mentioned approving something
-   * else entirely while the other two came in as its graph neighbours. His
-   * conclusion: "a confident non-answer and a refusal are separated by how many
-   * words I typed", and if retrieval cannot be made to find the right page,
-   * "present the thing honestly as search results and stop asserting."
-   *
-   * This is that, without giving up the answer: a thin answer still cites,
-   * still quotes verbatim, still carries every warning — it simply stops
-   * claiming the record has spoken.
+   * The field survives so an answer still states, machine-readably, that it
+   * cleared the bar — and so a reintroduced hedge would be a visible type
+   * change rather than a quiet one.
    */
-  grounding?: 'direct' | 'thin';
+  grounding?: 'direct';
   /**
    * Set when this answer quotes a page the record says was replaced, beside
    * the page that replaced it. Additive and absent otherwise; a caller that
@@ -437,14 +438,6 @@ export interface AnswerGenerator {
     supersession?: Supersession | null;
     /** Advisory, same rules: where a cited page's own sources disagree. */
     sourceDisagreement?: SourceDisagreement | null;
-    /**
-     * How much of this actually addresses the question — `direct` when more
-     * than one page did on its own terms, `thin` when one did and the rest
-     * arrived through the graph. Advisory like the others: a generator that
-     * ignores it changes nothing, and the caller states the same thing in the
-     * response's `grounding` field whatever the prose says.
-     */
-    grounding?: 'direct' | 'thin';
   }): GeneratedAnswer | null;
 }
 
@@ -469,7 +462,7 @@ export const MAX_CITED_PASSAGES = 3;
 // instruction.
 export const extractiveGenerator: AnswerGenerator = {
   name: 'extractive-v1',
-  generate({ passages, disagreement, grounding }) {
+  generate({ passages, disagreement }) {
     const usable = passages.filter((p) => p.text.trim().length > 0);
     if (usable.length === 0) return null;
     // A passage from a page past its review date is attributed as such, in the
@@ -498,16 +491,15 @@ export const extractiveGenerator: AnswerGenerator = {
       };
     }
 
-    // A thin answer opens differently, and the difference is the whole point.
-    // "The record says:" over one weak match and its graph neighbours is an
-    // assertion the evidence does not support; naming it as the closest the
-    // record comes is true, and leaves the reader to judge.
-    const lead =
-      grounding === 'thin'
-        ? 'Nothing in the record answers this directly. The closest it comes:'
-        : 'The record says:';
+    // "The record says:" is the only lead there is. This generator once
+    // opened thin answers with "Nothing in the record answers this directly.
+    // The closest it comes:" — that hedge is gone because a hedge no longer
+    // reaches generation at all: an answer below the grounding bar is refused
+    // by the caller, and its near-misses travel as the refusal's pointers.
+    // A generator that is called can assert, because the caller has already
+    // decided the record answers.
     return {
-      answer: `${lead}\n\n${usable.map(attribute).join('\n\n')}${notice}`,
+      answer: `The record says:\n\n${usable.map(attribute).join('\n\n')}${notice}`,
       citedPageIds,
     };
   },
@@ -539,7 +531,10 @@ function attribute(p: AnswerPassage): string {
 export const MIN_TOPICAL_OVERLAP = 0.5;
 
 /**
- * The bar for "The record says" rather than "the closest it comes".
+ * The bar for "The record says" rather than a refusal that points. (This used
+ * to be the bar for the answer's OPENING LINE — "the closest it comes" instead
+ * of "the record says" — back when a thin verdict still produced an answer.
+ * The verdict is the same; what rides on it is now answer-or-refuse.)
  *
  * GROUNDING USED TO BE A HEADCOUNT, and the headcount was wrong about the case
  * this product is built for. Two anchors meant direct, one meant thin — so a
@@ -723,10 +718,10 @@ export function isOnTopic(question: string, text: string, stats: TermStats | nul
  *
  * Admission and confidence are two different questions and were answered by one
  * number. A candidate clears `MIN_TOPICAL_OVERLAP` to be allowed to anchor an
- * answer at all; whether the answer then reads "The record says" or "Nothing in
- * the record answers this directly" is a judgement about how squarely the best
- * page addressed the question, and that judgement needs the margin, not the
- * verdict.
+ * answer at all; whether the ask then answers under "The record says" or
+ * refuses with the near pages as pointers is a judgement about how squarely
+ * the best page addressed the question, and that judgement needs the margin,
+ * not the verdict.
  *
  * Returns 0 where the question has no content terms, and 0 where the text
  * covers fewer than two of them — the shape rule below, which is about the
@@ -1991,9 +1986,12 @@ export class AnswerService {
     // looks like. Two independent pages that both clear admission earn it too,
     // which is the argument the headcount was making and is still sound.
     //
-    // "Thin" survives for what it was for: an answer assembled out of pages that
-    // are NEAR the question — over the admission bar, under this one — plus
-    // whatever the graph brought with them.
+    // "Thin" survives only as a verdict, not as an answer. It marks the same
+    // thing it always marked — pages NEAR the question, over the admission
+    // bar, under this one, plus whatever the graph brought with them — but
+    // what happens on that verdict changed after the fourth persona round:
+    // thin refuses. See the `grounding` field on AnswerResponse for the three
+    // surfaces the old hedged answer was dishonest on at once.
     const scores = anchors.map((c) => coverage.get(c.pageId) ?? 0).sort((a, b) => b - a);
     const best = scores[0] ?? 0;
     const second = scores[1] ?? 0;
@@ -2062,9 +2060,17 @@ export class AnswerService {
     const supersession = detectSupersession(passages, stated.supersessions);
     const sourceDisagreement = detectSourceDisagreement(passages, stated.divergences);
 
+    // The generator is called only when the record answers. A thin verdict
+    // used to reach it and come back as a hedge — "Nothing in the record
+    // answers this directly. The closest it comes:" — with refused: false,
+    // which the fourth persona round showed to be one dishonesty on three
+    // surfaces (the screen, the audit log, the gaps probe). Now thin means
+    // `generated` stays null, and the refusal block below does what a hedge
+    // pretended to: it names the near pages as places to look, without
+    // quoting them as an answer.
     const generated =
-      passages.length > 0
-        ? this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement, grounding })
+      passages.length > 0 && grounding === 'direct'
+        ? this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
         : null;
 
     // Citations are built from the passages the generator was given, matched
@@ -2294,10 +2300,11 @@ export class AnswerService {
       answer,
       citations,
       refused: false,
-      // Stated from the anchor count, never from the generator's prose: a
-      // generator cannot talk its way into "direct" any more than it can talk
-      // its way out of a disagreement.
-      grounding,
+      // Stated from the gate's own verdict, never from the generator's prose:
+      // a generator cannot talk its way into "direct" any more than it can
+      // talk its way out of a disagreement. And it is `direct` by
+      // construction — anything less took the refusal path above.
+      grounding: 'direct',
       ...(pastReview.length ? { pastReview } : {}),
       ...(disagreement ? { disagreement } : {}),
       ...(citedSupersession ? { supersession: citedSupersession } : {}),

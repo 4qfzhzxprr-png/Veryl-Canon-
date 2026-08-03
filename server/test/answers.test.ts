@@ -1796,17 +1796,23 @@ test('isOnTopic: a term the record has never used counts against a match', () =>
   assert.equal(isOnTopic('procurement policy', 'This policy covers procurement.', stats), true);
 });
 
-// An answer says how well grounded it is, and the extractive generator opens
-// differently when it is thin. "The record says:" over one weak match and its
-// graph neighbours is an assertion the evidence does not support.
-test('ask: grounding is how squarely the record answers, not how many pages did', async () => {
+// A hedge is not an answer. The path below an anchor that admits but does not
+// answer used to be "Nothing in the record answers this directly. The closest
+// it comes:" with `refused: false` — an answer in the API, a refusal to the
+// person reading it. The fourth persona round caught that one dishonesty in
+// three places at once: a screen "answering" with irrelevant pages, an audit
+// log recording refused:false while the screen disowned the answer, and the
+// gaps probe trusting `!refused` and annotating gaps as answerable that a
+// re-ask still refused. One root fix: thin grounding refuses, with the
+// would-have-been citations as the refusal's places to look.
+test('ask: a hedge is not an answer — thin grounding refuses, and points', async () => {
   const question = 'who approves a learning budget request';
   const { store, marc, iris, collection } = setup();
 
   // A page that shares the question's subject without addressing it: over the
   // bar to anchor an answer, nowhere near answering it. Plus a neighbour that
-  // rides in on the tree and answers nothing either. This is what "thin" is
-  // for, and the answer says so.
+  // rides in on the tree and answers nothing either. This used to hedge; it
+  // now refuses, and the near page travels as a pointer instead of a citation.
   const near = publishCanonical(
     store, marc.id, iris.id, collection.id,
     'Team spending',
@@ -1819,28 +1825,32 @@ test('ask: grounding is how squarely the record answers, not how many pages did'
     near.id,
   );
 
-  const thin = await store.ask(marc.id, { question });
-  assert.equal(thin.refused, false);
-  assert.equal(thin.grounding, 'thin');
-  assert.match(thin.answer!, /^Nothing in the record answers this directly/);
+  const refusal = await store.ask(marc.id, { question });
+  assert.equal(refusal.refused, true, 'a weak match is a refusal, not a hedged answer');
+  assert.equal(refusal.answer, null);
+  assert.equal(refusal.citations.length, 0);
+  assert.ok(
+    refusal.nearest?.some((n) => n.title === 'Team spending'),
+    'the page the hedge would have quoted is where the refusal points',
+  );
 
-  // ONE page that squarely answers it is direct, on its own.
-  //
-  // This is the rule that changed and the reason it had to. Grounding was a
-  // headcount — two anchors or it was thin — so a question answered plainly, on
-  // one Canonical page, by the person who owns that subject, was reported as
-  // "Nothing in the record answers this directly". A well-kept record answers a
-  // question on ONE page; that is what Canonical means, and the old rule was
-  // hedging exactly the record-keeping the product asks people to do. Over the
-  // labelled question set it fired on fifteen of forty-one.
+  // The probe sees the same truth — this is the operator's amber "the record
+  // now answers this" note, which trusted `!refused` and was wrong on three
+  // of its four gaps in the fourth round.
+  assert.equal(await store.wouldAnswer(marc.id, question), false);
+
+  // ONE page that squarely answers it is direct, on its own — a well-kept
+  // record answers a question on ONE page; that is what Canonical means.
   publishCanonical(
     store, marc.id, iris.id, collection.id,
     'Learning budget',
     'The team lead approves a learning budget request up to five hundred pounds.',
   );
   const direct = await store.ask(marc.id, { question });
+  assert.equal(direct.refused, false);
   assert.equal(direct.grounding, 'direct');
   assert.match(direct.answer!, /^The record says:/);
+  assert.equal(await store.wouldAnswer(marc.id, question), true);
 });
 
 test('ask: the page decides whether it is on topic, not the sentence chosen to quote', async () => {
