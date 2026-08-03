@@ -901,6 +901,10 @@ under header auth are both real and confirmed at the source.
 
 ### Findings, consolidated and ranked
 
+*(All fourteen findings below were fixed after this round, and the fourth
+round — the rerun, below — sent the same seven personas back to verify the
+fixes against the running product.)*
+
 **Integrity class — fix before anything else:**
 
 1. **An approver can be asked to sign blind.** The review diff runs against
@@ -958,6 +962,100 @@ affordance (Dana); the alias placeholder shows claims examples in every
 collection and carries no help text (Ada); an operator resolving a gap gets
 no warning against pasting a sensitive question verbatim into public
 vocabulary (Tomas).
+
+## The fourth round — the rerun
+
+All fourteen third-round findings were fixed, and then the same seven
+personas ran the same sessions again: same briefs, same two-wave structure,
+a freshly seeded record, and the test driver's own double-fire bug repaired
+so that artefact could not recur. Each persona carried their third-round
+verdict into the session with instructions to re-judge it — an unearned pass
+helps nobody, and none was given.
+
+### The verdicts, third round → fourth
+
+| Persona | Third round | This round |
+| --- | --- | --- |
+| Marcus, compliance director | "Junior clerk: allowed in the building, not allowed to sign anything" | **Promoted again.** "Research clerk: its citations may now enter a decision file once the source page is read; its silences may not — no decision file may record 'the record is silent' on Ask's say-so." The PLAN-7 live-value chip and the conflict handling he called exemplary; the traps held. |
+| Priya, policy owner | "Right model — not yet at forty pages" | **Moved decisively.** "'I'd name all forty tomorrow' is now true." Save-loss, one-click submit, and field compare verified fixed; collisions warn at save rather than as-you-type, which she accepts with a note. |
+| Ruth, external auditor | "Substantially clean", one letter item | **Stands and improves.** Both letter items verified at the source: "Also known as" is in the page-today attestation and every per-version table, and the CSV export reconciled exactly, redactions intact byte-for-byte. |
+| Tomas, DPO | Sign-off with conditions | **Hardened to refuse — deliberately.** Every wording condition verified met, and pointers never leaked; but he then *proved* his standing auth condition by reading colleagues' questions with a forged `X-Actor-Id` header. That is the dev-auth mode doing what dev-auth mode does; his point is that the condition is now demonstrated, not presumed, and wide deployment without real auth is off the table. |
+| Ada, new joiner | "Harder but failed honestly" | **Moved a step.** "Failed honestly and occasionally caught me" — one refusal pointer walked her straight to the right canonical page. Still unfair to say "it's all in Canon": carryover rules are genuinely not in the record, and search still does not speak new-joiner English until someone teaches it. |
+| Dana, operator | "Keep it" | **Holds.** Triaged all 28 live gaps — eight closures in under a minute — confirmed both privacy claims from the operator seat, and closed the vocabulary loop end to end again. One major: the new amber "record now answers this" note was wrong on three of its four gaps. |
+| Lena, approver | "Not forty times a quarter until the review screen shows me what I am signing" | **Moved.** "Yes — the review screen finally shows me what I sign." The banner named the alias change field by field against the last-Canonical baseline; this round the submitter's note was corroboration, not her rescue. She approved, and watched "TAT" flip from refusal to cited answer. |
+
+### What the rerun proved
+
+The fixes were real. Fifteen of the sixteen specific claims the personas
+were sent to verify held against the running product: the approver's blind
+signature is gone (Lena), the attestation carries vocabulary (Ruth), the
+save that fails says so (Priya), the live field rides the citation (Marcus),
+the Gaps view tells the truth about what it stores (Tomas, Dana), and the
+loop — refusal to gap to alias to approval to answer — closed live a second
+time, across two people, in both directions of the wait.
+
+The one claim that did not hold: refusals never named an in-review page in
+Ada's session, though the machinery exists and worked elsewhere — pointer
+coverage is real but uneven.
+
+The verdict pattern is worth recording: every persona who re-judged a
+*surface* moved forward; the one who re-judged a *deployment precondition*
+(Tomas) moved backward on purpose, by demonstrating it. Both movements are
+the product working as a record: claims verified, not presumed.
+
+### Findings, consolidated and ranked
+
+**Major — the honesty class:**
+
+1. **`refused: false` does not mean a person was answered.** The
+   closest-passages hedge counts as an answer in the API and reads as a
+   refusal on the screen, and this one dishonesty now surfaces in three
+   places: Ada's work-from-home question "answered" with three irrelevant
+   hiring pages; Marcus's canteen trap "answered" with claims-clock text;
+   and Dana's amber "record now answers this" note — which trusts
+   `!refused` — wrong on three of four gaps. One root fix: a hedge is not
+   an answer, in the API, in the audit log, and in the probe. (Ada, Marcus,
+   Dana; adjudicated against the code — `wouldAnswer` returns `!refused`.)
+2. **Staff phrasing still refuses where the record answers.** "How fast do
+   we have to turn around an urgent claim?" refused while the pointer's own
+   page says "an expedited claim… is decided within seventy-two hours".
+   This is the vocabulary loop's job, and the loop closed on exactly this
+   gap during the round — Dana's alias submission is in review — but the
+   default experience before an operator intervenes is still a wrongful
+   refusal. (Marcus, Dana)
+3. **Right page, wrong sentence.** The appeal-deadline answer cited the
+   right page and never quoted "the member has 180 days"; the
+   clinical-denial quote starts one sentence past the answering sentence.
+   (Marcus)
+
+**Worth fixing, not urgent:**
+
+4. Opening an editor takes a silent draft lock: a "draft" with no
+   keystrokes behind it appears in the queue and the audit log, and blocks
+   other editors. (Priya, Ruth, Ada)
+5. Unapproved aliases already steer search — badged in-review, so nothing
+   leaks — but the editor caption says "once approved", and the caption is
+   wrong. Say what is true. (Ruth, Priya)
+6. Dismissing a gap accepts an empty note while resolving demands one; a
+   reasonless dismissal is the one closure nobody can audit later. (Dana)
+7. "Show me the changes" inside the approve dialog closes the dialog and
+   discards the typed note. (Lena)
+8. The audit CSV export is itself the one act the audit log does not
+   record. (Ruth)
+9. An asker is never told their question is recorded and operator-readable;
+   the rule is honest everywhere except to the person it most concerns.
+   (Ada, Tomas)
+10. Polish: the review banner counts the approver handoff as a changed
+    field while compare does not (both defensible, momentarily confusing —
+    Lena); the editor shows stale values after publish until reload and
+    toasts linger (Priya); a stale Gaps nav link flashes for non-operators
+    (Dana); audit DETAILS over-disclose operational internals (Tomas);
+    global event ids reveal withheld activity volume to limited users
+    (Ruth).
+
+**Standing precondition, not a finding:** dev-auth header identity is for
+this test harness only; Tomas's demonstration stands as the reason real
+authentication gates any wide deployment.
 
 ## What we are deliberately not doing
 
