@@ -198,3 +198,39 @@ test('csv: the export carries the whole filtered population, past one page of it
     store.auditSummary(dana.id, { action: 'page.create' }).matching,
   );
 });
+
+// Fourth round, Ruth: downloading the audit CSV was the one act the audit log
+// did not record — the log left the building without the log saying so. Each
+// export now writes `audit.exported`: who, when, the filter in effect and the
+// row count, and nothing from the payload — the filter names actions, ids and
+// dates, never question texts or row contents.
+test('csv: the export is itself on the record — who, filter, row count, no payload', () => {
+  const store = new CanonStore(openDb(':memory:'));
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const collection = store.createCollection(dana.id, { name: 'Compliance' });
+  store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Retention' });
+
+  const first = store.auditCsv(dana.id, { action: 'page.create', from: '2026-01-01T00:00:00.000Z' });
+  const events = store.queryAudit(dana.id, { action: 'audit.exported' });
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.actorId, dana.id);
+  assert.deepEqual(events[0]!.details, {
+    action: 'page.create',
+    from: '2026-01-01T00:00:00.000Z',
+    rows: 1,
+    truncated: false,
+  });
+
+  // An unfiltered export says so by carrying no filter keys at all, and an
+  // export of nothing is still an export.
+  store.auditCsv(dana.id, { action: 'no.such.action' });
+  const second = store.queryAudit(dana.id, { action: 'audit.exported' })[0]!;
+  assert.deepEqual(second.details, { action: 'no.such.action', rows: 0, truncated: false });
+
+  // The event is written after the file is built, so a file cannot contain
+  // its own export — but the NEXT export carries the previous one, which is
+  // how the trail stays walkable.
+  assert.ok(!first.body.includes('audit.exported'));
+  const third = store.auditCsv(dana.id, {});
+  assert.ok(third.body.includes('audit.exported'));
+});

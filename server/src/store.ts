@@ -2426,6 +2426,27 @@ export class CanonStore {
       if (page.length < Math.min(AUDIT_CSV_PAGE_ROWS, room)) break;
       before = page[page.length - 1]!.id;
     }
+    // The export is itself on the record. It used to be the one act this log
+    // did not hold — the log left the building without the log saying so
+    // (fourth round, Ruth). What is recorded is the act, never the payload:
+    // who exported, the filter in effect (actions, ids and dates — no
+    // question texts live in a filter), how many rows went out, and whether
+    // the cap cut the file short. Written AFTER the walk, so no file contains
+    // its own export; the next one carries it, which keeps the trail
+    // walkable. The event names no collection, so it reaches the exporter and
+    // operators — the same rule every other collectionless event follows.
+    this.audit(actorId, 'audit.exported', {
+      details: {
+        ...(filter.actorId ? { actorId: filter.actorId } : {}),
+        ...(filter.action ? { action: filter.action } : {}),
+        ...(filter.collectionId ? { collectionId: filter.collectionId } : {}),
+        ...(filter.pageId ? { pageId: filter.pageId } : {}),
+        ...(filter.from ? { from: filter.from } : {}),
+        ...(filter.to ? { to: filter.to } : {}),
+        rows: events.length,
+        truncated: events.length >= AUDIT_CSV_MAX_ROWS,
+      },
+    });
     return auditCsvResponse(events);
   }
 
