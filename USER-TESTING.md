@@ -855,6 +855,110 @@ source register greys Register, Edit and Delete; and asserting a conflict
 against a page in another collection is marked in the picker before the note is
 written and, if forced past that, refused **in the dialog** in the same words.
 
+## The third round
+
+Seven personas, in a real browser, against a freshly seeded record — larger
+than the previous rounds and structured in two waves so the new machinery
+could be tested the way it will actually be used: five personas worked all
+day (asking, being refused, editing), and then an operator opened the Gaps
+view cold to triage the real questions they left behind, while an approver
+opened a queue holding a real alias submission. Three personas returned to
+re-judge standing verdicts; four were new, aimed at the surfaces built since
+round two: aliases, the gap loop, refusal pointers, and the question-privacy
+model.
+
+### The verdicts
+
+| Persona | Prior verdict | This round |
+| --- | --- | --- |
+| Marcus, compliance director | "I'd disable it before I let forty policies near it" | **Moved.** "Leave it on as a citation-finder, but no answer or refusal from it may be cited in a decision file. Promoted from hazard to junior clerk: allowed in the building, not allowed to sign anything." |
+| Priya, policy owner | "Yes. It's changed. I would use this." | **Stands.** On aliases: "right model — not yet at forty pages. Fix silent save-loss, one-click submit, collisions, and field compare, and I'd name all forty tomorrow." |
+| Ruth, external auditor | "Substantially clean" | **Stands.** Management letter: the new machinery does not leak pages a limited user cannot open, but "Also known as" must be added to the attestation, because vocabulary that steers answers should be provable in the record. |
+| Tomas, DPO (new) | — | **Sign-off with conditions.** The question-privacy model held under his probing; conditions are real auth in any wide deployment, an operator-seat verification (Dana supplied it, with one correction below), and a guard on the alias-laundering path. |
+| Ada, new joiner (new) | — | "Canon made my first week **harder but failed honestly**. 'It's all in Canon' is unfair to say to a new joiner today." |
+| Dana, operator (new) | — | On the Gaps loop: "**Keep it** — real work-reduction, seconds per gap, a self-writing audit trail." |
+| Lena, approver (new) | — | "I approved once — rescued by the submitter's version note. I would **not certify alias changes forty times a quarter** until the review screen shows me what I am signing." |
+
+### What the round proved
+
+The vocabulary loop worked end to end, live, across three people who could
+not see each other: Marcus was refused in his staff's words; his questions
+appeared in Dana's Gaps view with pointers at the right page; Dana taught the
+page the words and submitted; Lena approved (a parallel case) and watched the
+same question flip from refusal to cited answer the moment the mark was
+granted. Nothing else in the product improves with use; this does.
+
+The privacy walls held under two independent adversarial probes. Ruth and
+Tomas — different permissions, different phrasings — both failed to make a
+refusal, a pointer list, an alias, or the audit log name a page or a question
+they were not entitled to. The traps held too: nothing was fabricated for
+canteen hours, submarine procurement, or a Wi-Fi password.
+
+Adjudications made against the code afterwards: the "every ask is logged
+twice" seen by three personas is the test driver double-firing its Enter key,
+not a product bug; the missing-alias attestation and the broken CSV export
+under header auth are both real and confirmed at the source.
+
+### Findings, consolidated and ranked
+
+**Integrity class — fix before anything else:**
+
+1. **An approver can be asked to sign blind.** The review diff runs against
+   the last *published* version, not the last *Canonical* one, so any change
+   published before submission vanishes into the baseline — Lena certified
+   vocabulary the "what is being approved" panel never showed her, and
+   version compare says "identical bodies" when only fields differ. One
+   root fix: field-aware diff against the last Canonical version. (Lena,
+   Priya)
+2. **A confident answer can cite the wrong pages.** "Can I work from home 3
+   days a week?" answered from offer-approval and interview pages while two
+   relevant Canonical flexibility pages sat unused; "what do the COB rules
+   require when a member has two plans?" cited three unrelated pages —
+   honest, cited, useless. (Ada, Marcus's hedge case is the same class from
+   the other side.)
+3. **The Gaps view's privacy sentence overclaims.** "Who asked is not shown
+   because it is not stored" is true of the gaps table and false of the
+   product: an operator can join a gap to its asker through the audit log,
+   which is the audit log's own (deliberate, pre-existing) rule. The linkage
+   is defensible; the sentence is not. Reword it, and say the true thing.
+   (Dana, answering Tomas's C2)
+
+**Major:**
+
+4. The thin-answer hedge fires on square answers and is phrasing-brittle:
+   "how many days to file a first-level appeal" quoted the 180-days sentence
+   under "nothing in the record answers this directly", and the audit log
+   recorded refused:false while the screen disowned the answer. (Marcus)
+5. Refusal pointers miss the answering page in about half the hard cases,
+   and never name a page that is in review even when it visibly holds the
+   answer — Ada's sick-leave refusals showed nothing while "Sick leave and
+   certification" sat in her sidebar. Pointers should be able to name
+   non-official pages, labelled as such. (Marcus, Ada, Dana)
+6. Ask never surfaces a federated field's live value: on PLAN-7 the only
+   figure an asker sees is the stale prose one, correctly conflict-framed
+   but still the wrong number, while the service-resolved $1,500 never
+   appears. (Marcus)
+7. A failed alias validation loses work silently: no error, no save, and
+   the other pending field changes in that save are discarded. (Priya)
+8. The alias review road is needlessly expensive and self-contradictory:
+   the publish dialog says "use Submit for review instead", submit rejects
+   Canonical pages, and the page stops answering Ask entirely while in
+   review — days of Ask downtime for a two-word vocabulary change. (Dana,
+   Priya)
+9. Submit is one unconfirmed click with no approver choice at submit time
+   (Priya submitted to the wrong approver); the self-approve button is
+   enabled for the submitter and silently no-ops instead of explaining
+   the separation-of-duties refusal. (Priya, Dana)
+
+**Worth fixing, not urgent:** alias collisions across pages are unwarned
+(Priya); aliases are absent from the attestation rendering (Ruth, confirmed);
+audit CSV export fails under header auth because it is a bare anchor (Ruth,
+confirmed); gaps that have since become answerable stay open with no re-test
+affordance (Dana); the alias placeholder shows claims examples in every
+collection and carries no help text (Ada); an operator resolving a gap gets
+no warning against pasting a sensitive question verbatim into public
+vocabulary (Tomas).
+
 ## What we are deliberately not doing
 
 The subject / entity-join work — a primary key that links facts about the same
