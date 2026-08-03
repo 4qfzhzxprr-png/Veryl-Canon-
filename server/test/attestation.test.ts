@@ -681,6 +681,44 @@ test('bundle HTML: a hostile title, body, note and send-back comment cannot esca
   assert.equal(html.match(/<\/title>/g)!.length, 1);
 });
 
+test('bundle: aliases are in the readable document, and their absence is an em-dash, not a missing row', async () => {
+  // Ruth's management-letter point (third round): vocabulary that steers
+  // answers must be provable in the record. The JSON side always carried the
+  // fields verbatim; what was missing was the HUMAN-readable document — the
+  // one that has to open in five years, in front of somebody who cannot ask
+  // which schema generated it. So a page with aliases shows them, and a page
+  // without shows the row with an em-dash: an absent row would be
+  // indistinguishable from an older rendering that did not know the field.
+  const { store, dana, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Claims standard' });
+  store.editDraft(marc.id, page.id, {
+    body: 'An expedited claim is decided within seventy-two hours.',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
+  });
+  store.submitForReview(marc.id, page.id);
+  store.approve(iris.id, page.id);
+  // Version 2 is the one that learns the words, so the per-version renderings
+  // must disagree with each other: v1 an em-dash, v2 the names.
+  store.editDraft(marc.id, page.id, { fields: { aliases: ['urgent claims', 'COB'] } });
+  store.publish(marc.id, page.id);
+
+  const bundle = store.pageAttestation(dana.id, page.id, {});
+  assert.deepEqual(bundle.page.aliases, ['urgent claims', 'COB'], 'the JSON names the current version’s names');
+  const html = renderPageAttestationHtml(bundle);
+  assert.match(html, /<dt>Also known as<\/dt><dd>urgent claims, COB<\/dd>/, 'the page today states its names');
+  assert.match(html, /<dt>Also known as<\/dt><dd>—<\/dd>/, 'and the version that carried none says so with an em-dash');
+
+  // A page that never carried an alias still carries the row.
+  const bare = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Plain note' });
+  store.editDraft(marc.id, bare.id, { body: 'Nothing to see.' });
+  store.publish(marc.id, bare.id);
+  const bareBundle = store.pageAttestation(dana.id, bare.id, {});
+  assert.deepEqual(bareBundle.page.aliases, []);
+  const bareHtml = renderPageAttestationHtml(bareBundle);
+  assert.match(bareHtml, /<dt>Also known as<\/dt><dd>—<\/dd>/);
+  assert.doesNotMatch(bareHtml, /<dt>Also known as<\/dt><dd>[^—]/, 'no rendering invents a name');
+});
+
 // ---------------------------------------------------------------------------
 // The collection register
 

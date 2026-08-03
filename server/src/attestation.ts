@@ -260,6 +260,14 @@ export interface PageAttestation {
     effectiveDate: string | null;
     effectiveDateBasis: string | null;
     reviewDate: string | null;
+    /**
+     * The current version's published aliases (USER-TESTING.md, third round,
+     * Ruth). Vocabulary that steers answers must be provable in the record:
+     * a name added to a page changes which questions it answers, so the
+     * document that has to open in five years states the names, or states —
+     * with an em-dash, never by omission — that there were none.
+     */
+    aliases: string[];
     currentVersion: number | null;
     createdById: string;
     createdAt: string;
@@ -629,6 +637,10 @@ export class AttestationService {
         effectiveDate: (page.effective_date as string) ?? null,
         effectiveDateBasis: (page.effective_date_basis as string) ?? null,
         reviewDate: (page.review_date as string) ?? null,
+        // Aliases are content: they live in the version, not the row, so the
+        // page's are the current version's — the same join toPage makes.
+        aliases:
+          versions.find((v) => v.number === ((page.current_version as number) ?? null))?.fields.aliases ?? [],
         currentVersion: (page.current_version as number) ?? null,
         createdById: page.created_by as string,
         createdAt: page.created_at as string,
@@ -1451,6 +1463,16 @@ function actorCell(id: string | null | undefined, names: Map<string, string>): s
   return name ? `${esc(name)} <span class="muted small">${esc(id)}</span>` : esc(id);
 }
 
+/**
+ * A version's alias list as one printable cell. The em-dash for "none" is
+ * load-bearing: an absent row is indistinguishable from a document generated
+ * by an older schema, and this document is read years later by someone with
+ * no way to ask which it was. A row that says "—" asserts the absence.
+ */
+function aliasCell(aliases: string[] | undefined | null): string {
+  return aliases && aliases.length ? esc(aliases.join(', ')) : '—';
+}
+
 function fieldsTable(fields: PageFields | null, names: Map<string, string>): string {
   if (!fields) return '<p class="muted">No structured fields.</p>';
   const rows: [string, string][] = [
@@ -1459,6 +1481,10 @@ function fieldsTable(fields: PageFields | null, names: Map<string, string>): str
     ['Effective date', esc(fields.effectiveDate ?? '—')],
     ['Effective date basis', esc(fields.effectiveDateBasis ?? '—')],
     ['Review date', esc(fields.reviewDate ?? '—')],
+    // The names this version answered to. In every rendering of a version's
+    // fields, because an alias is the field that decides which questions the
+    // page answers — precisely what an auditor of an answer needs provable.
+    ['Also known as', aliasCell(fields.aliases)],
   ];
   return `<dl class="fields">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
 }
@@ -1847,6 +1873,7 @@ export function renderPageAttestationHtml(bundle: PageAttestation): string {
       }</dd>
       <dt>Effective date basis</dt><dd>${esc(p.effectiveDateBasis ?? '—')}</dd>
       <dt>Review date</dt><dd>${esc(p.reviewDate ?? '—')}</dd>
+      <dt>Also known as</dt><dd>${aliasCell(p.aliases)}</dd>
       <dt>Current version</dt><dd>${p.currentVersion === null ? 'never published' : `v${esc(p.currentVersion)}`}</dd>
     </dl>
     ${effectiveDateSection(bundle.effectiveDateStanding)}
