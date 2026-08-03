@@ -197,7 +197,18 @@ const routes: Route[] = [
   route('POST', '/pages/:id/archive', ({ store, actorId, params }) => store.archivePage(actorId, params.id!)),
 
   route('GET', '/pages/:id/draft', ({ store, actorId, params }) => store.getDraft(actorId, params.id!)),
-  route('PUT', '/pages/:id/draft', ({ store, actorId, params, body }) => store.editDraft(actorId, params.id!, body)),
+  // An empty PUT — no title, no body, no fields — is how the editor opens,
+  // and opening is a question, not an edit: it answers with what the editor
+  // would hold (and the lock refusal, where somebody else holds it) and
+  // writes nothing. The draft row, the queue entry, the audit event and the
+  // lock all wait for the first PUT that carries content (fourth round,
+  // finding 4: walking in the door used to take the lock).
+  route('PUT', '/pages/:id/draft', ({ store, actorId, params, body }) => {
+    const input = (body ?? {}) as { title?: string; body?: string; fields?: unknown };
+    return input.title === undefined && input.body === undefined && input.fields === undefined
+      ? store.openDraft(actorId, params.id!)
+      : store.editDraft(actorId, params.id!, body);
+  }),
   route('DELETE', '/pages/:id/draft', ({ store, actorId, params }) => {
     store.discardDraft(actorId, params.id!);
     return { ok: true };

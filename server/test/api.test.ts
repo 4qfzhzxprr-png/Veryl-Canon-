@@ -170,3 +170,71 @@ test('API: the approver a page in review reports is the approver the API accepts
     server.close();
   }
 });
+
+// Fourth round, finding 4: merely opening the editor took the page lock. The
+// editor's opening call is an empty PUT — no title, no body, no fields — and
+// it used to create the draft row on arrival, which put an untyped "draft" in
+// the queue, a draft.start in the audit log, and a lock in front of every
+// other editor, for somebody who might close the tab without typing. Over
+// HTTP, an empty PUT is now a question ("what would I be editing, and may
+// I?") and writes nothing; the first PUT that carries content is the edit,
+// and that is when the lock is taken and the audit event written.
+test('API: opening an editor writes nothing; the first real change takes the lock', async () => {
+  const store = new CanonStore(openDb(':memory:'));
+  const server = createApi(store);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const call = async (method: string, path: string, actor?: string, body?: unknown) => {
+    const res = await fetch(base + path, {
+      method,
+      headers: { 'content-type': 'application/json', ...(actor ? { 'x-actor-id': actor } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: res.status, json: (await res.json()) as any };
+  };
+
+  try {
+    const dana = (await call('POST', '/actors', undefined, { kind: 'person', name: 'Dana' })).json;
+    const priya = (await call('POST', '/actors', undefined, { kind: 'person', name: 'Priya' })).json;
+    const c = (await call('POST', '/collections', dana.id, { name: 'Compliance' })).json;
+    await call('PUT', `/collections/${c.id}/members/${priya.id}`, dana.id, { role: 'edit' });
+    const page = (
+      await call('POST', '/pages', dana.id, { collectionId: c.id, type: 'note', title: 'Retention' })
+    ).json;
+
+    // Opened and closed untouched: the probe answers with what the editor
+    // would hold, and leaves no draft, no lock, and no audit event behind.
+    const opened = await call('PUT', `/pages/${page.id}/draft`, dana.id, {});
+    assert.equal(opened.status, 200);
+    assert.equal(opened.json.title, 'Retention');
+    assert.deepEqual(opened.json.warnings, []);
+    // No draft row behind it: the GET answers with the API's "nothing here"
+    // shape (no pageId), which is exactly what the page view's banner checks.
+    assert.equal((await call('GET', `/pages/${page.id}/draft`, dana.id)).json.pageId, undefined);
+    assert.equal((await call('GET', '/audit?action=draft.start', dana.id)).json.length, 0);
+
+    // Two editors with the page open are not yet in each other's way.
+    assert.equal((await call('PUT', `/pages/${page.id}/draft`, priya.id, {})).status, 200);
+
+    // The first real change is the edit: it takes the lock and writes the one
+    // draft.start the session deserves — and the lock message still stands in
+    // front of the second editor, whether they probe or type.
+    await call('PUT', `/pages/${page.id}/draft`, dana.id, { body: 'Keep records 7 years.' });
+    assert.equal((await call('GET', '/audit?action=draft.start', dana.id)).json.length, 1);
+    const locked = await call('PUT', `/pages/${page.id}/draft`, priya.id, {});
+    assert.equal(locked.status, 423);
+    assert.equal(locked.json.editorName, 'Dana');
+    const lockedEdit = await call('PUT', `/pages/${page.id}/draft`, priya.id, { body: 'Mine now?' });
+    assert.equal(lockedEdit.status, 423);
+
+    // Opening my own held draft is still not an edit: the probe returns the
+    // draft as it stands and does not move its "last saved" instant.
+    const held = (await call('GET', `/pages/${page.id}/draft`, dana.id)).json;
+    const reopened = (await call('PUT', `/pages/${page.id}/draft`, dana.id, {})).json;
+    assert.equal(reopened.updatedAt, held.updatedAt);
+    assert.equal(reopened.body, 'Keep records 7 years.');
+  } finally {
+    server.close();
+  }
+});

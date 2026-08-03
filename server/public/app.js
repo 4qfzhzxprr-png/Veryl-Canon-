@@ -4318,7 +4318,14 @@ async function viewEditor(id) {
   await detectFreshness().catch(() => null);
   let draft;
   try {
-    draft = await api('PUT', `/pages/${id}/draft`, {}); // acquires the page lock
+    // An empty PUT is the editor's opening question, and the server treats it
+    // as one: it answers with the held draft or the seed, and the lock
+    // refusal where somebody else is editing — and it WRITES NOTHING. Walking
+    // in the door used to create the draft row, which put an untyped "draft"
+    // in the queue and the audit log and locked out every other editor
+    // (fourth round, finding 4). The lock is taken by the first real change,
+    // below.
+    draft = await api('PUT', `/pages/${id}/draft`, {});
   } catch (err) {
     if (err.status === 423) {
       const editor = err.details?.editorName ?? actorName(err.details?.editorId);
@@ -4461,7 +4468,7 @@ async function viewEditor(id) {
   };
   form.aliases.addEventListener('input', syncAliasNotice);
   syncAliasNotice();
-  // The lock-acquiring save above already answered for the names the draft
+  // The opening probe already answered for the names the draft (or its seed)
   // carries, so a collision that predates this editing session is on screen
   // from the first paint rather than after the first save.
   app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(draft.warnings);
@@ -4520,6 +4527,24 @@ async function viewEditor(id) {
     app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(d.warnings);
     return d;
   };
+
+  // The first real change is what takes the page lock. Opening created
+  // nothing (see the probe above), so until somebody types, two people can
+  // have the same editor open in peace; the first keystroke saves what the
+  // form holds, which creates the draft and locks it. Somebody who lost that
+  // race gets the same clearly-worded refusal a failed save gets — the alert
+  // region below the title, naming who holds the page — instead of a lock
+  // screen for a page they never touched. Tried once, not per keystroke: if
+  // the claim fails, the explicit Save is the retry, with the alert already
+  // saying why it will not succeed until the other editor is done.
+  let lockClaimed = false;
+  const claimLockOnFirstChange = () => {
+    if (lockClaimed) return;
+    lockClaimed = true;
+    save().catch((err) => handleEditError(err));
+  };
+  form.addEventListener('input', claimLockOnFirstChange);
+  form.addEventListener('change', claimLockOnFirstChange);
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();

@@ -827,11 +827,13 @@ export class CanonStore {
 
   // ---- drafts and the page lock ---------------------------------------
 
-  editDraft(
-    actorId: string,
-    pageId: string,
-    input: { title?: string; body?: string; fields?: PageFields },
-  ): Draft & { warnings: string[] } {
+  /**
+   * The guard every road into a page's draft shares: the edit role, a page
+   * that is editable at all, and the one-editor lock. One place, because a
+   * probe that answered "yes, you may edit" while the edit itself said
+   * "locked" would be the lock working only against people who type fast.
+   */
+  private editablePage(actorId: string, pageId: string): { page: Page; existing?: Record<string, unknown> } {
     const row = this.pageRow(pageId);
     this.requireRole(actorId, row.collection_id as string, 'edit', 'Editing');
     const page = this.toPage(row);
@@ -839,7 +841,6 @@ export class CanonStore {
     if (page.status === 'in_review') {
       throw new CanonError('workflow', 'This page is in review; wait for the approver or send it back');
     }
-
     const existing = this.draftRow(pageId);
     if (existing && existing.editor_id !== actorId) {
       const editor = this.getActor(existing.editor_id as string);
@@ -848,6 +849,47 @@ export class CanonStore {
         editorName: editor.name,
       });
     }
+    return { page, existing };
+  }
+
+  /**
+   * What the editor shows on open, and NOTHING else: the held draft where the
+   * asker holds one, otherwise the seed the first save would start from —
+   * without creating either. Opening an editor used to BE an edit (an empty
+   * patch through `editDraft`), which meant walking in the door took the page
+   * lock, put an untyped "draft" in the queue and a `draft.start` in the
+   * audit log, for a person who might close the tab without typing (fourth
+   * round, finding 4). The lock survives — it is simply taken by the first
+   * call that actually changes something, which still goes through
+   * `editDraft` — and this probe refuses in exactly the same cases an edit
+   * would, so "you may look" never contradicts "you may not type".
+   *
+   * The alias-collision warnings ride along for the same reason they ride on
+   * a save: a collision that predates this editing session belongs on screen
+   * from the first paint, not after the first keystroke.
+   */
+  openDraft(actorId: string, pageId: string): Draft & { warnings: string[] } {
+    const { page, existing } = this.editablePage(actorId, pageId);
+    const base = existing ?? this.draftSeed(page);
+    const fields = JSON.parse(base.fields_json as string) as PageFields;
+    return {
+      pageId,
+      title: base.title as string,
+      body: base.body as string,
+      fields,
+      editorId: (existing?.editor_id as string) ?? actorId,
+      baseVersion: existing ? ((existing.base_version as number) ?? null) : page.currentVersion,
+      updatedAt: (existing?.updated_at as string) ?? now(),
+      warnings: this.aliasCollisionWarnings(pageId, page.collectionId, fields.aliases ?? []),
+    };
+  }
+
+  editDraft(
+    actorId: string,
+    pageId: string,
+    input: { title?: string; body?: string; fields?: PageFields },
+  ): Draft & { warnings: string[] } {
+    const { page, existing } = this.editablePage(actorId, pageId);
 
     // The patch is validated against what the draft already carries, not on its
     // own: "is this effective date backdated" is a question about the page, and
