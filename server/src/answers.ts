@@ -62,8 +62,10 @@ export interface Citation {
   /** The cited page's federated fields, when it has any. Absent otherwise. */
   fields?: CitationField[];
   /**
-   * The standing of the cited page — `canonical` or `needs_update`, the only
-   * two statuses an answer may draw on. It is carried because a reader deciding
+   * The standing of the cited page — `canonical`, `needs_update`, or
+   * `in_review` where the page is still serving its last-marked version while
+   * an edit waits on its approver (retrieval.ts, ANSWERABLE_STATUSES; what is
+   * quoted is the approved version). It is carried because a reader deciding
    * whether to act on a quotation needs to know whether the page behind it is
    * current, and a caller that has to fetch each cited page to find out will
    * either guess or not bother. The answer prose says the same thing in words;
@@ -1912,8 +1914,20 @@ export class AnswerService {
     // left the record deliberately), and a Draft or a Note still cannot be cited
     // at all. Needs Update is the only addition, and only because it is the one
     // status that means "Canonical, and overdue" rather than "not Canonical".
+    //
+    // A page In Review passes on the same reasoning at one remove: it reaches
+    // this filter only because the candidate SQL proved it is still serving
+    // the version that last received the mark (retrieval.ts,
+    // ANSWERABLE_STATUSES — the comparison lives on the row, and a candidate
+    // does not carry it, so admitting the status here is trusting what the SQL
+    // already decided rather than re-deciding it blind). What is quoted is the
+    // approved version; the pending draft is invisible either way, because
+    // candidates are built from published versions only.
     const eligible = candidates.filter(
-      (c) => ANSWERABLE_STATUSES.includes(c.status) && c.type !== 'note' && c.passage.trim().length > 0,
+      (c) =>
+        (ANSWERABLE_STATUSES.includes(c.status) || c.status === 'in_review') &&
+        c.type !== 'note' &&
+        c.passage.trim().length > 0,
     );
 
     // The topical gate. A directly retrieved candidate must be about the

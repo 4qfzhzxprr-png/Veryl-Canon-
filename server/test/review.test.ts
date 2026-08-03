@@ -195,6 +195,90 @@ test('lastCanonicalVersion: reading it needs `view`, like the history it is one 
 });
 
 // ---------------------------------------------------------------------------
+// Third round, finding 8 — a Canonical page's draft goes to review directly,
+// and the page keeps the standing it entered review with unless the mark is
+// actually granted to something else.
+
+/** Marc's policy, taken all the way to Canonical v1. */
+function canonicalPolicy(fx: ReturnType<typeof setup>, reviewDate = NEXT_YEAR) {
+  const { store, marc, nadia, collection } = fx;
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Complaint handling' });
+  store.editDraft(marc.id, page.id, {
+    body: 'A complaint is acknowledged within five working days.',
+    fields: { ownerId: marc.id, approverId: nadia.id, effectiveDate: TODAY, reviewDate },
+  });
+  store.submitForReview(marc.id, page.id);
+  store.approve(nadia.id, page.id, {});
+  return page;
+}
+
+test('submit from Canonical: the draft goes to review, no publish-first demotion', () => {
+  const fx = setup();
+  const { store, marc, nadia } = fx;
+  const page = canonicalPolicy(fx);
+  store.editDraft(marc.id, page.id, { body: 'A complaint is acknowledged within three working days.' });
+
+  // The mirror says so before the act does it.
+  assert.equal(store.pageAbilities(marc.id, page.id).submit.can, true);
+  store.submitForReview(marc.id, page.id);
+  const inReview = store.getPage(marc.id, page.id);
+  assert.equal(inReview.status, 'in_review');
+  assert.equal(inReview.currentVersion, 1, 'nothing published: readers still hold the approved v1');
+
+  // Approval publishes the draft and moves the mark with it.
+  store.approve(nadia.id, page.id, {});
+  const after = store.getPage(marc.id, page.id);
+  assert.equal(after.status, 'canonical');
+  assert.equal(after.currentVersion, 2);
+  assert.equal(store.lastCanonicalVersion(marc.id, page.id)!.number, 2);
+});
+
+test('send-back and withdrawal return a Canonical page to Canonical: refusing the draft revokes nothing', () => {
+  const fx = setup();
+  const { store, marc, nadia } = fx;
+  const page = canonicalPolicy(fx);
+  store.editDraft(marc.id, page.id, { body: 'Three working days.' });
+  store.submitForReview(marc.id, page.id);
+  store.sendBack(nadia.id, page.id, { comment: 'Three days is not agreed; check with operations first.' });
+  assert.equal(store.getPage(marc.id, page.id).status, 'canonical', 'the approved version never stopped being the record');
+  // And the refusal is still the last word on the page, standing or no.
+  const notice = store.sentBack(marc.id, page.id);
+  assert.ok(notice);
+  assert.match(notice.reason, /not agreed/);
+
+  store.submitForReview(marc.id, page.id);
+  store.withdrawFromReview(marc.id, page.id, {});
+  assert.equal(store.getPage(marc.id, page.id).status, 'canonical');
+});
+
+test('send-back after publish-first lands on Draft: what is live is unreviewed', () => {
+  const fx = setup();
+  const { store, marc, nadia } = fx;
+  const page = canonicalPolicy(fx);
+  // The old road: publish drops the mark and makes the edit live unreviewed.
+  store.editDraft(marc.id, page.id, { body: 'Ten working days.' });
+  store.publish(marc.id, page.id); // v2, Draft
+  store.editDraft(marc.id, page.id, { body: 'Ten working days, in writing.' });
+  store.submitForReview(marc.id, page.id);
+  store.sendBack(nadia.id, page.id, { comment: 'Ten days needs a source.' });
+  // Restoring Canonical here would put the mark on text nobody approved.
+  assert.equal(store.getPage(marc.id, page.id).status, 'draft');
+});
+
+test('leaving review keeps the sweep’s verdict: a past review date lands on Needs Update', () => {
+  const fx = setup();
+  const { store, marc, nadia } = fx;
+  const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const page = canonicalPolicy(fx, yesterday);
+  store.editDraft(marc.id, page.id, { body: 'Refreshed text.' });
+  store.submitForReview(marc.id, page.id);
+  store.withdrawFromReview(marc.id, page.id, {});
+  // Not Canonical: leaving review is not a fresh grant, and the review date
+  // already passed. Not Draft either: the approved version is still serving.
+  assert.equal(store.getPage(marc.id, page.id).status, 'needs_update');
+});
+
+// ---------------------------------------------------------------------------
 // T4.4 — nothing is offered that the server will refuse
 
 test('abilities: the named approver, and nobody else', () => {

@@ -399,8 +399,13 @@ export class QueryService {
     // resubmission, a withdrawal, a direct publish) displaces it, and the page
     // leaves this list without anybody having to remember to clear a flag.
     if (filter.sentBackTo) {
+      // Not only Draft: a Canonical page whose draft was refused keeps its
+      // standing on the way out of review (store.ts, statusAfterReview), and
+      // the work returned to its author is no less returned for that. The
+      // last-act subquery still decides — an approval or a publish displaces
+      // the send-back on any status.
       clauses.push(
-        `(p.status = 'draft'
+        `(p.status IN ('draft', 'canonical', 'needs_update')
           AND EXISTS (SELECT 1 FROM drafts d WHERE d.page_id = p.id AND d.editor_id = ?)
           AND (SELECT a.action FROM audit_events a
                 WHERE a.page_id = p.id

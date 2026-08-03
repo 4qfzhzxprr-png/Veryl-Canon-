@@ -137,6 +137,19 @@ export const MAX_QUESTION_LENGTH = 4096;
 // a page the freshness sweep flipped because its review date passed. The
 // argument for including it, since this is the load-bearing line of the whole
 // freshness feature, is set out in full in answers.ts above `eligible`.
+//
+// THE STATUS LIST IS NOT THE WHOLE ANSWER. A page In Review goes on serving
+// its current published version, and when that version is the one that last
+// received the mark (`pages.marked_version`, written by `approve` alone), it
+// qualifies too: the mark applies to reviewed content, the reviewed content is
+// still exactly what is being served, and pulling the official answer offline
+// because an EDIT is pending would punish precisely the owners who took the
+// review road instead of publishing unreviewed text (third round, finding 8).
+// A page that went publish-first — current version ≠ marked version — stays
+// un-answerable while in review, and that is right: what is live there is
+// unreviewed. The clause is SQL in `hydrate` and, via
+// `SearchFilter.markServingInReview`, in the lexical pool's status filter, so
+// every candidate passes the same gate whichever door it came through.
 export const ANSWERABLE_STATUSES: readonly PageStatus[] = ['canonical', 'needs_update'];
 
 // The content terms of a question, deduplicated and capped. Stopwords come
@@ -357,6 +370,11 @@ export class RetrievalService {
     const base = {
       collectionId: request.collectionId,
       statuses: canonicalOnly ? ANSWERABLE_STATUSES : undefined,
+      // The in-review half of answerability (see ANSWERABLE_STATUSES above)
+      // reaches the pool as well as the hydration gate, or a page serving its
+      // marked version would survive hydration and never occupy a slot in the
+      // lexical ranking to be hydrated from.
+      markServingInReview: canonicalOnly || undefined,
       limit: LEXICAL_POOL,
       // The Knowledge API's narrowing reaches the pool as well as the
       // hydration gate, so a page outside the intersection never occupies a
@@ -416,8 +434,10 @@ export class RetrievalService {
 
   // One page, as the asker may see it: the permission join is in the SQL, so
   // an invisible page returns nothing rather than being filtered out later.
-  // Unpublished and archived pages return nothing too, and with
-  // canonicalOnly so does anything that is not a Canonical non-Note.
+  // Unpublished and archived pages return nothing too, and with canonicalOnly
+  // so does anything that is not an answerable non-Note — the marked statuses,
+  // plus a page in review that is still serving its marked version (the
+  // argument lives with ANSWERABLE_STATUSES).
   //
   // `narrowing` is the Knowledge API's other two gates (STUDIO-CONTRACT.md
   // §4), in this same SQL: a second actor who must also be able to see the
@@ -430,7 +450,9 @@ export class RetrievalService {
     narrowing: Narrowing = {},
   ): HydratedPage | null {
     const clause = canonicalOnly
-      ? `AND p.status IN (${ANSWERABLE_STATUSES.map((x) => `'${x}'`).join(', ')}) AND p.type != 'note'`
+      ? `AND (p.status IN (${ANSWERABLE_STATUSES.map((x) => `'${x}'`).join(', ')})
+             OR (p.status = 'in_review' AND p.current_version = p.marked_version))
+         AND p.type != 'note'`
       : "AND p.status != 'archived'";
     // An empty allow-list is "nowhere", not "no constraint".
     if (narrowing.collectionIds && narrowing.collectionIds.length === 0) return null;

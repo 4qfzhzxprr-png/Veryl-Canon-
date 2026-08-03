@@ -164,6 +164,61 @@ test('ask: Canonical pages only — never a Draft, never a Note, never archived'
   assert.deepEqual(after.citations, []);
 });
 
+test('ask: a Canonical page in review keeps answering with its approved text', async () => {
+  const { store, marc, iris, collection } = setup();
+  // Third round, finding 8: the review road used to take the official answer
+  // offline for the whole review — days of Ask downtime for a two-word
+  // vocabulary change, on exactly the pages whose owners did the right thing.
+  const policy = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Pangolin retention policy',
+    'The pangolin retention period is seven years.',
+  );
+  store.editDraft(marc.id, policy.id, { body: 'The pangolin retention period is nine years.' });
+  store.submitForReview(marc.id, policy.id);
+  assert.equal(store.getPage(marc.id, policy.id).status, 'in_review');
+
+  const during = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
+  assert.equal(during.refused, false, 'the approved version is still serving, so it still answers');
+  assert.ok(during.answer!.includes('seven years'), 'what answers is the reviewed content');
+  assert.ok(!during.answer!.includes('nine years'), 'the pending draft is invisible until an approver accepts it');
+  // The citation is honest about the page's standing: the quoted version is
+  // the approved one, and an edit is pending on the page behind it.
+  assert.equal(during.citations[0]!.pageId, policy.id);
+  assert.equal(during.citations[0]!.status, 'in_review');
+  assert.equal(during.citations[0]!.version, 1);
+
+  store.approve(iris.id, policy.id);
+  const after = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
+  assert.equal(after.refused, false);
+  assert.ok(after.answer!.includes('nine years'), 'the moment the mark is granted, the new version serves');
+});
+
+test('ask: a publish-first page in review stays un-answerable — what is live is unreviewed', async () => {
+  const { store, marc, iris, collection } = setup();
+  const policy = publishCanonical(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Pangolin retention policy',
+    'The pangolin retention period is seven years.',
+  );
+  // Publish-first: the edit goes live with nobody's agreement, the mark is
+  // given up, and the current version is no longer the one that received it.
+  store.editDraft(marc.id, policy.id, { body: 'The pangolin retention period is ten years.' });
+  store.publish(marc.id, policy.id);
+  store.editDraft(marc.id, policy.id, { body: 'The pangolin retention period is ten years, allegedly.' });
+  store.submitForReview(marc.id, policy.id);
+
+  const during = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
+  assert.equal(during.refused, true, 'what is live is unreviewed, and unreviewed text never answers');
+  assert.deepEqual(during.citations, []);
+});
+
 test('ask: refusal is the honest answer to a silent record', async () => {
   const { store, marc, iris, collection } = setup();
   publishCanonical(store, marc.id, iris.id, collection.id, 'Vault policy', 'Every access to the vault is logged.');

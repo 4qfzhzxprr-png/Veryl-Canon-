@@ -396,8 +396,11 @@ export class Notifier {
     this.fanOut(byId, this.reviewRecipients(pageId, page.collectionId), {
       kind: 'review_withdrawn',
       subject: `Withdrawn from review: ${page.title}`,
+      // Status-agnostic on purpose: a page that entered review from Canonical
+      // leaves it Canonical (store.ts, statusAfterReview), so "a draft again"
+      // is only sometimes true and the constant fact is who holds it now.
       body:
-        `${by.name} withdrew "${page.title}" from review; it is a draft again.` +
+        `${by.name} withdrew "${page.title}" from review; it is back with its author.` +
         (reason ? ` Reason: ${reason}` : ''),
       link: `/pages/${pageId}`,
     });

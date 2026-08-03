@@ -228,6 +228,54 @@ test('migrations: a record written by the build before migrations existed conver
   }
 });
 
+test('migrations: marked_version arrives backfilled from the statuses that already mean it', () => {
+  const scratchDir = scratch();
+  try {
+    const path = scratchDir.path('marked.db');
+    // A record written before the column existed: the baseline schema, and
+    // pages in every standing the backfill must tell apart.
+    const legacy = new DatabaseSync(path);
+    legacy.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+    applyBaselineSchema(legacy);
+    const at = new Date().toISOString();
+    legacy
+      .prepare('INSERT INTO actors (id, kind, name, created_at) VALUES (?, ?, ?, ?)')
+      .run('dana', 'person', 'Dana', at);
+    legacy.prepare('INSERT INTO collections (id, name, created_at) VALUES (?, ?, ?)').run('c', 'Compliance', at);
+    const insert = legacy.prepare(
+      `INSERT INTO pages (id, collection_id, type, title, status, current_version, created_by, created_at)
+       VALUES (?, 'c', 'policy', ?, ?, ?, 'dana', ?)`,
+    );
+    insert.run('marked', 'Marked', 'canonical', 3, at);
+    insert.run('overdue', 'Overdue', 'needs_update', 2, at);
+    insert.run('unreviewed', 'Unreviewed', 'draft', 2, at);
+    legacy.close();
+
+    // The backfill asserts only what the statuses mean: canonical and
+    // needs_update pages are serving the version their approver accepted.
+    // A draft of this vintage may be serving text that published without
+    // review, and no mark is invented for it.
+    const marked = (db: DatabaseSync, id: string) =>
+      (db.prepare('SELECT marked_version AS v FROM pages WHERE id = ?').get(id) as { v: number | null }).v;
+    const db = openDb(path);
+    assert.equal(marked(db, 'marked'), 3);
+    assert.equal(marked(db, 'overdue'), 2);
+    assert.equal(marked(db, 'unreviewed'), null);
+    db.close();
+
+    // Idempotence: a second open applies nothing and re-backfills nothing —
+    // a mark granted (or withheld) since must not be overwritten by a rerun.
+    const again = openDb(path);
+    again.prepare('UPDATE pages SET marked_version = NULL WHERE id = ?').run('marked');
+    again.close();
+    const third = openDb(path);
+    assert.equal(marked(third, 'marked'), null, 'the released migration ran once and never again');
+    third.close();
+  } finally {
+    scratchDir.cleanup();
+  }
+});
+
 test('migrations: openDb reaches the version this build expects, and says so to readiness', () => {
   const db = openDb(':memory:');
   const expected = latestVersion(MIGRATIONS);

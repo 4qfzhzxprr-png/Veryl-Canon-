@@ -1349,13 +1349,22 @@ export class CanonStore {
     if (!TYPE_RULES[page.type].reviewed) {
       throw new CanonError('workflow', 'Notes publish directly and never carry the Canonical mark');
     }
-    // Draft, or Needs Update. A page the freshness sweep flipped comes back to
-    // Canonical through THIS workflow and no other (FEATURES.md §3): its owner
-    // edits it and submits, the named approver accepts, and the Canonical mark
-    // is granted by the same act that grants it to anything else. Inventing a
-    // "re-certify" path would be inventing a second meaning for the mark.
-    if (page.status !== 'draft' && page.status !== 'needs_update') {
-      throw new CanonError('workflow', `Only a Draft or Needs Update page can be submitted for review (status: ${page.status})`);
+    // Draft, Needs Update — or Canonical, with the draft going to review
+    // directly. The freshness case is unchanged: a page the sweep flipped
+    // comes back to Canonical through THIS workflow and no other
+    // (FEATURES.md §3), because a "re-certify" path would be a second meaning
+    // for the mark. The Canonical case is the third round's finding 8: the
+    // only road for an edit to a marked page used to be publish-first, which
+    // hands the mark back and takes the official answer offline for the whole
+    // review — the publish dialog itself argued against the one road that
+    // existed. Submitting the draft keeps the approved version serving while
+    // the approver decides; nothing a reader sees changes until the mark is
+    // granted again, which is the promise review makes everywhere else.
+    if (page.status === 'in_review') {
+      throw new CanonError('workflow', 'This page is already in review; the approver accepts it or sends it back');
+    }
+    if (page.status === 'archived') {
+      throw new CanonError('workflow', 'Archived pages are read-only');
     }
     const draft = this.draftRow(pageId);
     if (!draft) throw new CanonError('workflow', 'Nothing to review: there is no draft');
@@ -1459,6 +1468,14 @@ export class CanonStore {
       },
       { toStatus: 'canonical' },
     );
+    // The mark follows the act that grants it. `marked_version` is the log's
+    // `page.approve` answer denormalised onto the row so retrieval can ask
+    // "is what this page is serving reviewed content?" per candidate, in SQL
+    // (retrieval.ts, ANSWERABLE_STATUSES). Written here and nowhere else,
+    // because approval is the only act that grants the mark — publish moves
+    // `current_version` and deliberately leaves this behind, which is exactly
+    // how an unreviewed publish stops being answerable.
+    this.db.prepare('UPDATE pages SET marked_version = ? WHERE id = ?').run(approved.currentVersion, page.id);
     this.audit(actorId, 'page.approve', {
       collectionId: page.collectionId,
       pageId,
@@ -1466,6 +1483,32 @@ export class CanonStore {
     });
     this.notifier.draftApproved(actorId, pageId, draft.editor_id as string);
     return approved;
+  }
+
+  /**
+   * Where a page lands when it leaves review WITHOUT the mark being granted —
+   * a send-back, or a withdrawal.
+   *
+   * `draft` was the only answer while the only road into review started from
+   * Draft. Now that a Canonical page submits its draft directly (finding 8),
+   * the answer has to be derived: such a page is still serving the version its
+   * approver accepted — the submission changed nothing a reader sees, and a
+   * refusal of the DRAFT must not either. Dropping it to Draft would revoke a
+   * mark no approver revoked, and would punish the owner for taking the review
+   * road, which is the incentive the road exists to remove.
+   *
+   * Derived rather than remembered: serving the marked version IS what the
+   * mark's statuses mean, so the row already holds the answer and a stored
+   * "status before review" would be a copy that can disagree with it. A review
+   * date already past lands on `needs_update` — the sweep's verdict stands;
+   * leaving review is not a fresh grant of anything.
+   */
+  private statusAfterReview(row: Record<string, unknown>): Page['status'] {
+    const current = (row.current_version as number) ?? null;
+    const marked = (row.marked_version as number) ?? null;
+    if (current === null || marked === null || current !== marked) return 'draft';
+    const reviewDate = (row.review_date as string) ?? null;
+    return reviewDate && reviewDate < now().slice(0, 10) ? 'needs_update' : 'canonical';
   }
 
   /**
@@ -1513,7 +1556,7 @@ export class CanonStore {
     // needs; it is called rather than inlined so a send-back comment is a
     // comment in every respect — attributed, audited, mentionable, resolvable.
     const filed = this.commentService.create(actorId, pageId, { body: comment });
-    this.db.prepare("UPDATE pages SET status = 'draft' WHERE id = ?").run(pageId);
+    this.db.prepare('UPDATE pages SET status = ? WHERE id = ?').run(this.statusAfterReview(row), pageId);
     this.audit(actorId, 'page.send_back', {
       collectionId: page.collectionId,
       pageId,
@@ -1528,10 +1571,12 @@ export class CanonStore {
    *
    * "Still standing" is not a state anybody sets. It is read from the log, in
    * the same sentence the queue's "Sent back to you" strand reads: the last act
-   * in the review workflow on this page was a send-back, and the page is a
-   * Draft. A resubmission, a withdrawal or a direct publish displaces it, and
-   * the banner disappears without anybody having to remember to clear a flag —
-   * which is exactly why there is no flag to clear.
+   * in the review workflow on this page was a send-back, and the page is back
+   * out of review — a Draft, or the standing a Canonical page kept through its
+   * refused submission (statusAfterReview). A resubmission, a withdrawal or a
+   * direct publish displaces it, and the banner disappears without anybody
+   * having to remember to clear a flag — which is exactly why there is no flag
+   * to clear.
    *
    * Readable with `view`, like `reviewState` and for the same reason: why a
    * page is sitting in Draft rather than carrying the mark is a fact about the
@@ -1542,7 +1587,7 @@ export class CanonStore {
     const row = this.pageRow(pageId);
     const page = this.toPage(row);
     this.requireRole(actorId, page.collectionId, 'view');
-    if (page.status !== 'draft') return null;
+    if (page.status === 'in_review' || page.status === 'archived') return null;
     const last = this.db
       .prepare(
         `SELECT actor_id, at, action, details_json FROM audit_events
@@ -1576,7 +1621,8 @@ export class CanonStore {
    * Review with nobody's name on it in the meantime.
    *
    * IT LOOSENS NOTHING. Withdrawal is not approval and not publication: the
-   * page returns to Draft, exactly where a send-back leaves it, and the road
+   * page leaves review exactly where a send-back leaves it (statusAfterReview
+   * — a Draft, or the standing it entered review still serving), and the road
    * to Canonical is still submit-then-approve with `approve` enforcing the
    * named approver. Two limits keep it there:
    *
@@ -1621,7 +1667,7 @@ export class CanonStore {
       );
     }
     const reason = input.reason?.trim() || null;
-    this.db.prepare("UPDATE pages SET status = 'draft' WHERE id = ?").run(pageId);
+    this.db.prepare('UPDATE pages SET status = ? WHERE id = ?').run(this.statusAfterReview(row), pageId);
     this.audit(actorId, 'page.withdraw', {
       collectionId: page.collectionId,
       pageId,
@@ -1719,8 +1765,12 @@ export class CanonStore {
     else if (!rules.reviewed) {
       submit = no('A Note publishes directly and never carries the Canonical mark, so it never goes to review.');
     } else if (archived) submit = no(readOnly);
-    else if (page.status !== 'draft' && page.status !== 'needs_update') {
-      submit = no('Only a Draft or a Needs Update page can be submitted for review.');
+    else if (page.status === 'in_review') {
+      // The one status that cannot submit. Canonical is no longer on this
+      // list: its draft goes to review directly, keeping the marked version
+      // serving while the approver decides (finding 8) — so the mirror stopped
+      // saying otherwise the same day the gate did.
+      submit = no('This page is already in review; the approver accepts it or sends it back.');
     } else if (!draft || !fields) submit = no('There is nothing to review: this page has no draft.');
     else {
       const unready = this.whyNotReady(page.type, fields);

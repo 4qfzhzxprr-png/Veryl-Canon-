@@ -2606,7 +2606,7 @@ function sentBackNoticeHTML(sentBack) {
     <div class="notice notice-sentback">
       <div><strong>${esc(actorName(sentBack.byId))}</strong> sent this back${
         sentBack.at ? ` on ${fmtDateTime(sentBack.at)}` : ''
-      }. It is a Draft again — edit it and submit it again when it is ready.</div>
+      }. It is back out of review — edit it and submit it again when it is ready.</div>
       ${sentBack.reason ? `<blockquote class="sentback-reason">${esc(sentBack.reason)}</blockquote>` : ''}
       ${sentBack.commentId
         ? `<div class="muted">It is on the page as a comment too, where it can be replied to and resolved.
@@ -2823,10 +2823,13 @@ async function viewPage(id) {
   }
   actions.push(`<a class="btn" href="#/pages/${esc(id)}/history">History</a>`);
   // Needs Update submits like a Draft: the way back to Canonical is the review
-  // workflow, not a separate re-certify button (FEATURES.md §3). Offered
-  // wherever there is a draft to submit — including where it is not yet ready,
-  // which is the case somebody most needs the reason for.
-  if (reviewed && (page.status === 'draft' || page.status === 'needs_update') && draft) {
+  // workflow, not a separate re-certify button (FEATURES.md §3). And a
+  // CANONICAL page with a draft submits too — the draft goes to review while
+  // the approved version keeps serving, which is the road that costs no Ask
+  // downtime (finding 8). Offered wherever there is a draft to submit —
+  // including where it is not yet ready, which is the case somebody most
+  // needs the reason for.
+  if (reviewed && page.status !== 'in_review' && !isArchived && draft) {
     actions.push(
       offer(ability('submit'), 'Submit for review', '<button class="btn primary" id="act-submit">Submit for review</button>'),
     );
@@ -2995,7 +2998,8 @@ async function viewPage(id) {
     title: 'Send back to the author',
     submitLabel: 'Send back',
     body: `
-      <p class="muted">The page returns to Draft. Your comment goes to the author.</p>
+      <p class="muted">The page leaves review and unlocks for the author. Your comment goes to them.
+        A page that entered review holding the Canonical mark keeps it: refusing the draft revokes nothing.</p>
       <label>Comment <textarea name="comment" rows="3" required placeholder="What needs to change before this can be Canonical?"></textarea></label>`,
     onSubmit: async (form) => {
       await api('POST', `/pages/${id}/send-back`, { comment: form.comment.value.trim() });
@@ -3007,8 +3011,9 @@ async function viewPage(id) {
     title: 'Withdraw this submission',
     submitLabel: 'Withdraw',
     body: `
-      <p class="muted">The page returns to Draft and the editor unlocks. Whoever was asked to review it is
-      told it is no longer waiting on them, and the withdrawal is on the audit record.</p>
+      <p class="muted">The page leaves review and the editor unlocks — a page that entered review holding
+      the Canonical mark keeps it. Whoever was asked to review it is told it is no longer waiting on them,
+      and the withdrawal is on the audit record.</p>
       <label>Reason <input name="reason" placeholder="optional, kept on the audit record"></label>`,
     onSubmit: async (form) => {
       const reason = form.reason.value.trim();
@@ -4124,14 +4129,24 @@ function mdEditorTools(ta) {
 function publishDialogBodyHTML(page, reviewed) {
   const nextVersion = (page.currentVersion ?? 0) + 1;
   const heldMark = page.status === 'canonical' || page.status === 'needs_update';
+  // The two roads, each described by what it DOES. "Use Submit for review
+  // instead" used to be advice the product then refused to take — submit
+  // rejected a Canonical page, so the only real road was the publish this
+  // dialog argued against (third round, finding 8). Now that the advice is
+  // followable, the dialog states the trade plainly: publish is immediate and
+  // unreviewed; submit changes nothing a reader sees until an approver
+  // accepts.
   const noReview = reviewed
-    ? 'Publishing is not review, and it grants no standing: nobody has agreed to what this says. Use ' +
-      '<strong>Submit for review</strong> instead if this page should carry the Canonical mark.'
+    ? 'Publishing is not review, and it grants no standing: this text goes live for every reader immediately, ' +
+      'with nobody’s agreement on it. <strong>Submit for review</strong> is the other road — nothing a ' +
+      'reader sees changes until the approver accepts, and only then does the Canonical mark cover the new text.'
     : 'A Note publishes directly and never carries the Canonical mark, so this is as far as it goes — there ' +
       'is no review to send it to.';
   const giveUp = heldMark
     ? `<p class="notice notice-stale">This page is ${esc(STATUS_LABELS[page.status] ?? page.status)} today, and
-       publishing gives that up. The mark applies to reviewed content; it is granted again through review.</p>`
+       publishing gives that up: the mark applies to reviewed content, so the page stops answering for the
+       record until it passes review again. Submitting the draft for review instead keeps the approved
+       version serving — and answering — for the whole review.</p>`
     : '';
   return `
     <p>Publishing writes <strong>v${nextVersion}</strong> and makes it the version every reader of this page
@@ -4292,8 +4307,9 @@ async function viewEditor(id) {
         <span id="save-state" class="muted"></span>
       </div>
       ${page.status === 'canonical' ? `
-        <div class="notice">This page is Canonical. Publishing new content returns it to Draft —
-        the Canonical mark applies to reviewed content and is granted again through review.</div>` : ''}
+        <div class="notice">This page is Canonical. <strong>Submit for review</strong> keeps it that way —
+        readers and Ask keep the approved version until the approver accepts your changes. Publishing
+        instead makes the new text live at once and gives the mark up until it passes review again.</div>` : ''}
       <form id="editor-form" class="editor-grid">
         <div class="editor-mainCol">
           <label>Title <input name="title" required maxlength="200" value="${esc(draft.title)}"></label>
@@ -5502,7 +5518,9 @@ async function viewSources() {
 //          disagreement?: { pageIds: [...], note } }
 //
 // A citation's `status` is the standing of the page behind the quotation —
-// `canonical`, or `needs_update` when it is past its review date. It is the
+// `canonical`; `needs_update` when it is past its review date; `in_review`
+// when an edit is pending while the quoted, approved version goes on serving
+// (the server cites nothing unreviewed — see ANSWERABLE_STATUSES). It is the
 // most trust-bearing thing on this screen, so it is rendered ONLY when the
 // server sent it. See `citationBadge` below for why there is no default.
 //

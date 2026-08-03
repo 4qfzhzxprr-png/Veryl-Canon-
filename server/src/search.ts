@@ -163,6 +163,15 @@ export interface SearchFilter {
    * answers may cite, which is Canonical *and* Needs Update (see answers.ts).
    */
   statuses?: readonly string[];
+  /**
+   * Widens `statuses` by one derived case: a page In Review that is still
+   * serving the version that last received the Canonical mark. It cannot be a
+   * status in the list because it is not a status — it is a comparison of two
+   * columns on the row — and retrieval's answerability rule needs it in the
+   * SQL that builds the pool, not after. The argument for the rule lives with
+   * ANSWERABLE_STATUSES in retrieval.ts, which is this flag's one caller.
+   */
+  markServingInReview?: boolean;
   ownerId?: string;
   limit?: number;
   // The two narrowings the Knowledge API adds (STUDIO-CONTRACT.md §4). Both
@@ -357,7 +366,12 @@ export class SearchIndex {
       params.push(filter.status);
     }
     if (filter.statuses?.length) {
-      clauses.push(`AND p.status IN (${filter.statuses.map(() => '?').join(', ')})`);
+      const inList = `p.status IN (${filter.statuses.map(() => '?').join(', ')})`;
+      clauses.push(
+        filter.markServingInReview
+          ? `AND (${inList} OR (p.status = 'in_review' AND p.current_version = p.marked_version))`
+          : `AND ${inList}`,
+      );
       params.push(...filter.statuses);
     }
     if (filter.ownerId) {

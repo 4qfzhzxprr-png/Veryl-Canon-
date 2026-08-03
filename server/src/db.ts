@@ -250,6 +250,35 @@ export const MIGRATIONS: readonly Migration[] = [
       db.exec('ALTER TABLE pages ADD COLUMN effective_date_basis TEXT');
     },
   },
+  {
+    version: 5,
+    name: 'marked_version',
+    // Which version of this page last RECEIVED the Canonical mark
+    // (USER-TESTING.md, third round, finding 8). The audit log already knows —
+    // every `page.approve` names the version it approved — but the log is not
+    // a join the answer path can afford on every candidate, and the question
+    // retrieval now has to ask is per row and in SQL: is what this page is
+    // CURRENTLY serving a version an approver accepted? So the answer lives on
+    // `pages` the way `current_version` does, written by `approve()` and by
+    // nothing else, because approval is the only act that grants the mark.
+    //
+    // The backfill asserts only what those statuses already mean: a page
+    // standing at canonical or needs_update is serving the version its
+    // approver accepted — that is the definition of both — so its current
+    // version is its marked one. Every other page stays NULL, because a draft
+    // or in-review page of this vintage may be serving text that published
+    // without review, and a backfill that guessed for them would be granting
+    // the mark retroactively to exactly the rows this column exists to keep
+    // out of answers.
+    up(db) {
+      const present = (db.prepare('PRAGMA table_info(pages)').all() as { name: string }[]).some(
+        (c) => c.name === 'marked_version',
+      );
+      if (present) return;
+      db.exec('ALTER TABLE pages ADD COLUMN marked_version INTEGER');
+      db.exec("UPDATE pages SET marked_version = current_version WHERE status IN ('canonical', 'needs_update')");
+    },
+  },
 ];
 
 export function openDb(path: string): DatabaseSync {
