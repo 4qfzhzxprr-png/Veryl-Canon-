@@ -1060,6 +1060,75 @@ the product working as a record: claims verified, not presumed.
 this test harness only; Tomas's demonstration stands as the reason real
 authentication gates any wide deployment.
 
+## The fifth round — a targeted retest
+
+Two personas, not seven: Marcus and Ada, the two whose verdicts hinged on
+the work done since the fourth round — the hedge removal, the tended
+vocabulary, and the seven smaller fixes. Both ran their full sessions
+against a fresh record within hours of the fixes landing.
+
+### What held
+
+Every honesty claim survived both personas. The hedge is gone everywhere
+Marcus looked: refusals say so on screen and in the audit log in the same
+breath, the canteen trap refuses cleanly, and his verdict names the change
+— refusals are now trustworthy enough that "the record is silent" may be
+cited as evidence of silence. The PLAN-7 live-value chip held. Ada's worst
+behaviour from round four — the work-from-home question "answered" with
+hiring pages and logged as not refused — is dead in all three parts she
+was sent to verify. The Ask screen now tells her what is kept and who can
+read it, verbatim as shipped. The phantom draft is gone with audit proof:
+opening an editor logs a page view, and the lock starts at the first
+keystroke. The seeded vocabulary shows on the pages as theirs to see.
+
+### What the retest caught, and what happened to it
+
+The round earned its keep by catching three things the harness had not:
+
+1. **"Turn around" is not "turnaround" to a tokenizer.** Marcus's exact
+   staff phrasing refused while the one-word form answered. Fixed the same
+   day, the product's own way: the vocabulary now carries both spellings,
+   verified against his sentence. (Same class as destroying/destruction,
+   which the seeding had already hit.)
+2. **The pointer lottery.** Ada: "do I need a sick note?" refused with no
+   pointers while "how do I call in sick?" named the right page. Adjudicated
+   to two mechanisms in the wider pointer pass — status ranking buries an
+   unapproved page below Canonical pages that merely mention the word, and
+   the evidence floor was judged on a twelve-token snippet that cannot see
+   the aliases that made the page findable. Fixed: the floor now reads the
+   page's indexed text, body and aliases both, guarded by a fixture that
+   reproduces the lottery.
+3. **Marcus's challenge to the quotation position.** The team's stance is
+   that better quotation needs a better model; his expedited-claim quote
+   truncated one clause before "seventy-two hours", and he called that
+   arithmetic, not modelling. He is partly right — and two more arithmetic
+   variants were tried against exactly his cases in this round (a shape
+   tie-break, and letting the whole page compete with the semantic chunk),
+   both measured flat, both recorded over `bestWindow` with their
+   mechanisms. The position stands, but it now stands on five recorded
+   attempts rather than three.
+
+### The verdicts
+
+Marcus: **research clerk stands** — promoted only in that silences may now
+be cited; answers still may not be quoted in a decision file until the
+quotation engine can finish a sentence. Ada: **moved but not landed** —
+"it's all in Canon" is still unfair, because it genuinely is not all there:
+no page states a carryover rule or a work-from-home day count, and that is
+now a content gap wearing a refusal, exactly where the record wants it.
+
+### Still open, honestly
+
+The quotation class (three specimens, five recorded negative attempts —
+the standing bet is a real generation model). Pointer quality on questions
+the record cannot answer: the pool is the top eight candidates, and the
+page a refused asker should see can rank twelfth — a deeper or semantic
+pointer pass is the noted shape of the fix, with two orderings already
+recorded as negative results at the site. The refusal's "Search the record
+instead" button pre-fills the entire question into exact-match search, a
+guaranteed second dead end (Ada). And the two content gaps her manager's
+errands exposed are an editorial decision, not an engineering one.
+
 ## What we are deliberately not doing
 
 The subject / entity-join work — a primary key that links facts about the same
