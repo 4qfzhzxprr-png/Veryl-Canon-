@@ -577,6 +577,15 @@ export class ReferenceService {
   // The federation log. Who asked, which source, which page and selector, and
   // whether the value came from the source or the cache — plus the failure
   // when there was one, so an outage is as legible afterwards as it was live.
+  //
+  // That sentence is also the event's whole budget. It used to carry two more
+  // keys, and a DPO reading the log called them out as machinery said to
+  // people who did not ask (fourth round): `fromCache`, which restated
+  // `origin` in a second vocabulary, and `authMode`, which is the source's
+  // standing configuration — recorded where it is SET, on source.create and
+  // source.update, whose `changed` list is how an auditor reconstructs what
+  // the mode was at any instant. The error text stays: it is what makes the
+  // outage legible, and it comes from a connector, never from a person.
   private auditResolve(
     actor: Actor,
     collectionId: string,
@@ -591,11 +600,9 @@ export class ReferenceService {
         referenceId: reference.id,
         sourceId: source.id,
         sourceName: source.name,
-        authMode: source.authMode,
         selector: reference.selector,
         key: reference.key,
         origin: outcome.origin,
-        fromCache: outcome.origin === 'cache',
         stale: outcome.stale,
         ...(outcome.error ? { error: outcome.error } : {}),
       },

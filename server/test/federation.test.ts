@@ -590,13 +590,17 @@ test('references: every resolution is an audit event naming actor, source, page,
     assert.equal(event.details.sourceName, 'Benefits Admin');
     assert.equal(event.details.selector, 'deductible');
     assert.equal(event.details.key, 'PLAN-7');
-    assert.equal(event.details.authMode, 'service');
+    // What the event does NOT carry, held to on purpose (fourth round,
+    // Tomas): authMode is the source's standing configuration and lives on
+    // source.create / source.update, and fromCache restated `origin` in a
+    // second vocabulary. An operator reading this event needs which value,
+    // from where, how fresh — and nothing else.
+    assert.equal(event.details.authMode, undefined);
+    assert.equal(event.details.fromCache, undefined);
   }
   // Newest first: the second read came from the cache, the first from the source.
   assert.equal(events[0]!.details.origin, 'cache');
-  assert.equal(events[0]!.details.fromCache, true);
   assert.equal(events[1]!.details.origin, 'source');
-  assert.equal(events[1]!.details.fromCache, false);
 });
 
 test('references: a source removed from the collection stops resolving there, visibly', async () => {

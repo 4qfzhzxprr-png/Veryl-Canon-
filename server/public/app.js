@@ -470,7 +470,11 @@ function toast(message, kind = 'error') {
     el.appendChild(close);
     el.setAttribute('role', 'alert');
   } else {
-    setTimeout(leave, 4500);
+    // Short on purpose: good news is one glance. At four and a half seconds
+    // the "Published." toast was still on screen while its reader was three
+    // actions further on (fourth round, Priya); a refusal above still waits
+    // to be dismissed, because those two lifetimes serve different sentences.
+    setTimeout(leave, 2500);
   }
   host.appendChild(el);
 }
@@ -960,6 +964,13 @@ function renderChrome() {
       if (askLink) askLink.hidden = true;
       const sourcesLink = document.getElementById('nav-sources');
       if (sourcesLink) sourcesLink.hidden = true;
+      // Gaps is role-scoped harder than the other two — operators only — so a
+      // link left standing from the last identity is a claim about the NEXT
+      // one that has not been checked yet: a non-operator watched it flash
+      // and vanish (fourth round, Dana). Hidden until detectGaps answers for
+      // whoever signs in, same as the entries above.
+      const gapsLink = document.getElementById('nav-gaps');
+      if (gapsLink) gapsLink.hidden = true;
       await loadAuth();
       renderChrome();
       location.hash = '#/identity';
@@ -5000,13 +5011,21 @@ const AUDIT_DETAIL_LABELS = {
   // spelled out AND said: which generator wrote the answer.
   generator: 'Answered by', from: 'From', to: 'To', via: 'Granted', reason: 'Because',
   freshnessWindowMs: 'Freshness window', sweptOn: 'Swept on', orgRole: 'Organisation role',
+  // The answer events' page lists. These printed as bare shortened ids — a
+  // DPO called that a page id where a title would do (fourth round) — and
+  // they ARE pages, so they belong in AUDIT_PAGE_KEYS below, where a title
+  // some row on the same screen carries can name them.
+  nearestPageIds: 'Nearest pages', disagreement: 'Disagreeing pages',
+  supersession: 'Supersession between', disagreementAsserted: 'Disagreement asserted by',
 };
 
 const AUDIT_ACTOR_KEYS = new Set([
   'actorId', 'authorId', 'approverId', 'assertedBy', 'editorId', 'memberId', 'ownerId', 'submittedById',
+  'disagreementAsserted',
 ]);
 const AUDIT_PAGE_KEYS = new Set([
   'pageId', 'parentId', 'fromPageId', 'toPageId', 'assertedFromPageId', 'assertedToPageId', 'citedPageIds',
+  'nearestPageIds', 'disagreement', 'supersession',
 ]);
 const AUDIT_COLLECTION_KEYS = new Set(['collectionId', 'collectionIds', 'toCollectionId']);
 

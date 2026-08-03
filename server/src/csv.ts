@@ -49,6 +49,16 @@ export function csvRow(values: unknown[]): string {
   return values.map(csvField).join(',') + '\r\n';
 }
 
+// The first column is the event's GLOBAL id, and that is a known, deliberate
+// disclosure (fourth round, Ruth): to an exporter whose permissions withhold
+// part of the log, gaps in the id sequence say how much activity they cannot
+// see. It stays anyway, because everything that makes this file verifiable
+// hangs off it — it is an input to the chain hash (auditchain.ts), the cursor
+// the export walk and the interactive walk both page by, and the column two
+// exports taken at different times are reconciled row-for-row by. A per-view
+// renumbering would defeat all three to hide a volume, not a content; the
+// honest posture is that WHAT limited readers cannot see stays withheld, and
+// THAT things are withheld is not itself a secret.
 export const AUDIT_CSV_COLUMNS = [
   'id',
   'at',
