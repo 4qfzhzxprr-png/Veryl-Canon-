@@ -1041,19 +1041,29 @@ export class AttestationService {
     // effective date, when, and what they said it rested on" is one question,
     // and answering the first half without the second is what let a date
     // asserted about 2019 sit in a bundle looking like every other field.
+    // `aliases` is here because it is the point of the field: "who taught the
+    // record the word 'urgent', and when" is the question an owned vocabulary
+    // exists to answer. A list renders as its names joined, so a change reads
+    // as one line in the history like every other field.
     const keys: (keyof PageFields)[] = [
       'ownerId',
       'approverId',
       'effectiveDate',
       'effectiveDateBasis',
       'reviewDate',
+      'aliases',
     ];
+    const flat = (value: PageFields[keyof PageFields] | undefined): string | null => {
+      if (value === undefined || value === null) return null;
+      if (Array.isArray(value)) return value.length ? value.join(', ') : null;
+      return value;
+    };
     const out: FieldChange[] = [];
     let previous: PageFields = {};
     for (const version of versions) {
       for (const field of keys) {
-        const from = previous[field] ?? null;
-        const to = version.fields[field] ?? null;
+        const from = flat(previous[field]);
+        const to = flat(version.fields[field]);
         if (from === to) continue;
         out.push({
           version: version.number,

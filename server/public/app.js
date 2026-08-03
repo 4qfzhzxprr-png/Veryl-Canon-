@@ -2777,6 +2777,7 @@ async function viewPage(id) {
 
         <dl class="field-block">
           <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
+          ${Array.isArray(page.aliases) && page.aliases.length ? `<div><dt>Also known as</dt><dd>${page.aliases.map((a) => esc(a)).join(', ')}</dd></div>` : ''}
           <div><dt>Status</dt><dd>${badge(page.status)}</dd></div>
           ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${pendingFieldCell(page.ownerId, pendingOf('ownerId'), actorLabel, hasPublished)}</dd></div>` : ''}
           ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${pendingFieldCell(page.approverId, pendingOf('approverId'), actorLabel, hasPublished)}</dd></div>` : ''}
@@ -4166,6 +4167,14 @@ async function viewEditor(id) {
                 placeholder="e.g. Adopted by the Clinical Governance Committee, minute CGC-2018-11-14"></label>` : ''}
             ${rules.reviewDate ? `<label>Review date${rules.reviewDateRequired ? ' <span class="muted">(required)</span>' : ''} <input type="date" name="reviewDate" value="${esc(draft.fields.reviewDate ?? '')}"></label>
             <p class="${state.features.freshness && !state.features.freshness.scheduled ? 'notice notice-stale' : 'muted'}">${freshnessPromise()}</p>` : ''}
+            ${/* The words people actually use for this page's subject, next to
+                  the title they search-and-ask in. "urgent" beside a page that
+                  says "expedited" is the difference between that question being
+                  answered and being refused — see the refused-questions view,
+                  which is where the missing words come from. */ ''}
+            <label>Also known as <span class="muted">(comma-separated)</span>
+              <input type="text" name="aliases" value="${esc((draft.fields.aliases ?? []).join(', '))}"
+                placeholder="e.g. urgent claims, COB"></label>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
@@ -4218,6 +4227,7 @@ async function viewEditor(id) {
       fields.effectiveDateBasis = form.effectiveDateBasis.value.trim() || null;
     }
     if (rules.reviewDate) fields.reviewDate = form.reviewDate.value || null;
+    fields.aliases = form.aliases.value.split(',').map((a) => a.trim()).filter(Boolean);
     return { title: form.title.value.trim(), body: form.body.value, fields };
   };
 

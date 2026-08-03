@@ -45,6 +45,17 @@ function setup() {
   return { db, store, dana, marc, iris, collection };
 }
 
+function expectCode(fn: () => unknown, code: string) {
+  try {
+    fn();
+  } catch (err) {
+    assert.ok(err instanceof CanonError, `expected CanonError, got ${err}`);
+    assert.equal(err.code, code, `expected ${code}, got ${err.code}: ${err.message}`);
+    return err;
+  }
+  assert.fail(`expected ${code} error, but the call succeeded`);
+}
+
 async function expectCodeAsync(fn: () => Promise<unknown>, code: string) {
   try {
     await fn();
@@ -615,6 +626,85 @@ test('refusal: nearest pages obey the asker’s permissions like everything else
   for (const pointer of refusal.nearest ?? []) {
     assert.notEqual(pointer.pageId, hiddenPage.id, 'a refusal must not leak titles the asker cannot open');
   }
+});
+
+test('aliases: the owner teaches the record the asker’s word, and the refusal becomes an answer', async () => {
+  // THE WHOLE FEATURE IN ONE SCENARIO, and the editorial answer to the finding
+  // that closed the embedding-model evaluation: every model tested left the
+  // same paraphrase questions refused, because admission is lexical. So the
+  // record learns the word instead — as a normal reviewed edit with a name on
+  // it, not as a synonym table nobody owns.
+  const { store, marc, iris, collection } = setup();
+  const page = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Claims Processing Standard',
+    'An expedited claim, where delay would jeopardise the member’s health, is decided within seventy-two hours of receipt of the claim.',
+  );
+  publishCanonical(store, marc.id, iris.id, collection.id, 'Claims intake register',
+    'Every claim received is entered in the intake register on the day it arrives.');
+  publishCanonical(store, marc.id, iris.id, collection.id, 'Office plant care',
+    'Plants are watered on Fridays by whoever is on the rota.');
+  await store.embeddings.ready();
+
+  const question = 'How quickly must we decide an urgent claim?';
+  const before = await store.ask(marc.id, { question });
+  assert.equal(before.refused, true, 'the record says "expedited"; the asker says "urgent"');
+
+  // The owner adds the asker’s word. It is a field edit like any other, and
+  // it takes the same road every edit to a reviewed page takes: publishing
+  // drops the page back to Draft — the Canonical mark applies to reviewed
+  // content, not to whatever came after — and Ask draws only on the official
+  // record. So until the approver accepts the change, the new word steers no
+  // answer, and neither does anything else on the page.
+  store.editDraft(marc.id, page.id, { fields: { aliases: ['urgent claims'] } });
+  store.publish(marc.id, page.id);
+  // Publishing an edit to a reviewed page drops it back to Draft: the content
+  // is live and visibly unofficial, and Ask draws only on the official record.
+  // So the new word steers no answer yet — and neither does the rest of the
+  // page, which is the mark meaning what it says.
+  const during = await store.ask(marc.id, { question });
+  assert.equal(during.refused, true, 'an unreviewed word teaches nothing yet');
+
+  store.editDraft(marc.id, page.id, {});
+  store.submitForReview(marc.id, page.id);
+  store.approve(iris.id, page.id);
+  await store.embeddings.ready();
+  const after = await store.ask(marc.id, { question });
+  assert.equal(after.refused, false, 'the record now knows the word');
+  assert.ok(after.citations.some((c) => c.pageId === page.id));
+  assert.ok(after.answer!.includes('seventy-two hours'), 'and answers with the page that carries it');
+
+  // The published page says what it is also known as, and search finds it.
+  assert.deepEqual(store.getPage(marc.id, page.id).aliases, ['urgent claims']);
+  const found = store.searchIndex.search(marc.id, { q: 'urgent' });
+  assert.ok(found.some((h) => h.pageId === page.id), 'plain search learns the word too');
+});
+
+test('aliases: normalised, bounded, and never someone else’s job to deduplicate', () => {
+  const { store, marc, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'COB' });
+
+  const draft = store.editDraft(marc.id, page.id, {
+    fields: { aliases: ['  Coordination of Benefits ', 'coordination   of benefits', '', 'COB rules'] },
+  });
+  assert.deepEqual(
+    draft.fields.aliases,
+    ['Coordination of Benefits', 'COB rules'],
+    'trimmed, inner whitespace collapsed, case-insensitively deduplicated, empties dropped',
+  );
+
+  expectCode(
+    () => store.editDraft(marc.id, page.id, { fields: { aliases: ['x'.repeat(65)] } }),
+    'invalid',
+  );
+  expectCode(
+    () => store.editDraft(marc.id, page.id, { fields: { aliases: Array.from({ length: 21 }, (_, i) => `name ${i}`) } }),
+    'invalid',
+  );
+  expectCode(
+    () => store.editDraft(marc.id, page.id, { fields: { aliases: 'urgent' as unknown as string[] } }),
+    'invalid',
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -698,6 +698,24 @@ export class CanonStore {
   }
 
   private toPage(row: Record<string, unknown>): Page {
+    // The published aliases ride on the Page like the other fields do. They
+    // live in the current version's fields (versioned, reviewed, attributed),
+    // so the read joins rather than a column being maintained twice.
+    const aliasRow = row.current_version
+      ? (this.db
+          .prepare(
+            `SELECT COALESCE(json_extract(fields_json, '$.aliases'), '[]') AS aliases
+             FROM page_versions WHERE page_id = ? AND number = ?`,
+          )
+          .get(row.id as string, row.current_version as number) as { aliases: string } | undefined)
+      : undefined;
+    let aliases: string[] = [];
+    try {
+      const parsed = JSON.parse(aliasRow?.aliases ?? '[]') as unknown;
+      if (Array.isArray(parsed)) aliases = parsed.filter((a): a is string => typeof a === 'string');
+    } catch {
+      aliases = [];
+    }
     return {
       id: row.id as string,
       collectionId: row.collection_id as string,
@@ -712,6 +730,7 @@ export class CanonStore {
       effectiveDateBasis: (row.effective_date_basis as string) ?? null,
       reviewDate: (row.review_date as string) ?? null,
       currentVersion: (row.current_version as number) ?? null,
+      aliases,
       createdBy: row.created_by as string,
       createdAt: row.created_at as string,
     };
@@ -921,6 +940,9 @@ export class CanonStore {
    * `backdatedWithoutBasis` in queries.ts, which is where those pages surface
    * instead of being silently blessed.
    */
+  // Bounds on the alias list — see validateFieldShape. Sized for names, not prose.
+  static readonly MAX_ALIASES = 20;
+
   private validateFieldShape(page: Page, patch: PageFields, inherited: PageFields): PageFields {
     const type = page.type;
     const rules = TYPE_RULES[type];
@@ -981,6 +1003,33 @@ export class CanonStore {
     for (const key of ['ownerId', 'approverId'] as const) {
       const value = patch[key];
       if (value) this.getActor(value);
+    }
+
+    // Aliases: other names for what the page is, normalised here so that what
+    // is stored is what was meant — trimmed, deduplicated without regard to
+    // case, and bounded, because an unbounded list of free text on every page
+    // is a search index someone can quietly stuff.
+    if (patch.aliases !== undefined) {
+      if (!Array.isArray(patch.aliases) || patch.aliases.some((a) => typeof a !== 'string')) {
+        throw new CanonError('invalid', 'aliases must be a list of short names');
+      }
+      const seen = new Set<string>();
+      const cleaned: string[] = [];
+      for (const raw of patch.aliases) {
+        const alias = raw.trim().replace(/\s+/g, ' ');
+        if (!alias) continue;
+        if (alias.length > 64) {
+          throw new CanonError('invalid', `An alias is a short name; '${alias.slice(0, 40)}…' is ${alias.length} characters`);
+        }
+        const key = alias.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cleaned.push(alias);
+      }
+      if (cleaned.length > CanonStore.MAX_ALIASES) {
+        throw new CanonError('invalid', `A page carries at most ${CanonStore.MAX_ALIASES} aliases`);
+      }
+      out.aliases = cleaned;
     }
     return out;
   }

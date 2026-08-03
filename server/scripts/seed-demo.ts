@@ -1418,6 +1418,13 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     const fields = {
       ownerId: author,
       approverId: page.type === 'note' ? null : approver,
+      // The vocabulary feature, shown where it is natural: the acronyms and
+      // house names people actually type. Deliberately NOT the words that
+      // would flip the harness's paraphrase questions ("urgent", "doctor",
+      // "cleanup") — those questions exist to measure the un-curated gap, and
+      // seeding their answers would blind the measurement. The demo's story is
+      // the Gaps view: a refused question arrives, an owner adds the word.
+      aliases: SEEDED_ALIASES[pageKey(page.collectionKey, page.title)] ?? [],
       effectiveDate,
       effectiveDateBasis: effectiveDate ? rng.pick(EFFECTIVE_DATE_BASES) : null,
       reviewDate:
@@ -1846,6 +1853,18 @@ function bodyFor(page: SeededPage, rng: Rng, byId: Map<string, SeededPage>): str
  * shown on the product's most ordinary question — and it is why neither page
  * may be "fixed" to agree with the other.
  */
+/**
+ * The aliases the demo ships with: the acronyms and house names a benefits
+ * team actually types. Two, on purpose — enough to show the field on a page
+ * and in search, and none of them a word the retrieval harness's paraphrase
+ * questions probe, so the eval keeps measuring the gap this feature exists to
+ * let owners close.
+ */
+const SEEDED_ALIASES: Record<string, string[]> = {
+  [pageKey('benefits', 'Coordination of benefits')]: ['COB'],
+  [pageKey('benefits', 'Qualifying Life Events')]: ['QLE'],
+};
+
 const WRITTEN_BODIES: Record<string, string> = {
   [pageKey('compliance', 'Records and Retention')]: `
 This policy states how long the company keeps each class of record, who decides that, and what happens at the end of the period. The periods themselves are in the Records Retention Schedule beneath this page; this page is the rule the schedule implements.

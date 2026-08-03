@@ -141,6 +141,20 @@ export interface PageFields {
   // rather than a refusal. A structured field like every other, so it is
   // versioned, attributed, carried in the field history, and attested.
   effectiveDateBasis?: string | null;
+  /**
+   * Other names for what this page IS, in the words people actually use:
+   * "urgent" beside a page that says "expedited", "COB" beside Coordination
+   * of benefits. Indexed with the title, weighed like the title, and read by
+   * the topical gate — so teaching the record a word is a normal edit that
+   * goes through review, not a synonym table nobody owns.
+   *
+   * This is the editorial answer to the vocabulary gap the embedding-model
+   * evaluation could not close: every model tested left the same paraphrase
+   * questions refused, because admission is lexical. The record can carry the
+   * asker's word, with an owner's name on the change and the approval that
+   * anything else on the page gets.
+   */
+  aliases?: string[];
   // ISO date (YYYY-MM-DD). Data, never parsed from prose: the freshness sweep
   // and every structured query read this field, not a sentence in a body.
   reviewDate?: string | null;
@@ -185,6 +199,8 @@ export interface Page {
   effectiveDateBasis: string | null;
   reviewDate: string | null;
   currentVersion: number | null;
+  /** Published aliases — the current version's, since aliases are content. */
+  aliases: string[];
   createdBy: string;
   createdAt: string;
 }

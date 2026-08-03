@@ -2,6 +2,16 @@ import type { DatabaseSync } from 'node:sqlite';
 import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
 import { indexableText } from './plaintext.js';
 
+/** The stored JSON list of aliases, as the text the index holds for them. */
+function aliasText(aliasesJson: string): string {
+  try {
+    const parsed = JSON.parse(aliasesJson) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((a) => typeof a === 'string').join('. ') : '';
+  } catch {
+    return '';
+  }
+}
+
 // Full-text search over the record (CORE-PLAN.md Epic A scope, FEATURES.md
 // "Search"). The index is a derived structure per DATA-BACKBONE.md §2:
 // rebuildable from pages and page_versions, never authoritative, and held
@@ -62,6 +72,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS page_search USING fts5(
   page_id UNINDEXED,
   title,
   body,
+  aliases,
   tokenize = '${TOKENIZER}'
 );
 `;
@@ -107,7 +118,10 @@ const STATUS_RANK = `CASE p.status WHEN 'canonical' THEN 0 WHEN 'needs_update' T
 //
 // The page_id column is UNINDEXED and can never match, so its weight is zero to
 // say so rather than to do anything.
-const RELEVANCE = 'bm25(page_search, 0.0, 3.0, 1.0)';
+// Aliases weigh what the title weighs, for the same reason the title weighs
+// what it does: both are names somebody chose for what the page IS. An alias
+// exists precisely so a question asked in that word lands on this page.
+const RELEVANCE = 'bm25(page_search, 0.0, 3.0, 1.0, 3.0)';
 
 // WHY THE ORDER BY DOES NOT STOP AT RELEVANCE.
 //
@@ -186,7 +200,11 @@ export class SearchIndex {
     const row = this.db
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'page_search'")
       .get() as { sql: string | null } | undefined;
-    return (row?.sql ?? '').includes(TOKENIZER);
+    const sql = row?.sql ?? '';
+    // The tokenizer AND the column set: an index built before aliases existed
+    // parses fine and quietly cannot hold them, which is the same wrongness as
+    // an old tokenizer and gets the same repair — drop and re-derive.
+    return sql.includes(TOKENIZER) && sql.includes('aliases');
   }
 
   /**
@@ -240,13 +258,15 @@ export class SearchIndex {
         // LEFT JOIN, and the title off `pages`: a page in review has published
         // nothing, and is still a page somebody can see in the tree and must
         // be able to find by name.
-        `SELECT p.title AS title, COALESCE(v.body, '') AS body FROM pages p
+        `SELECT p.title AS title, COALESCE(v.body, '') AS body,
+                COALESCE(json_extract(v.fields_json, '$.aliases'), '[]') AS aliases
+         FROM pages p
          LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          WHERE p.id = ? AND p.status != 'archived'`,
       )
-      .get(pageId) as { title: string; body: string } | undefined;
+      .get(pageId) as { title: string; body: string; aliases: string } | undefined;
     if (!row) return;
-    this.insert.run(pageId, row.title, indexableText(row.body));
+    this.insert.run(pageId, row.title, indexableText(row.body), aliasText(row.aliases));
   }
 
   // Drops and rebuilds the whole index from the record. The index is never
@@ -255,12 +275,14 @@ export class SearchIndex {
     this.db.exec('DELETE FROM page_search');
     const rows = this.db
       .prepare(
-        `SELECT p.id AS id, p.title AS title, COALESCE(v.body, '') AS body FROM pages p
+        `SELECT p.id AS id, p.title AS title, COALESCE(v.body, '') AS body,
+                COALESCE(json_extract(v.fields_json, '$.aliases'), '[]') AS aliases
+         FROM pages p
          LEFT JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          WHERE p.status != 'archived'`,
       )
-      .all() as { id: string; title: string; body: string }[];
-    for (const row of rows) this.insert.run(row.id, row.title, indexableText(row.body));
+      .all() as { id: string; title: string; body: string; aliases: string }[];
+    for (const row of rows) this.insert.run(row.id, row.title, indexableText(row.body), aliasText(row.aliases));
   }
 
   /**
@@ -280,14 +302,22 @@ export class SearchIndex {
     const out = new Map<string, string>();
     if (pageIds.length === 0) return out;
     const rows = this.db
-      .prepare(`SELECT page_id, body FROM page_search WHERE page_id IN (${pageIds.map(() => '?').join(', ')})`)
+      .prepare(
+        `SELECT page_id, body, aliases FROM page_search WHERE page_id IN (${pageIds.map(() => '?').join(', ')})`,
+      )
       .all(...pageIds) as Record<string, unknown>[];
-    for (const row of rows) out.set(row.page_id as string, row.body as string);
+    // Aliases ride with the body so the topical gate reads them: a page
+    // aliased "urgent claims" COVERS "urgent", which is the entire point —
+    // teaching the record a word is what turns a refusal into an answer.
+    for (const row of rows) {
+      const aliases = (row.aliases as string) ?? '';
+      out.set(row.page_id as string, aliases ? `${aliases} ${row.body as string}` : (row.body as string));
+    }
     return out;
   }
 
   private get insert() {
-    return this.db.prepare('INSERT INTO page_search (page_id, title, body) VALUES (?, ?, ?)');
+    return this.db.prepare('INSERT INTO page_search (page_id, title, body, aliases) VALUES (?, ?, ?, ?)');
   }
 
   // Permission-filtered search: results come only from collections where

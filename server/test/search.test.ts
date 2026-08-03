@@ -347,3 +347,33 @@ test('API: GET /search returns permission-filtered, highlighted results', async 
     server.close();
   }
 });
+
+test('aliases: indexed with the title’s weight, and an old index re-derives itself', () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, { deliver() {} });
+  const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'd@example.com' });
+  const collection = store.createCollection(dana.id, { name: 'Benefits' });
+  const page = store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Coordination of benefits' });
+  store.editDraft(dana.id, page.id, { body: 'Which plan pays first.', fields: { aliases: ['COB'] } });
+  store.publish(dana.id, page.id);
+
+  // Findable by a name that appears nowhere in title or body.
+  const hits = store.searchIndex.search(dana.id, { q: 'COB' });
+  assert.deepEqual(hits.map((h) => h.pageId), [page.id]);
+
+  // A draft's alias teaches nothing until it publishes, like a draft's body.
+  const draft = store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Unpublished' });
+  store.editDraft(dana.id, draft.id, { body: 'x', fields: { aliases: ['zzzunique'] } });
+  assert.deepEqual(store.searchIndex.search(dana.id, { q: 'zzzunique' }), []);
+
+  // An index built before the aliases column existed is the same wrongness as
+  // an old tokenizer, and gets the same repair: dropped and re-derived from
+  // the record when the store opens.
+  db.exec('DROP TABLE page_search');
+  db.exec(`CREATE VIRTUAL TABLE page_search USING fts5(
+    page_id UNINDEXED, title, body, tokenize = 'porter unicode61 remove_diacritics 2')`);
+  db.prepare('INSERT INTO page_search (page_id, title, body) VALUES (?, ?, ?)').run(page.id, 'Coordination of benefits', 'Which plan pays first.');
+  const reopened = new CanonStore(db, { deliver() {} });
+  const again = reopened.searchIndex.search(dana.id, { q: 'COB' });
+  assert.deepEqual(again.map((h) => h.pageId), [page.id], 'the reopened store rebuilt the index with aliases in it');
+});
