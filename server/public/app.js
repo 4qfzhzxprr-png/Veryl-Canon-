@@ -2509,13 +2509,20 @@ function changeSentence(change) {
   const body = change.changed
     ? `${change.changed} changed line${change.changed === 1 ? '' : 's'}`
     : 'no change to the body';
-  const fields = change.fields.length
-    ? `, and ${change.fields.length} changed field${change.fields.length === 1 ? '' : 's'}`
-    : '';
+  // The approver handoff is named, not counted. Counting it made this banner
+  // say "2 changed fields" where the version compare — which reads published
+  // versions, and the handoff lives in the draft — said one, and both were
+  // defensible while the pair read as a contradiction (fourth round, Lena).
+  // "A new approver" says what the second change IS; the row below still
+  // names the person.
+  const handoff = change.fields.some((f) => f.label === 'Approver');
+  const counted = change.fields.length - (handoff ? 1 : 0);
+  const fields = counted ? `, and ${counted} changed field${counted === 1 ? '' : 's'}` : '';
+  const approver = handoff ? ', and a new approver' : '';
   const since = change.baselineIsMarked
     ? `since v${change.baseVersion}, the last version to hold the Canonical mark`
     : `against the published v${change.baseVersion}`;
-  return `${body[0].toUpperCase()}${body.slice(1)}${fields} ${since}.`;
+  return `${body[0].toUpperCase()}${body.slice(1)}${fields}${approver} ${since}.`;
 }
 
 // The changed-field rows, drawn one way wherever field changes are shown —
@@ -2949,6 +2956,14 @@ async function viewPage(id) {
       await openSubmitReviewDialog(page, draft?.fields ?? null, route);
     } catch (err) { toastError(err); }
   });
+  // The approver's typed note, held across the trip to the diff. "Show me the
+  // changes" closes the dialog on purpose — the diff is the page behind it —
+  // but closing used to discard whatever was in the note box, so reading the
+  // changes cost a re-type (fourth round, Lena). Stashed here, in the view's
+  // scope, and handed back when the dialog reopens; cleared only by the
+  // approval that consumes it. Cancel keeps the stash too: cancelling is how
+  // somebody leaves to look at something, not a request to be forgotten.
+  let approveNoteDraft = '';
   app.querySelector('#act-approve')?.addEventListener('click', () => {
     const modal = openModal({
     title: 'Approve as Canonical',
@@ -2977,15 +2992,20 @@ async function viewPage(id) {
         ${change.references.length === 1 ? 'its source' : 'their sources'} on every read and can change afterwards
         without a version and without you. Your approval covers the text.</p>` : ''}
       ${change ? '<p><button type="button" class="btn subtle" id="approve-see-diff">Show me the changes</button></p>' : ''}
-      <label>Note <input name="note" placeholder="optional, kept in version history"></label>
+      <label>Note <input name="note" value="${esc(approveNoteDraft)}" placeholder="optional, kept in version history"></label>
       <p class="muted">Optional on purpose: what you approved is the version itself, with your name and the
         time on it. A note is worth reading when somebody chose to write one.</p>`,
     onSubmit: async (form) => {
       await api('POST', `/pages/${id}/approve`, form.note.value.trim() ? { note: form.note.value.trim() } : {});
+      approveNoteDraft = ''; // consumed: it is in the version history now
       toast('Approved. This page is now Canonical.', 'ok');
       route();
     },
     });
+    // Kept current as it is typed, so every way out of this dialog — the diff
+    // button below, Cancel, the backdrop — leaves the note where reopening
+    // finds it.
+    modal.form.note.addEventListener('input', () => { approveNoteDraft = modal.form.note.value; });
     // The Approve button sits above the diff, so somebody can reach this modal
     // without having scrolled past what it is about. This closes the modal and
     // puts them in front of it — the one thing T4.2 says must not be optional.

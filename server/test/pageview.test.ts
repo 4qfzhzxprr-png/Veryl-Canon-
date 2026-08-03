@@ -278,6 +278,44 @@ test('review change: what published between the mark and the submission is IN th
   assert.match(sentence, /since v1, the last version to hold the Canonical mark/);
 });
 
+test('review change: the approver handoff is named, not counted (fourth round, Lena)', () => {
+  // Alias change plus a new approver used to read "2 changed fields" here
+  // while the version compare said "1 field changed" — the compare reads
+  // published versions and the handoff lives in the draft, so both were
+  // right and the pair read as a contradiction. The banner now says what the
+  // second change is; the field row below still names the person.
+  const handedOver = { ...pendingDraft, fields: { ...v2.fields, approverId: 'omar' } };
+  const change = summarizeChange(
+    { title: v2.title, currentVersion: 2, current: v2, lastCanonical: v1, references: [] },
+    handedOver,
+  );
+  assert.deepEqual(change.fields.map((f) => f.label), ['Approver', 'Also known as'], 'the row list keeps both');
+  const sentence = changeSentence(change);
+  assert.match(sentence, /1 changed field, and a new approver/);
+  assert.doesNotMatch(sentence, /2 changed fields/);
+  // A handoff with nothing else changed says only that.
+  const handoffOnly = summarizeChange(
+    { title: v1.title, currentVersion: 1, current: v1, lastCanonical: v1, references: [] },
+    { title: v1.title, body: v1.body, fields: { ...v1.fields, approverId: 'omar' } },
+  );
+  assert.match(changeSentence(handoffOnly), /No change to the body, and a new approver/);
+});
+
+test('approve dialog: the typed note survives "Show me the changes" (fourth round, Lena)', () => {
+  // The diff button closes the dialog on purpose — the diff is the page
+  // behind it — but closing used to discard the typed note, so reading the
+  // changes cost a re-type. The note is stashed as it is typed and handed
+  // back into the reopened dialog's input.
+  const handler = source.slice(
+    source.indexOf('let approveNoteDraft'),
+    source.indexOf("app.querySelector('#act-sendback')"),
+  );
+  assert.match(handler, /value="\$\{esc\(approveNoteDraft\)\}"/, 'the reopened dialog starts from the stash');
+  assert.match(handler, /addEventListener\('input', \(\) => \{ approveNoteDraft = modal\.form\.note\.value; \}\)/,
+    'stashed as typed, so every way out of the dialog keeps it');
+  assert.match(handler, /approveNoteDraft = ''; \/\/ consumed/, 'and the approval that uses it clears it');
+});
+
 test('review change: a page that published without ever earning the mark has no baseline', () => {
   const change = summarizeChange(
     { title: v2.title, currentVersion: 2, current: v2, lastCanonical: null, references: [] },
