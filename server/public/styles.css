@@ -937,6 +937,8 @@ label.check input { width: auto; display: inline; margin: 0; }
 }
 .ask-grounding { margin: 0; font-size: 0.82rem; color: var(--muted); max-width: 34rem; }
 .ask-grounding .badge { margin: 0 0.1rem; }
+/* The privacy line under the grounding sentence: same voice, own breath. */
+.ask-kept { margin-top: 0.35rem; }
 
 .ask-scope {
   display: flex;

@@ -6071,6 +6071,13 @@ async function viewAsk(collectionId = null) {
             marked as such wherever they are cited. Drafts, Notes, and pages in review are never used.</p>
           <button class="btn primary" type="submit" id="ask-submit">Ask</button>
         </div>
+        ${/* The rule about question text — readable by the asker and by
+              operators — was stated honestly everywhere except to the person
+              it most concerns: the one typing (fourth round, Ada and Tomas).
+              One quiet line, under the grounding sentence, in the product's
+              voice. */ ''}
+        <p class="ask-grounding ask-kept">Questions are kept in the audit log, readable by you and by
+          this record's operators.</p>
       </form>
 
       <div class="ask-scope">

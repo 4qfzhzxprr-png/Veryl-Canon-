@@ -286,3 +286,13 @@ test('audit export: the truncation mark survives the download as a sentence, not
   assert.match(view, /NOT the whole filtered log/, 'the header becomes the sentence an auditor needs');
   assert.match(view, /Narrow with From\/To/, 'and the way out is named beside it');
 });
+
+// Fourth round, Ada and Tomas: the rule about question text — kept in the
+// audit log, readable by the asker and by operators — was stated honestly
+// everywhere except to the person it most concerns. The Ask screen now says
+// it where the typing happens, quietly, next to the grounding sentence.
+test('ask screen: the asker is told their question is recorded, and for whom', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const view = source.slice(source.indexOf('async function viewAsk('), source.indexOf("const idleHTML"));
+  assert.match(view, /Questions are kept in the audit log, readable by you and by\s+this record's operators\./);
+});
