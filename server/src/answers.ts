@@ -2118,6 +2118,17 @@ export class AnswerService {
       // and refusing to even NAME a page the asker can see and open helped
       // nobody. The status travels with the pointer, so the screen can label
       // exactly what kind of page it is pointing at.
+      // In retrieval order, and two reorderings were tried and reverted when
+      // the fifth round showed the work-from-home refusal leading with three
+      // floor-scraping pages: sorting by covered-term count (everything
+      // available tied at two), and sorting by the gate's weighted coverage
+      // (which promoted "Take-home exercise standards", whose hyphenated
+      // "home" carries the question's rarest word — junk in a different
+      // order). Both were measurement-neutral over the labelled refusals.
+      // The actual limit on that case is the pool: the page that should be
+      // pointed at ranks twelfth for a question the record cannot answer,
+      // and the pool is the top eight — a pointer pass that searched deeper,
+      // or semantically, is the real shape of an improvement here.
       const nearest: NearestPage[] = eligible
         .filter((c) => c.via === null)
         .filter((c) => coveredTerms(questionTerms, `${c.title} ${bodies.get(c.pageId) || c.passage}`).length >= floor)
@@ -2132,14 +2143,28 @@ export class AnswerService {
         request && typeof request === 'object' && ('alsoVisibleTo' in request || 'collectionIds' in request);
       if (nearest.length < MAX_NEAREST && this.host.searchIndex?.search && !narrowed) {
         try {
+          // The evidence floor is judged on the page's INDEXED text — body
+          // and aliases — not on the twelve-token snippet the search
+          // returned. The snippet shows where one term matched; the floor
+          // asks whether the page covers two, and the words that made a page
+          // findable are very often its aliases: "do I need a sick note?"
+          // matched a page whose body never says "note" because "sick notes"
+          // is its vocabulary, and judging the floor on the snippet threw
+          // that page away while the same page passed for "how do I call in
+          // sick?" — a pointer lottery between two phrasings of one need
+          // (fifth round, Ada).
+          const hits: { pageId: string; title: string; status: PageStatus }[] = [];
           for (const term of questionTerms) {
-            if (nearest.length >= MAX_NEAREST) break;
             for (const hit of this.host.searchIndex.search(actorId, { q: term, limit: 5 })) {
-              if (nearest.length >= MAX_NEAREST) break;
-              if (nearest.some((n) => n.pageId === hit.pageId)) continue;
-              if (coveredTerms(questionTerms, `${hit.title} ${hit.snippet}`).length < floor) continue;
-              nearest.push({ pageId: hit.pageId, title: hit.title, status: hit.status });
+              if (hits.some((h) => h.pageId === hit.pageId) || nearest.some((n) => n.pageId === hit.pageId)) continue;
+              hits.push({ pageId: hit.pageId, title: hit.title, status: hit.status });
             }
+          }
+          const indexed = this.host.searchIndex.indexedText(hits.map((h) => h.pageId));
+          for (const hit of hits) {
+            if (nearest.length >= MAX_NEAREST) break;
+            if (coveredTerms(questionTerms, `${hit.title} ${indexed.get(hit.pageId) ?? ''}`).length < floor) continue;
+            nearest.push(hit);
           }
         } catch {
           // Pointers are a courtesy; a failure here must not change the refusal.

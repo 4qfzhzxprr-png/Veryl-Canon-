@@ -1961,3 +1961,50 @@ test('refusal: pointers may name a page in review, labelled, when nothing offici
   assert.ok(pointer, 'but the refusal names it as a place to look');
   assert.equal(pointer.status, 'in_review', 'carrying the status the screen labels it with');
 });
+
+test('refusal: a pointer earns its evidence from aliases too, not just the snippet', async () => {
+  // Round five, Ada: "do I need a sick note?" refused with no pointers while
+  // "how do I call in sick?" pointed at the very same page. A two-part
+  // lottery: searched for "note", the unapproved page ranks below five
+  // Canonical pages that merely mention notes (status sorts first) and never
+  // surfaces; searched for "sick", it surfaces — but the twelve-token FTS
+  // snippet excerpts the BODY around that match, "notes" lives in the
+  // ALIASES, and the evidence floor judged title-plus-snippet. The words
+  // that made the page findable were not consulted when deciding whether
+  // finding it was justified. The floor is judged on the page's indexed
+  // text — body and aliases — now.
+  const { store, marc, iris, collection } = setup();
+  // Five Canonical pages that mention notes in passing, enough to fill the
+  // per-term search window ahead of an unapproved page.
+  for (let i = 1; i <= 5; i += 1) {
+    publishCanonical(store, marc.id, iris.id, collection.id, `Committee minutes ${i}`,
+      `Meeting notes for cycle ${i} are filed by the secretary and kept with the agenda notes.`);
+  }
+  // The answering page, published but unapproved: "sick" is all over its
+  // body (so the search snippet excerpts the body, as on any real policy
+  // page), "notes" only in its vocabulary — indexed, because vocabulary
+  // rides published versions (a draft's aliases are private, like its body).
+  const sick = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Absence certification' });
+  store.editDraft(marc.id, sick.id, {
+    body: [
+      'Sick leave requires certification from the eighth calendar day of absence.',
+      'Sick leave shorter than eight days is self-certified.',
+      'Sick pay follows the certification: uncertified sick absence beyond the eighth day is unpaid.',
+      'A manager records sick absence in the leave system on the day it is reported.',
+    ].join(' '),
+    fields: {
+      ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY,
+      aliases: ['sick notes', 'calling in sick'],
+    },
+  });
+  store.publish(marc.id, sick.id);
+  await store.embeddings.ready();
+
+  const refusal = await store.ask(marc.id, { question: 'Do I need a sick note?' });
+  assert.equal(refusal.refused, true);
+  assert.ok(
+    (refusal.nearest ?? []).some((n) => n.pageId === sick.id),
+    'the page whose alias carries the asker\'s words is a place to look',
+  );
+});
+

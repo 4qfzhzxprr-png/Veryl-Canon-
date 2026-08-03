@@ -1907,7 +1907,7 @@ const SEEDED_ALIASES: Record<string, string[]> = {
   // The words every new joiner used before learning the record's: Ada's
   // round-four report, nine search attempts, verbatim.
   [pageKey('hr', 'Annual leave entitlement')]: ['PTO', 'paid time off', 'holiday allowance', 'vacation days'],
-  [pageKey('hr', 'Working Hours and Flexibility')]: ['WFH', 'remote work', 'flexible working'],
+  [pageKey('hr', 'Working Hours and Flexibility')]: ['WFH', 'remote work', 'working from home', 'flexible working'],
   [pageKey('hr', 'Sick leave and certification')]: ['sick notes', 'calling in sick'],
 };
 
