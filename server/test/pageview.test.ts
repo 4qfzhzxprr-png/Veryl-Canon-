@@ -321,6 +321,74 @@ test('compare: the view never claims identity while fields differ', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Submitting for review is confirmed, with the approver in the confirmation
+// (third round, finding 9): the one fact the click commits to is who signs.
+
+const approverOptionsHTML = new Function(
+  'state',
+  'esc',
+  `${lift('approverOptionsHTML')}\nreturn approverOptionsHTML;`,
+)(
+  {
+    actors: [
+      { id: 'lena', name: 'Lena Sørensen' },
+      { id: 'omar', name: 'Omar Haddad' },
+      { id: 'priya', name: 'Priya Nair' },
+    ],
+  },
+  (s: string) => s,
+) as (approvers: { actorId: string }[] | null, selected: string | null) => string;
+
+const submitDialogBodyHTML = new Function(
+  `${lift('submitDialogBodyHTML')}\nreturn submitDialogBodyHTML;`,
+)() as (namesApprover: boolean, optionsHTML: string) => string;
+
+test('submit dialog: the named approver is shown, changeable, and approve-holders only', () => {
+  const options = approverOptionsHTML([{ actorId: 'lena' }, { actorId: 'omar' }], 'lena');
+  const html = submitDialogBodyHTML(true, options);
+  assert.match(html, /<select name="approverId" required>/, 'the choice is explicit, never implied');
+  assert.match(html, /value="lena" selected/, 'the draft’s current approver is what the dialog opens on');
+  assert.match(html, /Omar Haddad/, 'and the alternatives are on offer where the click is');
+  assert.doesNotMatch(html, /Priya Nair/, 'somebody without the approve role is not an alternative');
+  // The consequence of the name, said where the name is chosen.
+  assert.match(html, /Nobody else can\s+accept it/);
+});
+
+test('submit dialog: a type that names no approver confirms without inventing a field', () => {
+  const html = submitDialogBodyHTML(false, '');
+  assert.doesNotMatch(html, /<select/);
+  assert.match(html, /any of them may accept it or send it back/);
+});
+
+test('submit dialog: a named approver who lost the role is kept, and says so', () => {
+  const options = approverOptionsHTML([{ actorId: 'omar' }], 'lena');
+  assert.match(options, /Lena Sørensen \(no longer holds approve\)/);
+});
+
+test('submit: both roads go through the dialog, and the corrected name lands in the draft first', () => {
+  // The dialog writes the chosen approver into the draft BEFORE submitting, so
+  // the reviewState the server publishes can only name the person the dialog
+  // showed. Order of the two calls is the property.
+  const dialog = source.slice(
+    source.indexOf('async function openSubmitReviewDialog('),
+    source.indexOf('async function viewEditor('),
+  );
+  const put = dialog.indexOf("api('PUT', `/pages/${page.id}/draft`");
+  const post = dialog.indexOf("api('POST', `/pages/${page.id}/submit`");
+  assert.ok(put !== -1 && post !== -1 && put < post);
+
+  // Neither Submit button posts directly any more: one unconfirmed click was
+  // the defect, so its absence is what is pinned.
+  const pageButton = source.slice(source.indexOf("app.querySelector('#act-submit')"), source.indexOf("app.querySelector('#act-approve')"));
+  assert.match(pageButton, /openSubmitReviewDialog\(/);
+  assert.doesNotMatch(pageButton, /api\('POST'/);
+  const editorButton = source.slice(source.indexOf("app.querySelector('#ed-submit')"), source.indexOf("app.querySelector('#ed-discard')"));
+  assert.match(editorButton, /openSubmitReviewDialog\(/);
+  assert.doesNotMatch(editorButton, /api\('POST'/);
+  assert.ok(editorButton.indexOf('await save()') < editorButton.indexOf('openSubmitReviewDialog('), 'the dialog reads the saved draft, not the stale form');
+});
+
+// ---------------------------------------------------------------------------
 // The sidebar on a narrow screen, and the tree that was kept in a box.
 
 const treeToggleLabel = new Function(`${lift('treeToggleLabel')}\nreturn treeToggleLabel;`)() as (

@@ -2940,10 +2940,10 @@ async function viewPage(id) {
   renderAttestationAffordance('attestation-affordance', { kind: 'page', id, title: page.title });
 
   app.querySelector('#act-submit')?.addEventListener('click', async () => {
+    // Never a bare POST: the dialog restates who will be asked to sign and
+    // lets the name be corrected at the click that commits to it (finding 9).
     try {
-      await api('POST', `/pages/${id}/submit`);
-      toast('Submitted for review.', 'ok');
-      route();
+      await openSubmitReviewDialog(page, draft?.fields ?? null, route);
     } catch (err) { toastError(err); }
   });
   app.querySelector('#act-approve')?.addEventListener('click', () => {
@@ -4142,6 +4142,94 @@ function publishDialogBodyHTML(page, reviewed) {
     <label>Version note <input name="note" placeholder="optional, kept in version history"></label>`;
 }
 
+/** The approve-holders of a collection, or null where the membership cannot be read. */
+async function loadApproveHolders(collectionId) {
+  try {
+    const members = await api('GET', `/collections/${collectionId}/members`);
+    return members.filter((m) => ROLES.indexOf(m.role) >= ROLES.indexOf('approve'));
+  } catch { return null; }
+}
+
+// WHO MAY BE NAMED AS THE APPROVER, wherever an approver is named.
+//
+// `approve` accepts only somebody holding the approve role on the collection,
+// so a picker drawn from the whole directory offers names the server will
+// refuse: a contributor once named the senior colleague she would actually
+// have walked over to, and the page sat waiting on somebody who could not
+// act, with Approve greyed for the person named and an empty queue for
+// everybody else. One options builder, shared by the editor's field and the
+// submit confirmation, because two pickers with two membership rules would
+// reopen exactly that gap on whichever screen kept the old one.
+//
+// A null holder list — the membership could not be read, a rare view-only
+// edge — falls back to the full directory rather than offering nothing: an
+// empty approver list is a worse dead end than a wrong name.
+function approverOptionsHTML(approvers, selected) {
+  const people = state.actors ?? [];
+  const nameOf = (id) => people.find((a) => a.id === id)?.name;
+  if (!approvers) {
+    return `<option value="">—</option>` + people.map((a) =>
+      `<option value="${esc(a.id)}" ${a.id === selected ? 'selected' : ''}>${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('');
+  }
+  const named = approvers.map((m) => ({ id: m.actorId, name: nameOf(m.actorId) ?? m.actorName ?? m.actorId }));
+  // Somebody already named who has since lost the role stays in the list, so
+  // the page does not silently forget who it was waiting on.
+  if (selected && !named.some((n) => n.id === selected)) {
+    named.push({ id: selected, name: `${nameOf(selected) ?? selected} (no longer holds approve)` });
+  }
+  return `<option value="">—</option>` + named.map((n) =>
+    `<option value="${esc(n.id)}" ${n.id === selected ? 'selected' : ''}>${esc(n.name)}</option>`).join('');
+}
+
+// WHAT THE SUBMIT CONFIRMATION SAYS, and why it exists at all. Submitting used
+// to be one unconfirmed click, and the one fact that click commits to — WHO
+// will be asked to sign — was set on a field several screens back that nothing
+// restated; Priya submitted to the wrong approver and found out days later
+// (third round, finding 9). So the confirmation shows the named approver at
+// the moment of commitment and lets it be corrected there, from the same
+// approve-holders list the editor offers. Types that name no approver get the
+// plain sentence about who will act instead: confirming is still worth a
+// click, inventing a select the type has no field for is not.
+function submitDialogBodyHTML(namesApprover, optionsHTML) {
+  if (!namesApprover) {
+    return `
+      <p>Submitting locks the draft and puts it in front of this collection's approvers. This page's type
+        names no single approver, so any of them may accept it or send it back.</p>`;
+  }
+  return `
+    <p>Submitting locks the draft and puts it in front of the approver named below. <strong>Nobody else can
+      accept it</strong> — the wrong name here leaves the page waiting on somebody who may never look.</p>
+    <label>Approver <select name="approverId" required>${optionsHTML}</select></label>
+    <p class="muted">Only holders of the approve role here can be named. Changing the name writes it into
+      the draft as part of submitting, so the review will be waiting on exactly the person shown.</p>`;
+}
+
+// The one road into POST /pages/:id/submit from either screen that offers it.
+// The choice made in the dialog IS the draft's named approver: it is written
+// into the draft before the submission, so the server's reviewState, the
+// in-review banner and this dialog can only ever name the same person.
+async function openSubmitReviewDialog(page, draftFields, afterSubmit) {
+  const namesApprover = Boolean((TYPE_FIELDS[page.type] ?? {}).approver);
+  const approvers = namesApprover ? await loadApproveHolders(page.collectionId) : null;
+  const current = draftFields?.approverId ?? null;
+  openModal({
+    title: 'Submit for review',
+    submitLabel: 'Submit for review',
+    body: submitDialogBodyHTML(namesApprover, namesApprover ? approverOptionsHTML(approvers, current) : ''),
+    onSubmit: async (form) => {
+      if (namesApprover) {
+        const chosen = form.approverId.value || null;
+        if (chosen !== current) {
+          await api('PUT', `/pages/${page.id}/draft`, { fields: { approverId: chosen } });
+        }
+      }
+      await api('POST', `/pages/${page.id}/submit`);
+      toast('Submitted for review.', 'ok');
+      afterSubmit();
+    },
+  });
+}
+
 async function viewEditor(id) {
   const page = await api('GET', `/pages/${id}`);
   await loadActors().catch(() => null);
@@ -4189,40 +4277,12 @@ async function viewEditor(id) {
   const actorOptions = (selected) => `<option value="">—</option>` + people.map((a) =>
     `<option value="${esc(a.id)}" ${a.id === selected ? 'selected' : ''}>${esc(a.name)}${a.kind === 'agent' ? ' (agent)' : ''}</option>`).join('');
 
-  // WHO MAY BE NAMED AS THE APPROVER.
-  //
-  // The picker used to offer the whole directory, and `approve` accepts only
-  // somebody holding the approve role on this collection. A contributor named
-  // the senior colleague she would actually have walked over to, was told
-  // "Waiting on the named approver, Iris Cho", and Iris found Approve greyed
-  // out and her own queue empty — the page sat in a state nobody could act on
-  // and nothing on either screen said why. The product already knows this
-  // distinction; it simply was not applied where the choice is made.
-  //
-  // Same rule as the server's, read from the collection's own membership. If
-  // the membership cannot be read — a rare view-only edge — the picker falls
-  // back to the full directory rather than offering nothing, because an empty
-  // approver list would be a worse dead end than a wrong name.
-  let approvers = null;
-  try {
-    const members = await api('GET', `/collections/${page.collectionId}/members`);
-    approvers = members.filter((m) => ROLES.indexOf(m.role) >= ROLES.indexOf('approve'));
-  } catch { approvers = null; }
-  const approverOptions = (selected) => {
-    if (!approvers) return actorOptions(selected);
-    const named = approvers.map((m) => {
-      const who = people.find((a) => a.id === m.actorId) ?? {};
-      return { id: m.actorId, name: who.name ?? m.actorName ?? m.actorId };
-    });
-    // Somebody already named who has since lost the role stays in the list, so
-    // the page does not silently forget who it was waiting on.
-    if (selected && !named.some((n) => n.id === selected)) {
-      const who = people.find((a) => a.id === selected);
-      named.push({ id: selected, name: `${who?.name ?? selected} (no longer holds approve)` });
-    }
-    return `<option value="">—</option>` + named.map((n) =>
-      `<option value="${esc(n.id)}" ${n.id === selected ? 'selected' : ''}>${esc(n.name)}</option>`).join('');
-  };
+  // Approve-holders only — approverOptionsHTML owns the argument, and it is
+  // the same builder the submit confirmation draws from, so the field where an
+  // approver is first named and the dialog where the naming is committed to
+  // can never offer different people.
+  const approvers = await loadApproveHolders(page.collectionId);
+  const approverOptions = (selected) => approverOptionsHTML(approvers, selected);
 
   app.innerHTML = `
     <div class="page-wide editor">
@@ -4361,11 +4421,13 @@ async function viewEditor(id) {
   });
 
   app.querySelector('#ed-submit')?.addEventListener('click', async () => {
+    // The draft is saved first — the dialog names the approver the draft
+    // actually carries, not the one the form held before an unsaved edit —
+    // and then the same confirmation as the page view's Submit, because two
+    // roads into review with different ceremonies means the shortcut wins.
     try {
-      await save();
-      await api('POST', `/pages/${id}/submit`);
-      toast('Submitted for review.', 'ok');
-      location.hash = `#/pages/${id}`;
+      const d = await save();
+      await openSubmitReviewDialog(page, d.fields, () => { location.hash = `#/pages/${id}`; });
     } catch (err) { handleEditError(err); }
   });
 
