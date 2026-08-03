@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
+import { staticConnectorOf } from '../src/connectors.js';
 import { setHandOrgRole } from '../src/orgrole.js';
 import { CanonStore } from '../src/store.js';
 import {
@@ -1791,4 +1792,74 @@ test('ask: the page decides whether it is on topic, not the sentence chosen to q
   const answer = await store.ask(marc.id, { question });
   assert.equal(answer.refused, false, 'the page states the answer; the window merely did not contain it');
   assert.deepEqual(answer.citations.map((c) => c.pageId), [page.id]);
+});
+
+test('ask: a cited page’s federated fields travel with the citation, live value beside the prose', async () => {
+  // Round three, Marcus: asked for the PLAN-7 deductible, the only figure on
+  // screen was the stale prose one, while the service-resolved value sat on
+  // the page the answer itself cited. The live value now rides the citation.
+  const { store, dana, marc, iris, collection } = setup();
+  staticConnectorOf(store.connectors).define('benefits-admin', { plan7: { 'plan7/deductible': 1500 } });
+  store.bootstrapAdministrator(dana.id);
+  const source = store.createSource(dana.id, {
+    name: 'Benefits Admin',
+    kind: 'static',
+    baseUrl: 'static:benefits-admin',
+    authMode: 'service',
+    freshnessWindowMs: 60_000,
+    collectionIds: [collection.id],
+  });
+  const page = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Standard plan deductible',
+    'The deductible for the standard plan is described here; the live figure is read from Benefits Admin.',
+  );
+  store.addReference(marc.id, page.id, {
+    sourceId: source.id,
+    selector: 'plan7',
+    key: 'plan7/deductible',
+    label: 'Deductible (individual)',
+    role: 'authority',
+  });
+  await store.embeddings.ready();
+
+  const answer = await store.ask(marc.id, { question: 'What is the deductible for the standard plan?' });
+  assert.equal(answer.refused, false);
+  const cited = answer.citations.find((c) => c.pageId === page.id);
+  assert.ok(cited, 'the page with the reference is cited');
+  assert.ok(cited.fields && cited.fields.length === 1, 'and its federated field travels with the citation');
+  const field = cited.fields![0]!;
+  assert.equal(field.label, 'Deductible (individual)');
+  assert.equal(field.value, 1500, 'the LIVE value, not a restatement of the prose');
+  assert.equal(field.stale, false);
+  assert.equal(field.sourceName, 'Benefits Admin');
+
+  // A page with no references pays nothing and carries nothing.
+  const bare = await store.ask(marc.id, { question: 'How quickly is an expedited claim decided?' });
+  void bare; // any cited page without references simply has no fields key
+});
+
+test('refusal: pointers may name a page in review, labelled, when nothing official comes close', async () => {
+  // Round three, Ada: refused a sick-leave question while "Sick leave and
+  // certification" sat in her sidebar — in review, so rightly uncitable, but
+  // a pointer is not a citation, and naming nothing helped nobody.
+  const { store, marc, iris, collection } = setup();
+  publishCanonical(store, marc.id, iris.id, collection.id, 'Office plant care',
+    'Plants are watered on Fridays by whoever is on the rota.');
+  publishCanonical(store, marc.id, iris.id, collection.id, 'Meeting room etiquette',
+    'Rooms are booked through the calendar and released when a meeting ends early.');
+  // The page that would answer, stuck in review: published nothing yet.
+  const sick = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Sick leave and certification' });
+  store.editDraft(marc.id, sick.id, {
+    body: 'Sick leave requires certification from the eighth calendar day of absence.',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
+  });
+  store.submitForReview(marc.id, sick.id);
+  await store.embeddings.ready();
+
+  const refusal = await store.ask(marc.id, { question: 'Do I need certification for sick leave?' });
+  assert.equal(refusal.refused, true, 'an unreviewed page must still not be cited');
+  const pointer = (refusal.nearest ?? []).find((n) => n.pageId === sick.id);
+  assert.ok(pointer, 'but the refusal names it as a place to look');
+  assert.equal(pointer.status, 'in_review', 'carrying the status the screen labels it with');
 });

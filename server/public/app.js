@@ -5370,6 +5370,8 @@ function normalizeCitation(c, i = 0) {
     version: c.version ?? c.versionNumber ?? c.currentVersion ?? null,
     snippet: c.snippet ?? c.excerpt ?? '',
     status: c.status ?? null,
+    disputed: c.disputed ?? null,
+    fields: Array.isArray(c.fields) ? c.fields : null,
   };
 }
 
@@ -5523,7 +5525,22 @@ function citationsHTML(citations, disputed = new Set()) {
     const foot = c.pageId && c.version
       ? `<p class="citation-foot"><a href="#/pages/${esc(c.pageId)}/versions/${esc(c.version)}">Read v${esc(c.version)} exactly as cited</a></p>`
       : '';
-    return `<li class="citation ${disputed.has(c.pageId) ? 'is-disputed' : ''}" data-citation="${c.n}">${body}${foot}</li>`;
+    // The cited page's federated fields, so the LIVE figure stands beside the
+    // quoted prose. A compliance director asked for the PLAN-7 deductible and
+    // the only number on his screen was the stale one — correctly framed as
+    // contested, still the wrong number, while the live value sat on the page
+    // the answer itself cited. Values render exactly as the page shows them:
+    // last-known, freshness stated, an error carried rather than papered over.
+    const fields = Array.isArray(c.fields) && c.fields.length
+      ? `<ul class="citation-fields">${c.fields.map((f) => `
+          <li><span class="cf-label">${esc(f.label)}</span>
+            <span class="cf-value">${esc(String(f.value ?? '—'))}</span>
+            <span class="muted">from ${esc(f.sourceName)}${f.role === 'corroboration' ? ' (corroborating)' : ''}${
+              f.stale ? ' · STALE' + (f.error ? ` — ${esc(f.error)}` : '') : ' · within freshness window'
+            }</span></li>`).join('')}
+        </ul>`
+      : '';
+    return `<li class="citation ${disputed.has(c.pageId) ? 'is-disputed' : ''}" data-citation="${c.n}">${body}${fields}${foot}</li>`;
   }).join('');
   const n = citations.length;
   return `

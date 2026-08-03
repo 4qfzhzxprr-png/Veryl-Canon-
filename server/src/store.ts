@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { GapService, type Gap } from './gaps.js';
+import type { CitationField } from './answers.js';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   CAN,
@@ -2257,6 +2258,26 @@ export class CanonStore {
 
   resolveReferences(actorId: string, pageId: string): Promise<ResolvedReference[]> {
     return this.references.resolveReferences(actorId, pageId);
+  }
+
+  /**
+   * The answer path's view of a cited page's federated fields (answers.ts,
+   * `CitationField`): nothing when the page has none — the common case, paid
+   * for with one cheap list — and otherwise the same resolution the page view
+   * itself performs, cache-within-freshness, stale-marked, never guessed.
+   */
+  async liveFields(actorId: string, pageId: string): Promise<CitationField[]> {
+    if (this.references.list(actorId, pageId).length === 0) return [];
+    const resolved = await this.references.resolveReferences(actorId, pageId);
+    return resolved.map((r) => ({
+      label: r.label ?? r.key,
+      value: r.value,
+      sourceName: r.sourceName,
+      role: r.role,
+      resolvedAt: r.resolvedAt,
+      stale: r.stale,
+      ...(r.error ? { error: r.error } : {}),
+    }));
   }
 
   // ---- divergence (DATA-BACKBONE.md §7) --------------------------------

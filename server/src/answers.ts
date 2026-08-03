@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, PageStatus } from './model.js';
 import { STOPWORDS } from './embeddings.js';
 import { objectBody, optionalCount, optionalString, optionalStringArray } from './input.js';
-import { ANSWERABLE_STATUSES, answerShape, type RetrievalCandidate, type RetrievalService } from './retrieval.js';
+import { ANSWERABLE_STATUSES, DEFAULT_LIMIT, answerShape, type RetrievalCandidate, type RetrievalService } from './retrieval.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
 // CORE-PLAN.md. Generation happens under the record's rules, and the rules are
@@ -35,11 +35,32 @@ import { ANSWERABLE_STATUSES, answerShape, type RetrievalCandidate, type Retriev
 //
 // Every ask lands in the audit log, refusals included.
 
+/**
+ * A federated field on a cited page, carried into the answer so the LIVE
+ * value stands beside the quoted prose. The third persona round's finding:
+ * asked for the PLAN-7 deductible, the only figure on screen was the stale
+ * prose one — correctly conflict-framed, still the wrong number — while the
+ * service-resolved figure sat on the page the answer itself cited. Values
+ * arrive exactly as the page shows them: last-known, stale-marked, never
+ * substituted (references.ts owns that guarantee).
+ */
+export interface CitationField {
+  label: string;
+  value: unknown;
+  sourceName: string;
+  role: string;
+  resolvedAt: string | null;
+  stale: boolean;
+  error?: string;
+}
+
 export interface Citation {
   pageId: string;
   title: string;
   version: number;
   snippet: string;
+  /** The cited page's federated fields, when it has any. Absent otherwise. */
+  fields?: CitationField[];
   /**
    * The standing of the cited page — `canonical` or `needs_update`, the only
    * two statuses an answer may draw on. It is carried because a reader deciding
@@ -1777,10 +1798,29 @@ export interface AnswerHost {
    * is what knows that. Optional so a harness can construct an AnswerService
    * without one; the gate falls back to its unweighted form when it is absent.
    */
+  /**
+   * The cited pages' federated fields, resolved as the page itself would
+   * resolve them: cache within the freshness window, stale-marked outside it,
+   * never guessed. Optional — a harness without federation answers without it
+   * — and failures are swallowed per page: a source being down must not cost
+   * an asker their answer.
+   */
+  liveFields?(actorId: string, pageId: string): Promise<CitationField[]>;
   readonly searchIndex?: {
     documentFrequency(terms: readonly string[]): TermStats;
     /** The indexed words of these pages, for judging what a page is about. */
     indexedText(pageIds: readonly string[]): Map<string, string>;
+    /**
+     * Permission-filtered search, for the refusal's wider pointer pass. The
+     * index is the one surface that knows a never-published page by its title
+     * (a page in review has no version for retrieval to hydrate), and a
+     * pointer is exactly the "you can see this page exists" claim the index
+     * already makes in the sidebar.
+     */
+    search?(
+      actorId: string,
+      filter: { q: string; limit?: number },
+    ): { pageId: string; title: string; status: PageStatus; snippet: string }[];
   };
 }
 
@@ -2037,11 +2077,41 @@ export class AnswerService {
       // response that varies with what a hidden collection might hold.
       const questionTerms = contentTerms(question);
       const floor = questionTerms.length === 1 ? 1 : 2;
+      // Official pages first, from the candidates already in hand — then, if
+      // slots remain, a second look WITHOUT the Canonical restriction. A new
+      // joiner was refused a sick-leave question while "Sick leave and
+      // certification" sat in her sidebar, in review: the answer path rightly
+      // will not cite an unreviewed page, but a pointer is not a citation,
+      // and refusing to even NAME a page the asker can see and open helped
+      // nobody. The status travels with the pointer, so the screen can label
+      // exactly what kind of page it is pointing at.
       const nearest: NearestPage[] = eligible
         .filter((c) => c.via === null)
         .filter((c) => coveredTerms(questionTerms, `${c.title} ${bodies.get(c.pageId) || c.passage}`).length >= floor)
         .slice(0, MAX_NEAREST)
         .map((c) => ({ pageId: c.pageId, title: c.title, status: c.status }));
+      // A second look through the search index, which — unlike retrieval —
+      // knows a never-published page by its title. Only for the Ask door:
+      // the Knowledge API's narrowed asks keep official-only pointers, because
+      // widening there would need the app-intersection re-applied and a
+      // narrower pointer list is the safe default.
+      const narrowed =
+        request && typeof request === 'object' && ('alsoVisibleTo' in request || 'collectionIds' in request);
+      if (nearest.length < MAX_NEAREST && this.host.searchIndex?.search && !narrowed) {
+        try {
+          for (const term of questionTerms) {
+            if (nearest.length >= MAX_NEAREST) break;
+            for (const hit of this.host.searchIndex.search(actorId, { q: term, limit: 5 })) {
+              if (nearest.length >= MAX_NEAREST) break;
+              if (nearest.some((n) => n.pageId === hit.pageId)) continue;
+              if (coveredTerms(questionTerms, `${hit.title} ${hit.snippet}`).length < floor) continue;
+              nearest.push({ pageId: hit.pageId, title: hit.title, status: hit.status });
+            }
+          }
+        } catch {
+          // Pointers are a courtesy; a failure here must not change the refusal.
+        }
+      }
       this.audit(actor, question, collectionId ?? null, true, [], null, null, null, nearest.map((c) => c.pageId));
       return {
         answer: null,
@@ -2050,6 +2120,17 @@ export class AnswerService {
         reason: 'no_canonical_match',
         ...(nearest.length ? { nearest } : {}),
       };
+    }
+
+    if (this.host.liveFields) {
+      for (const citation of citations) {
+        try {
+          const fields = await this.host.liveFields(actorId, citation.pageId);
+          if (fields.length) citation.fields = fields;
+        } catch {
+          // The page still answers; its live fields simply do not travel.
+        }
+      }
     }
 
     // ---- the disagreement survives the generator ------------------------
