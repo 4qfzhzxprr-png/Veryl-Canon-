@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { GapService, type Gap } from './gaps.js';
 import type { CitationField } from './answers.js';
+import { generatorFromEnv } from './generatorproviders.js';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   CAN,
@@ -225,7 +226,9 @@ export class CanonStore {
     this.notifier = new Notifier(db, this, transport);
     this.commentService = new CommentService(db, this, this.notifier);
     this.retrieval = new RetrievalService(db, this, this.searchIndex, this.embeddings);
-    this.answers = new AnswerService(db, this, this.retrieval);
+    // The generator is an environment decision, like the embedding provider:
+    // extractive unless a deployment selected a model (CANON_GENERATOR).
+    this.answers = new AnswerService(db, this, this.retrieval, generatorFromEnv());
     this.connectors = connectors;
     this.sources = new SourceService(db, this);
     this.divergences = new DivergenceService(db, this, this.notifier);

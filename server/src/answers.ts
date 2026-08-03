@@ -394,11 +394,32 @@ export interface AnswerPassage {
    * present it as current.
    */
   status?: PageStatus;
+  /**
+   * The page's whole indexed text, when the caller has it — so a generator
+   * that reads pages (a model) can find the answering sentence wherever it
+   * sits, not only inside the 320-character window `text` shows. A quote the
+   * generator selects is verified against this text (falling back to `text`
+   * when absent) before it is allowed to become the citation's snippet.
+   * Bounded by the caller; the extractive generator ignores it.
+   */
+  fullText?: string;
 }
 
 export interface GeneratedAnswer {
   answer: string;
   citedPageIds: string[]; // must be a subset of the passages offered
+  /**
+   * Optionally, the exact sentence of each cited page that answers — chosen by
+   * the generator, BELIEVED BY NOBODY. A quote is used as the citation's
+   * snippet only after the caller verifies it is a verbatim substring of that
+   * page's own text; anything else — a paraphrase, a splice, an invention —
+   * is discarded and the window-chosen snippet stands. This is the channel
+   * through which a real model can finally fix "right page, wrong sentence"
+   * (five recorded negative results say window arithmetic cannot): the model
+   * reads the whole page and points at the answering sentence, and the
+   * verbatim check makes pointing the only thing it can do.
+   */
+  quotes?: { pageId: string; text: string }[];
 }
 
 // The seam a real model plugs into later. A generator receives the question
@@ -438,7 +459,7 @@ export interface AnswerGenerator {
     supersession?: Supersession | null;
     /** Advisory, same rules: where a cited page's own sources disagree. */
     sourceDisagreement?: SourceDisagreement | null;
-  }): GeneratedAnswer | null;
+  }): GeneratedAnswer | null | Promise<GeneratedAnswer | null>;
 }
 
 // Said when a cited page is disputed but the other side is not in this answer,
@@ -451,6 +472,18 @@ export const DISPUTED_LEAD =
 
 // How many passages an answer may draw on.
 export const MAX_CITED_PASSAGES = 3;
+
+// A quote a generator proposes is a sentence or two, not a page: shorter than
+// ten characters it cannot be an answer ("yes", a bare figure with no unit or
+// subject), longer than this it is a dump wearing a quotation's clothes. The
+// window snippet stands whenever the proposal fails either bound.
+export const MAX_QUOTE_LENGTH = 600;
+
+// How much of a page a reading generator is shown, per passage. Bounds the
+// cost of a model call the way MAX_CITED_PASSAGES bounds its breadth; policy
+// pages in the demo corpus run well under this, so in practice it is a guard
+// against a pathological page rather than a working truncation.
+export const MAX_FULL_TEXT = 8000;
 
 // The default generator is extractive and honest about it: it quotes the most
 // relevant passages verbatim and attributes each one. It invents nothing, it
@@ -2041,7 +2074,18 @@ export class AnswerService {
       c.neighbourOf.some((id) => anchored.has(id));
     const passages: AnswerPassage[] = (anchors.length === 0 ? [] : eligible.filter(rides))
       .slice(0, MAX_CITED_PASSAGES)
-      .map((c) => ({ pageId: c.pageId, title: c.title, version: c.version, text: c.passage, status: c.status }));
+      .map((c) => ({
+        pageId: c.pageId,
+        title: c.title,
+        version: c.version,
+        text: c.passage,
+        status: c.status,
+        // The whole page, bounded, for a generator that reads rather than
+        // windows — and for verifying any quote such a generator proposes.
+        // The same text the gate judged relevance on, so a quote can only
+        // come from words the admission decision already weighed.
+        ...(bodies.get(c.pageId) ? { fullText: bodies.get(c.pageId)!.slice(0, MAX_FULL_TEXT) } : {}),
+      }));
 
     // Contradiction awareness, DATA-BACKBONE.md §7. Detection runs over the
     // passages this answer is about to be composed from, and it runs HERE —
@@ -2070,21 +2114,42 @@ export class AnswerService {
     // quoting them as an answer.
     const generated =
       passages.length > 0 && grounding === 'direct'
-        ? this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
+        ? await this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
         : null;
 
     // Citations are built from the passages the generator was given, matched
     // by page id — a generator cannot cite a page it was not offered, and an
     // answer that cites nothing is refused rather than returned.
+    //
+    // A generator may also propose the exact sentence to quote per cited page
+    // (`quotes`). The proposal is verified, never trusted: the text must be a
+    // verbatim substring of that page's own words — the full indexed text when
+    // the passage carries it, the window otherwise — and must be a bounded
+    // quotation rather than a page dump. A paraphrase, a splice across
+    // sentences that never touched, or an invented figure fails the substring
+    // check and the window-chosen snippet stands. The invariant this preserves
+    // is the product's oldest: everything quoted is the record's own words,
+    // and no model can put words into a page's mouth.
     const citations: Citation[] = [];
+    const proposedQuotes = new Map((generated?.quotes ?? []).map((q) => [q.pageId, q.text]));
     for (const pageId of generated?.citedPageIds ?? []) {
       const passage = passages.find((p) => p.pageId === pageId);
       if (!passage || citations.some((c) => c.pageId === pageId)) continue;
+      let snippet = passage.text;
+      const proposed = proposedQuotes.get(pageId)?.trim();
+      if (
+        proposed &&
+        proposed.length >= 10 &&
+        proposed.length <= MAX_QUOTE_LENGTH &&
+        (passage.fullText ?? passage.text).includes(proposed)
+      ) {
+        snippet = proposed;
+      }
       citations.push({
         pageId: passage.pageId,
         title: passage.title,
         version: passage.version,
-        snippet: passage.text,
+        snippet,
         ...(passage.status ? { status: passage.status } : {}),
       });
     }

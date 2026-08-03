@@ -158,6 +158,33 @@ weights. Neither should happen because a config file was copied.
 | `CANON_EMBEDDINGS_BATCH` | optional | `32` | Texts per request. | — |
 | `CANON_EMBEDDINGS_TIMEOUT_MS` | optional | `30000` | Bounds the whole exchange. | A provider that fails leaves pages out of the vector channel and retrieval degrades to lexical plus graph. It never substitutes a vector. |
 
+## The answer generator
+
+Unset, answers are composed by the built-in extractive generator: the record's
+own sentences, quoted verbatim and attributed, with nothing written between
+them. That is the default because it can never say anything a page does not
+say.
+
+Selecting the model generator changes who writes the prose, and nothing else —
+every rule that matters is enforced outside the generator, structurally: the
+grounding gate refuses before a model is ever called, a model cannot cite a
+page it was not offered, a quote it proposes becomes the citation's snippet
+only after Canon verifies it is a verbatim substring of that page, a recorded
+disagreement is re-asserted over whatever it writes, and any failure — network,
+timeout, a refusal, prose that does not parse — falls back to the extractive
+generator rather than to an error or an invention. What a model buys is better
+prose and better-chosen quotations; what it costs is that each answered
+question's passages are sent to the Anthropic API.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_GENERATOR` | optional | unset = extractive | `anthropic` turns on the model generator. | Each answered question's gate-admitted passages (and their pages' indexed text) are sent to the Anthropic API. Refusals never are — the gate refuses before generation runs. |
+| `CANON_GENERATOR_MODEL` | optional | `claude-opus-5` | The Claude model that composes answers. | Recorded in the answer engine name, so the audit log says which model wrote what. |
+| `CANON_GENERATOR_EFFORT` | optional | `low` | `low`, `medium`, or `high` — how hard the model thinks. | `low` because the task is short and pre-filtered and a person is waiting; raise it if quotation quality measurably improves on your record. |
+| `CANON_GENERATOR_MAX_TOKENS` | optional | `4096` | Output ceiling per answer. | — |
+| `CANON_GENERATOR_URL` | optional | unset | Base URL override, for a proxy or a compatible endpoint. | Same standing as `CANON_EMBEDDINGS_URL`: it comes from your environment, not from a user. |
+| `ANTHROPIC_API_KEY` | required if `anthropic` | unset | **Secret** — read by the Anthropic SDK. | Never logged. A missing or invalid key degrades every answer to the extractive generator; it never takes Ask down. |
+
 ## Import
 
 | Variable | Required? | Default | Meaning | Safety |

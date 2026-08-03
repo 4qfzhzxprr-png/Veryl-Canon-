@@ -560,6 +560,17 @@ export interface EvalCorpus {
  *   CANON_EMBEDDINGS=http CANON_EMBEDDINGS_URL=... CANON_EMBEDDINGS_MODEL=... \
  *     CANON_EMBEDDINGS_DIMENSIONS=768 npm run eval:retrieval -- --json bge.json
  *
+ * The ANSWER GENERATOR is selected the same way (`CANON_GENERATOR`, see
+ * CONFIGURATION.md), because the store built here reads the same environment
+ * a server does. The measurement that matters for it is `quoted answer` —
+ * five recorded negative results over `bestWindow` say window arithmetic
+ * cannot fix "right page, wrong sentence", and a model that reads whole pages
+ * and proposes verbatim-verified quotes is the standing bet that something
+ * can:
+ *
+ *   CANON_GENERATOR=anthropic ANTHROPIC_API_KEY=... \
+ *     npm run eval:retrieval -- --compare shipped.json
+ *
  * Before this, trying a model meant hand-writing a script that rebuilt half of
  * this file — which is how a model gets evaluated once, by whoever wrote the
  * script, and never again.

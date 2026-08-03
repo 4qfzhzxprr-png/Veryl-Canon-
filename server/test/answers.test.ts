@@ -263,8 +263,8 @@ test('ask: an answer without citations cannot be constructed', async () => {
 
   // The generator is the seam a model plugs into, and it cannot invent a
   // citation: a page it was never offered is dropped, leaving a refusal.
-  assert.equal(extractiveGenerator.generate({ question: 'anything', passages: [] }), null);
-  const invented = extractiveGenerator.generate({
+  assert.equal(await extractiveGenerator.generate({ question: 'anything', passages: [] }), null);
+  const invented = await extractiveGenerator.generate({
     question: 'anything',
     passages: [{ pageId: 'p1', title: 'T', version: 1, text: 'The record says so.' }],
   });
@@ -1120,7 +1120,7 @@ test('ask: an answer that carried a disagreement says so in the audit log', asyn
   assert.equal(plain!.details.refused, false);
 });
 
-test('extractive: conflicting passages are set against each other, not listed', () => {
+test('extractive: conflicting passages are set against each other, not listed', async () => {
   const passages = [
     passage('a', 'Records retention policy', 'Client records are retained for seven years.'),
     passage('b', 'Client data retention policy', 'Client records are retained for ten years.'),
@@ -1129,7 +1129,7 @@ test('extractive: conflicting passages are set against each other, not listed', 
   const disagreement = detectDisagreement(passages);
   assert.ok(disagreement);
 
-  const generated = extractiveGenerator.generate({ question: 'How long are records retained?', passages, disagreement });
+  const generated = await extractiveGenerator.generate({ question: 'How long are records retained?', passages, disagreement });
   assert.ok(generated);
   // The disagreement leads, before any quotation, so the reader meets the
   // warning before they meet either answer.
@@ -1142,7 +1142,7 @@ test('extractive: conflicting passages are set against each other, not listed', 
   assert.deepEqual(generated!.citedPageIds, ['a', 'b', 'c']);
 
   // Without a disagreement the extractive default is exactly what it was.
-  const plain = extractiveGenerator.generate({ question: 'How long are records retained?', passages: [passages[2]!] });
+  const plain = await extractiveGenerator.generate({ question: 'How long are records retained?', passages: [passages[2]!] });
   assert.ok(plain!.answer.startsWith('The record says:'));
 });
 
