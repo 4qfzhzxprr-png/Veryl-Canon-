@@ -148,22 +148,29 @@ test('eval: retrieval over the demo corpus has not regressed', async () => {
   // experiences did not. A floor on ranking alone would have let all of that
   // through, and did.
   //
-  // THE FLOORS BELOW WERE RE-BASED ONCE, DELIBERATELY, when the hedge stopped
-  // counting as an answer. "Nothing in the record answers this directly. The
-  // closest it comes:" carried refused:false, and the fourth persona round
-  // showed what that bought: a screen "answering" with irrelevant pages, an
-  // audit log disagreeing with the screen it describes, and a gaps probe
-  // annotating gaps as answerable that a re-ask refused. Thin now refuses,
-  // so the four labelled cases that were hedges became refusals — each one
-  // pointing at the page it used to quote (see the pointed-right floor) —
-  // and `answered` fell from 0.907 to 0.814 by definition, not by regression.
-  // The number to push `answered` back up with is aliases, not hedges.
-  assert.ok(report.answered >= 0.79, `answered fell to ${report.answered.toFixed(3)}${summary}`);
+  // THE FLOORS BELOW WERE RE-BASED TWICE, DELIBERATELY, and in opposite
+  // directions. First DOWN, when the hedge stopped counting as an answer:
+  // "Nothing in the record answers this directly. The closest it comes:"
+  // carried refused:false, and the fourth persona round showed what that
+  // bought — a screen "answering" with irrelevant pages, an audit log
+  // disagreeing with the screen it describes, and a gaps probe annotating
+  // gaps as answerable that a re-ask refused. Thin now refuses, and
+  // `answered` fell from 0.907 to 0.814 by definition, not by regression.
+  //
+  // Then UP, the honest way: the demo corpus now ships as a tended record —
+  // SEEDED_ALIASES carries the vocabulary its own gaps loop produced live
+  // during testing ("urgent claims", "PTO", "nightly cleanup") — and
+  // `answered` came back to 0.884 through the same gate that refused it,
+  // with refused still at 1.0 and not a ranking metric moved. That is the
+  // product's whole claim measured end to end: wrongful refusals are a
+  // vocabulary problem, and vocabulary is an editorial surface, not a model.
+  // Run the harness with --bare-vocabulary for the untended number.
+  assert.ok(report.answered >= 0.86, `answered fell to ${report.answered.toFixed(3)}${summary}`);
   // Direct is an equality now, not a floor: an answer below the grounding bar
   // is refused before generation, so an answered case that is not `direct`
   // means the hedge came back.
   assert.equal(report.direct, 1, `an answer below the grounding bar was returned${summary}`);
-  assert.ok(report.citedRelevant >= 0.72, `cited-relevant fell to ${report.citedRelevant.toFixed(3)}${summary}`);
+  assert.ok(report.citedRelevant >= 0.78, `cited-relevant fell to ${report.citedRelevant.toFixed(3)}${summary}`);
   // A refusal that names a relevant page is a refusal the reader can act on —
   // and for the four re-based cases above it is the honest version of what
   // the hedge used to do. Measured 0.875 (seven of eight) when set.

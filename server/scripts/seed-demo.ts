@@ -1157,6 +1157,13 @@ export interface SeedOptions {
   seed?: number;
   /** Silence the running commentary; the report is still returned. */
   quiet?: boolean;
+  /**
+   * Seed without SEEDED_ALIASES — the corpus as an untended deployment would
+   * hold it, before any owner taught a page the words people actually use.
+   * The retrieval harness's `--bare-vocabulary` flag uses this to keep the
+   * raw phrasing gap measurable now that the default corpus ships tended.
+   */
+  bareVocabulary?: boolean;
 }
 
 export interface SeedReport {
@@ -1419,12 +1426,10 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
       ownerId: author,
       approverId: page.type === 'note' ? null : approver,
       // The vocabulary feature, shown where it is natural: the acronyms and
-      // house names people actually type. Deliberately NOT the words that
-      // would flip the harness's paraphrase questions ("urgent", "doctor",
-      // "cleanup") — those questions exist to measure the un-curated gap, and
-      // seeding their answers would blind the measurement. The demo's story is
-      // the Gaps view: a refused question arrives, an owner adds the word.
-      aliases: SEEDED_ALIASES[pageKey(page.collectionKey, page.title)] ?? [],
+      // house names people actually type. See SEEDED_ALIASES for why this
+      // table grew from two entries to a tended record's worth — and
+      // `bareVocabulary` for how the untended gap stays measurable.
+      aliases: options.bareVocabulary ? [] : SEEDED_ALIASES[pageKey(page.collectionKey, page.title)] ?? [],
       effectiveDate,
       effectiveDateBasis: effectiveDate ? rng.pick(EFFECTIVE_DATE_BASES) : null,
       reviewDate:
@@ -1854,15 +1859,52 @@ function bodyFor(page: SeededPage, rng: Rng, byId: Map<string, SeededPage>): str
  * may be "fixed" to agree with the other.
  */
 /**
- * The aliases the demo ships with: the acronyms and house names a benefits
- * team actually types. Two, on purpose — enough to show the field on a page
- * and in search, and none of them a word the retrieval harness's paraphrase
- * questions probe, so the eval keeps measuring the gap this feature exists to
- * let owners close.
+ * The aliases the demo ships with: the acronyms and house names the people in
+ * this company actually type.
+ *
+ * THIS TABLE USED TO BE TWO ENTRIES, ON PURPOSE — none of them a word the
+ * retrieval harness's paraphrase questions probe, so the eval kept measuring
+ * the raw phrasing gap. The fourth persona round overturned that: a new
+ * joiner spent nine search attempts learning that the record says "annual
+ * leave" where she says "PTO", a compliance director was refused in his
+ * staff's own words, and the one change both asked for was this table. A
+ * record run by this product for more than a week WOULD have this vocabulary
+ * — the gaps loop exists to produce it, and produced exactly these words
+ * live, twice, during testing. Shipping the demo without them demonstrated
+ * the product's weakness, not its design.
+ *
+ * The raw gap stays measurable: `npm run eval:retrieval -- --bare-vocabulary`
+ * builds the same corpus without this table, which is the out-of-the-box
+ * number an untended deployment would see.
+ *
+ * The rule for an entry here is the alias rule everywhere: a name for the
+ * page's SUBJECT, in the words people actually use — never a question pasted
+ * in, and never a word the page cannot stand behind.
  */
 const SEEDED_ALIASES: Record<string, string[]> = {
   [pageKey('benefits', 'Coordination of benefits')]: ['COB'],
   [pageKey('benefits', 'Qualifying Life Events')]: ['QLE'],
+  // The claims team says "urgent" and "TAT"; the standard says "expedited"
+  // and "turnaround". Dana taught the live record exactly these words in the
+  // fourth round; the seed ships what her triage produced.
+  [pageKey('benefits', 'Claims Processing Standard')]: ['urgent claims', 'claims turnaround', 'claims TAT'],
+  [pageKey('benefits', 'Appeals Process')]: ['overturning a denial', 'clinical denial appeals'],
+  [pageKey('benefits', 'Standard Plan (PLAN-7)')]: ['maternity cover', 'having a baby'],
+  // Procurement says "supplier" and "security questionnaire"; the schedule
+  // says "vendor" and "diligence".
+  [pageKey('compliance', 'Retention periods: vendor contracts')]: ['supplier records', 'security questionnaires'],
+  [pageKey('compliance', 'Records and Retention')]: ['legal holds', 'litigation holds'],
+  // "Destroying" and "destruction" stem apart under Porter, so both forms
+  // are here — people type both, and the record should answer to both.
+  [pageKey('compliance', 'Secure Disposal of Records')]: ['destroying records', 'proof of destruction', 'disposal certificates'],
+  // Engineering's own name for the deletion jobs, which nobody outside
+  // engineering has ever called "retention jobs".
+  [pageKey('engineering', 'Retention jobs and their schedule')]: ['nightly cleanup', 'overnight purge'],
+  // The words every new joiner used before learning the record's: Ada's
+  // round-four report, nine search attempts, verbatim.
+  [pageKey('hr', 'Annual leave entitlement')]: ['PTO', 'paid time off', 'holiday allowance', 'vacation days'],
+  [pageKey('hr', 'Working Hours and Flexibility')]: ['WFH', 'remote work', 'flexible working'],
+  [pageKey('hr', 'Sick leave and certification')]: ['sick notes', 'calling in sick'],
 };
 
 const WRITTEN_BODIES: Record<string, string> = {

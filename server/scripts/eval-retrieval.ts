@@ -567,10 +567,11 @@ export interface EvalCorpus {
 export async function buildEvalCorpus(
   seed = EVAL_SEED,
   provider: EmbeddingProvider | null = embeddingProviderFromEnv(),
+  opts: { bareVocabulary?: boolean } = {},
 ): Promise<EvalCorpus> {
   const started = Date.now();
   const store = new CanonStore(openDb(':memory:'), QUIET, provider ?? undefined);
-  const report = await seedDemo(store, { seed, quiet: true });
+  const report = await seedDemo(store, { seed, quiet: true, bareVocabulary: opts.bareVocabulary });
   await store.embeddings.ready();
   return {
     store,
@@ -892,8 +893,14 @@ async function main(): Promise<void> {
     const at = process.argv.indexOf(name);
     return at === -1 ? undefined : process.argv[at + 1];
   };
-  const corpus = await buildEvalCorpus();
+  // The corpus as it ships is a tended record — its owners have taught key
+  // pages the words people actually use (see SEEDED_ALIASES in seed-demo).
+  // `--bare-vocabulary` strips that, which is the untended out-of-the-box
+  // number: the gap the aliases feature exists to let owners close.
+  const bare = process.argv.includes('--bare-vocabulary');
+  const corpus = await buildEvalCorpus(EVAL_SEED, embeddingProviderFromEnv(), { bareVocabulary: bare });
   const report = await evaluate(corpus);
+  if (bare) console.log('(bare vocabulary: seeded aliases stripped — the untended record)\n');
   console.log(formatReport(report, corpus.pages));
   if (process.argv.includes('--misses')) {
     console.log('');

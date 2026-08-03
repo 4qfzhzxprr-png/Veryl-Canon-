@@ -404,13 +404,12 @@ export class EmbeddingStore {
     this.db.prepare('DELETE FROM embeddings WHERE page_id = ?').run(pageId);
     const row = this.db
       .prepare(
-        `SELECT p.current_version AS version, v.title, v.body,
-                COALESCE(json_extract(v.fields_json, '$.aliases'), '[]') AS aliases
+        `SELECT p.current_version AS version, v.title, v.body
          FROM pages p
          JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
          WHERE p.id = ? AND p.status != 'archived'`,
       )
-      .get(pageId) as { version: number; title: string; body: string; aliases: string } | undefined;
+      .get(pageId) as { version: number; title: string; body: string } | undefined;
     if (!row) return;
 
     // A page with a title but no body is still worth finding, so the title
@@ -427,19 +426,21 @@ export class EmbeddingStore {
     const texts = chunks.length ? chunks : [row.title];
     // The stored text is the chunk itself — that is what a citation quotes —
     // while the vector is derived from the title plus the chunk, because a
-    // page's title is part of what it is about. Aliases join the title for the
-    // same reason, CONDITIONALLY: a page with none embeds exactly the text it
-    // always did, so an upgrade invalidates nothing, and a page that gains an
-    // alias is re-derived anyway when that edit publishes.
-    let aliasNames = '';
-    try {
-      const parsed = JSON.parse(row.aliases) as unknown;
-      if (Array.isArray(parsed)) aliasNames = parsed.filter((a) => typeof a === 'string').join('. ');
-    } catch {
-      aliasNames = '';
-    }
-    const heading = aliasNames ? `${row.title}. ${aliasNames}` : row.title;
-    const vectors = await this.provider.embed(texts.map((text) => `${heading}\n\n${text}`));
+    // page's title is part of what it is about.
+    //
+    // ALIASES DO NOT JOIN THE TITLE HERE, AND THEY USED TO. The reasoning was
+    // symmetry — an alias is a name somebody chose for what the page is, like
+    // the title — and on the shipped hashed-BoW provider the measurement says
+    // the symmetry is false in this channel. Aliases already do their work
+    // lexically: the search index carries them at title weight and the
+    // answer gate reads them, and when the demo corpus was seeded with a
+    // tended vocabulary, every answering gain came from those two paths with
+    // the embedding contribution at exactly zero — while the alias tokens in
+    // the vectors moved unrelated questions' rankings (primary@1 76.7→74.4,
+    // R@5 95.3→93.0, over the labelled set). Same-lexical, noise-semantic.
+    // A future real-model provider may want them back — that is a
+    // measurement to run against that provider, not a default to guess.
+    const vectors = await this.provider.embed(texts.map((text) => `${row.title}\n\n${text}`));
 
     const insert = this.db.prepare(
       `INSERT INTO embeddings (page_id, version, chunk_index, text, vector, provider, dimensions)
