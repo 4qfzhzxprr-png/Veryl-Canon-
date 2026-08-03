@@ -41,6 +41,13 @@ function lift(name: string): string {
   return found[0];
 }
 
+/** A top-level `const NAME = [...]` lifted the same way the functions are. */
+function liftConst(name: string): string {
+  const found = new RegExp(`const ${name} = \\[[\\s\\S]*?\\n\\];`).exec(source);
+  assert.ok(found, `public/app.js declares ${name}`);
+  return found[0];
+}
+
 interface StandingNote {
   kind: string;
   relation?: { reads: string; other: { title: string } };
@@ -193,6 +200,124 @@ test('approval scope: it is stated before the diff, not after it', () => {
   const scope = panel.indexOf('federatedScopeHTML(');
   const body = panel.indexOf('${body}');
   assert.ok(scope !== -1 && body !== -1 && scope < body);
+});
+
+// ---------------------------------------------------------------------------
+// What is being approved — diffed against the last version to HOLD the mark
+// (third round, finding 1), with fields in the diff as well as prose.
+
+interface ChangeSummary {
+  hasBaseline: boolean;
+  hasPublished: boolean;
+  baselineIsMarked: boolean;
+  baseVersion: number | null;
+  changed: number | null;
+  fields: { label: string; from: string | null; to: string }[];
+}
+
+/** The change summary and its sentence, over the helpers they lean on. */
+const { summarizeChange, changeSentence, changedFieldRows } = new Function(
+  'actorLabel',
+  'esc',
+  'fmtDate',
+  [
+    lift('diffLines'),
+    lift('changedLines'),
+    liftConst('REVIEW_FIELDS'),
+    lift('flatField'),
+    lift('changedFieldRows'),
+    lift('summarizeChange'),
+    lift('changeSentence'),
+    'return { summarizeChange, changeSentence, changedFieldRows };',
+  ].join('\n'),
+)(
+  (id: string) => id,
+  (s: string) => s,
+  (v: string | null) => v ?? '—',
+) as {
+  summarizeChange: (page: Record<string, unknown>, draft: Record<string, unknown>) => ChangeSummary;
+  changeSentence: (change: ChangeSummary) => string;
+  changedFieldRows: (
+    a: Record<string, unknown>,
+    b: Record<string, unknown>,
+    hasBase: boolean,
+  ) => { label: string; from: string | null; to: string }[];
+};
+
+// Lena's page, as the payload hands it over: v1 held the mark, v2 published
+// the alias without review, and the draft under review carries the alias too.
+const v1 = {
+  number: 1,
+  title: 'Coordination of benefits',
+  body: 'The primary plan pays first.',
+  fields: { ownerId: 'priya', approverId: 'lena', aliases: [] },
+};
+const v2 = {
+  number: 2,
+  title: 'Coordination of benefits',
+  body: 'The primary plan pays first.',
+  fields: { ownerId: 'priya', approverId: 'lena', aliases: ['COB', 'dual coverage'] },
+};
+const pendingDraft = { title: v2.title, body: v2.body, fields: v2.fields };
+
+test('review change: what published between the mark and the submission is IN the diff', () => {
+  const change = summarizeChange(
+    { title: v2.title, currentVersion: 2, current: v2, lastCanonical: v1, references: [] },
+    pendingDraft,
+  );
+  // Against the published v2 — the old baseline — this submission looks like
+  // nothing at all, which is exactly how the alias was signed unseen. Against
+  // the marked v1 it is one changed field, named.
+  assert.equal(change.baseVersion, 1);
+  assert.deepEqual(change.fields.map((f) => f.label), ['Also known as']);
+  assert.match(change.fields[0]!.to, /COB, dual coverage/, 'the list renders joined, one line like any field');
+  const sentence = changeSentence(change);
+  assert.match(sentence, /1 changed field/);
+  // The baseline is stated on screen, in words: an unstated baseline is the
+  // hole the whole finding fell through.
+  assert.match(sentence, /since v1, the last version to hold the Canonical mark/);
+});
+
+test('review change: a page that published without ever earning the mark has no baseline', () => {
+  const change = summarizeChange(
+    { title: v2.title, currentVersion: 2, current: v2, lastCanonical: null, references: [] },
+    pendingDraft,
+  );
+  assert.equal(change.hasBaseline, false);
+  assert.equal(change.hasPublished, true);
+  // Not "nothing has been published" — something has, and nobody reviewed it,
+  // so the whole of it is what the approver must be shown.
+  assert.match(changeSentence(change), /No version of this page has ever held the Canonical mark/);
+});
+
+test('review change: a server that names no baseline falls back to the published version, and says so', () => {
+  const change = summarizeChange(
+    { title: v2.title, currentVersion: 2, current: v2, references: [] },
+    pendingDraft,
+  );
+  assert.equal(change.baselineIsMarked, false);
+  assert.equal(change.baseVersion, 2);
+  // The sentence claims only what this baseline actually is.
+  assert.match(changeSentence(change), /against the published v2/);
+  assert.doesNotMatch(changeSentence(change), /to hold the Canonical mark/);
+});
+
+// ---------------------------------------------------------------------------
+// Version compare — fields are part of a version, so they are part of a diff.
+
+test('compare: an alias-only change is a change, not "identical bodies"', () => {
+  const rows = changedFieldRows(v1.fields, v2.fields, true);
+  assert.deepEqual(rows.map((r) => r.label), ['Also known as']);
+  assert.match(rows[0]!.from!, /none/);
+  assert.match(rows[0]!.to, /COB, dual coverage/);
+});
+
+test('compare: the view never claims identity while fields differ', () => {
+  const view = source.slice(source.indexOf('async function viewCompare('), source.indexOf('// Audit view'));
+  assert.match(view, /changedFieldRows\(va\.fields \?\? \{\}, vb\.fields \?\? \{\}, true\)/);
+  assert.match(view, /The bodies are identical; /, 'identical bodies with changed fields says which half is identical');
+  assert.match(view, /identical in body and fields/, 'and full identity claims both halves');
+  assert.doesNotMatch(view, /have identical bodies/, 'the old sentence claimed the whole from the half');
 });
 
 // ---------------------------------------------------------------------------

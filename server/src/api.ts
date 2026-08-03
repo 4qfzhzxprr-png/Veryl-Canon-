@@ -172,7 +172,24 @@ const routes: Route[] = [
     // offering what the server is about to refuse (USER-TESTING.md T4.4). It is
     // a projection of the checks, never one of them; see `pageAbilities`.
     const abilities = store.pageAbilities(actorId, page.id);
-    return { ...page, current, references, review, sentBack, abilities };
+    // The baseline a review must be judged against: the last version to HOLD
+    // the Canonical mark, which `current` is not whenever something published
+    // between the mark and the submission. A review surface that diffs against
+    // `current` folds those unreviewed publishes into its baseline and asks
+    // the approver to certify changes it never showed them (USER-TESTING.md,
+    // third round, finding 1). Carried only while the page is in review — it
+    // is the review's baseline, and no other screen reads it. Null, when
+    // carried, means no version has ever held the mark and the whole draft is
+    // new to review.
+    return {
+      ...page,
+      current,
+      references,
+      review,
+      sentBack,
+      abilities,
+      ...(review ? { lastCanonical: store.lastCanonicalVersion(actorId, page.id) } : {}),
+    };
   }),
   route('POST', '/pages/:id/move', ({ store, actorId, params, body }) =>
     store.movePage(actorId, params.id!, { parentId: body.parentId ?? null }),

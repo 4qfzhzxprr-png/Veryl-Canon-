@@ -154,6 +154,47 @@ test('send-back: a reason that cannot be recorded is not a send-back', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Third round, finding 1 — the review baseline is the last version to hold
+// the Canonical mark, read from the approval events, and never merely the
+// last version to publish.
+
+test('lastCanonicalVersion: publishing after the mark does not move the review baseline', () => {
+  const fx = setup();
+  const { store, marc, nadia } = fx;
+  const page = policyInReview(fx);
+  assert.equal(store.lastCanonicalVersion(marc.id, page.id), null, 'no version has held the mark yet');
+  store.approve(nadia.id, page.id, {}); // v1, Canonical
+
+  // Lena's case, step for step: an edit adds vocabulary, publishing makes it
+  // the current version with no approver's name on the move, and the page is
+  // re-drafted and submitted. The current version now already CONTAINS the
+  // alias — so a diff against it shows nothing, and the baseline the review
+  // surface needs is v1, where the mark last stood.
+  store.editDraft(marc.id, page.id, { fields: { aliases: ['COB'] } });
+  store.publish(marc.id, page.id); // v2, and the page drops to Draft
+  store.editDraft(marc.id, page.id, { body: 'A complaint is acknowledged within five working days, or escalated.' });
+  store.submitForReview(marc.id, page.id);
+
+  const baseline = store.lastCanonicalVersion(marc.id, page.id);
+  assert.ok(baseline);
+  assert.equal(baseline.number, 1, 'the baseline is the marked v1, not the published v2');
+  assert.deepEqual(baseline.fields.aliases ?? [], [], 'so the alias change is IN the diff, not under it');
+  assert.deepEqual(store.getDraft(marc.id, page.id)!.fields.aliases, ['COB']);
+
+  // Approval moves it: the mark now covers what was just accepted.
+  store.approve(nadia.id, page.id, {});
+  assert.equal(store.lastCanonicalVersion(marc.id, page.id)!.number, 3);
+});
+
+test('lastCanonicalVersion: reading it needs `view`, like the history it is one row of', () => {
+  const fx = setup();
+  const { store } = fx;
+  const page = policyInReview(fx);
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+  expectCode(() => store.lastCanonicalVersion(outsider.id, page.id), 'forbidden');
+});
+
+// ---------------------------------------------------------------------------
 // T4.4 — nothing is offered that the server will refuse
 
 test('abilities: the named approver, and nobody else', () => {

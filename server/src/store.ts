@@ -1189,6 +1189,40 @@ export class CanonStore {
     return this.toVersion(v);
   }
 
+  /**
+   * The last version of this page to RECEIVE the Canonical mark, or null when
+   * no version ever has.
+   *
+   * Not the same question as "the current published version", and the
+   * difference is the whole of USER-TESTING.md's third-round finding 1:
+   * publishing moves the current pointer with no approver's name on the move,
+   * so on a page that was edited, published and re-drafted, `current` already
+   * contains changes nobody reviewed. A review surface that takes it as the
+   * baseline folds those changes into the background and asks the approver to
+   * certify content it never showed them.
+   *
+   * Read from the log's `page.approve` events — the same rows the
+   * attestation's Approvals section is built from — rather than from a column,
+   * because granting the mark is an act, and the log is where acts live; a
+   * second copy on `pages` would be a second answer that can disagree with the
+   * record of the granting. Readable with `view`, like the history it is one
+   * row of.
+   */
+  lastCanonicalVersion(actorId: string, pageId: string): PageVersion | null {
+    const row = this.pageRow(pageId);
+    this.requireRole(actorId, row.collection_id as string, 'view');
+    const approved = this.db
+      .prepare(
+        `SELECT json_extract(details_json, '$.version') AS version FROM audit_events
+          WHERE page_id = ? AND action = 'page.approve'
+            AND json_extract(details_json, '$.version') IS NOT NULL
+          ORDER BY id DESC LIMIT 1`,
+      )
+      .get(pageId) as { version: number } | undefined;
+    if (!approved) return null;
+    return this.getVersion(actorId, pageId, Number(approved.version));
+  }
+
   private toVersion(row: Record<string, unknown>): PageVersion {
     return {
       pageId: row.page_id as string,

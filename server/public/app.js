@@ -2345,6 +2345,10 @@ function pendingFieldCell(published, pending, render, hasPublished) {
 // block already marks a pending change in place; these are gathered again where
 // the DECISION is taken, because "the approver changed" and "the effective date
 // moved" are exactly the kind of material change that got lost in a header.
+//
+// Each `render` receives the FLATTENED value (see flatField): a list arrives
+// as its names joined, so one render vocabulary covers scalar and list fields
+// alike and a change to either reads as one line.
 const REVIEW_FIELDS = [
   { key: 'ownerId', label: 'Owner', render: (v) => (v == null ? '<span class="muted">none</span>' : actorLabel(v)) },
   { key: 'approverId', label: 'Approver', render: (v) => (v == null ? '<span class="muted">none</span>' : actorLabel(v)) },
@@ -2359,37 +2363,82 @@ const REVIEW_FIELDS = [
     render: (v) => (v == null || v === '' ? '<span class="muted">none stated</span>' : esc(v)),
   },
   { key: 'reviewDate', label: 'Review date', render: (v) => esc(fmtDate(v)) },
+  // Aliases steer which questions land on this page, which is precisely why
+  // they go through review at all — and a vocabulary change was the change an
+  // approver signed without ever being shown (third round, finding 1).
+  {
+    key: 'aliases',
+    label: 'Also known as',
+    render: (v) => (v == null ? '<span class="muted">none</span>' : esc(v)),
+  },
 ];
 
+// One field value, flattened the way the attestation's field history flattens
+// it: a list is its names joined, an empty list is no value at all. Fields are
+// compared flattened, because comparing an array by identity would report
+// every render as a change and comparing it by nothing would report none.
+function flatField(value) {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value.length ? value.join(', ') : null;
+  return value;
+}
+
+// The changed-field rows between two field sets, in REVIEW_FIELDS' vocabulary.
+// One function shared by the review panel and the version compare, so the two
+// surfaces can never disagree about what counts as a field change. `hasBase`
+// false leaves `from` null — there was no baseline to change from, and the row
+// renders as the value being introduced rather than as a change.
+function changedFieldRows(baseFields, proposedFields, hasBase) {
+  return REVIEW_FIELDS.map((f) => ({
+    f,
+    from: flatField(baseFields[f.key] ?? null),
+    to: flatField(proposedFields[f.key] ?? null),
+  }))
+    .filter((x) => x.from !== x.to)
+    .map((x) => ({
+      label: x.f.label,
+      from: hasBase ? x.f.render(x.from) : null,
+      to: x.f.render(x.to),
+    }));
+}
+
 // What this draft would change if it were approved: the body diff, the title,
-// and the four fields. Computed once per render, because the panel below and
-// the Approve modal must not be able to disagree about it.
+// and the fields. Computed once per render, because the panel below and the
+// Approve modal must not be able to disagree about it.
+//
+// THE BASELINE IS THE LAST VERSION TO HOLD THE CANONICAL MARK, never merely
+// the last version to publish. Publishing moves the current version with no
+// approver's name on the move, so on a page that was edited, published and
+// re-drafted, a current-version baseline already contains unreviewed changes —
+// and a diff against it presents exactly those changes as background, which is
+// how an approver was made to certify vocabulary this panel never showed her
+// (third round, finding 1). The server names the marked version
+// (`page.lastCanonical`, from the approval events); a server too old to name
+// one leaves the key absent, and the current version is then the only baseline
+// on offer — the sentence below says which of the two it is stating.
 function summarizeChange(page, draft) {
-  const current = page.current ?? null;
-  const rows = diffLines(current?.body ?? '', draft.body ?? '');
-  const published = current?.fields ?? {};
+  const baselineIsMarked = 'lastCanonical' in page;
+  const baseline = baselineIsMarked ? page.lastCanonical : (page.current ?? null);
+  const rows = diffLines(baseline?.body ?? '', draft.body ?? '');
   const proposed = draft.fields ?? {};
   return {
-    hasPublished: Boolean(current),
+    hasBaseline: Boolean(baseline),
+    hasPublished: Boolean(page.current),
+    baselineIsMarked,
     // The text itself, for the case where there is nothing to diff it against.
-    // A first version has no published body, so the page below the panel is the
-    // "Nothing published yet" empty state — and an approver reading a panel
-    // that says "the whole of the text below is new" was being pointed at an
-    // invitation to write the page they were about to approve. They approved it
-    // without ever seeing a word of it.
+    // With no baseline the page below the panel is an empty state or the
+    // unreviewed published text — and an approver reading a panel that says
+    // "the whole of it is new" must be shown the whole of it, not pointed at
+    // an invitation to write the page they were about to approve.
     proposedBody: draft.body ?? '',
-    baseVersion: page.currentVersion ?? null,
+    baseVersion: baseline?.number ?? null,
     nextVersion: (page.currentVersion ?? 0) + 1,
     rows,
-    changed: current ? changedLines(rows) : null,
-    titleFrom: current ? current.title : null,
+    changed: baseline ? changedLines(rows) : null,
+    titleFrom: baseline ? baseline.title : null,
     titleTo: draft.title ?? page.title,
-    titleChanged: Boolean(current) && current.title !== (draft.title ?? page.title),
-    fields: REVIEW_FIELDS.filter((f) => (published[f.key] ?? null) !== (proposed[f.key] ?? null)).map((f) => ({
-      label: f.label,
-      from: current ? f.render(published[f.key] ?? null) : null,
-      to: f.render(proposed[f.key] ?? null),
-    })),
+    titleChanged: Boolean(baseline) && baseline.title !== (draft.title ?? page.title),
+    fields: changedFieldRows(baseline?.fields ?? {}, proposed, Boolean(baseline)),
     // What this approval will NOT freeze (see federatedScopeHTML). The
     // descriptors ride inside the page payload, so this costs no call.
     references: Array.isArray(page.references) ? page.references : [],
@@ -2443,16 +2492,42 @@ function federatedScopeHTML(references, nextVersion) {
 }
 
 // One sentence for the extent of a change, used in the panel and again in the
-// modal so both say the same number.
+// modal so both say the same number — and it names the baseline, because
+// "changed since WHAT" is the half of a diff a reader cannot check for
+// themselves, and an unstated baseline is filled in with the wrong one.
 function changeSentence(change) {
-  if (!change.hasPublished) return 'Nothing has been published yet, so all of it is new.';
+  if (!change.hasBaseline) {
+    // Two different absences, and only one of them is innocent: a page that
+    // never published has nothing to compare against, while a page that
+    // published without review has a current version the mark never covered —
+    // saying "nothing has been published" there would hide exactly the text
+    // the approver most needs to read whole.
+    return change.hasPublished
+      ? 'No version of this page has ever held the Canonical mark, so all of it is new to review.'
+      : 'Nothing has been published yet, so all of it is new.';
+  }
   const body = change.changed
     ? `${change.changed} changed line${change.changed === 1 ? '' : 's'}`
     : 'no change to the body';
   const fields = change.fields.length
     ? `, and ${change.fields.length} changed field${change.fields.length === 1 ? '' : 's'}`
     : '';
-  return `${body[0].toUpperCase()}${body.slice(1)}${fields} against the published v${change.baseVersion}.`;
+  const since = change.baselineIsMarked
+    ? `since v${change.baseVersion}, the last version to hold the Canonical mark`
+    : `against the published v${change.baseVersion}`;
+  return `${body[0].toUpperCase()}${body.slice(1)}${fields} ${since}.`;
+}
+
+// The changed-field rows, drawn one way wherever field changes are shown —
+// the review panel and the version compare — because a field change that
+// renders differently on two screens invites a reader to believe they are two
+// different changes.
+function fieldRowsHTML(fields) {
+  if (!fields.length) return '';
+  return `<ul class="review-change-fields">${fields
+    .map((f) => `<li><span class="review-change-field">${esc(f.label)}</span>
+      ${f.from === null ? f.to : `<del>${f.from}</del> → <ins>${f.to}</ins>`}</li>`)
+    .join('')}</ul>`;
 }
 
 // USER-TESTING.md T4.2 — THE DIFF BELONGS ON THIS SIDE OF THE DECISION.
@@ -2476,23 +2551,29 @@ function changeSentence(change) {
 // everywhere else and not a special case here.
 function reviewChangeHTML(change) {
   if (!change) return '';
-  const fields = change.fields.length
-    ? `<ul class="review-change-fields">${change.fields
-        .map((f) => `<li><span class="review-change-field">${esc(f.label)}</span>
-          ${f.from === null ? f.to : `<del>${f.from}</del> → <ins>${f.to}</ins>`}</li>`)
-        .join('')}</ul>`
-    : '';
+  const fields = fieldRowsHTML(change.fields);
   const title = change.titleChanged
     ? `<p class="review-change-title">Title: <del>${esc(change.titleFrom)}</del> → <ins>${esc(change.titleTo)}</ins></p>`
     : '';
-  const body = !change.hasPublished
-    ? `<p class="muted">Nothing has been published on this page yet, so there is nothing to compare against:
-         this is the whole of it, and approving publishes it as v${change.nextVersion}.</p>
+  const body = !change.hasBaseline
+    ? `<p class="muted">${change.hasPublished
+         ? `No version of this page has ever held the Canonical mark, so there is no reviewed baseline to
+            compare against: what follows is the whole of what approving as v${change.nextVersion} certifies,
+            including everything already published without review.`
+         : `Nothing has been published on this page yet, so there is nothing to compare against:
+            this is the whole of it, and approving publishes it as v${change.nextVersion}.`}</p>
        ${change.proposedBody.trim()
          ? `<article class="doc-body review-proposed">${renderMarkdown(change.proposedBody)}</article>`
          : '<p class="muted">The draft has no body text.</p>'}`
     : change.changed
-      ? diffTableHTML(change.rows, `Published v${change.baseVersion}`, `Proposed v${change.nextVersion}`)
+      ? diffTableHTML(
+          change.rows,
+          // The left column says what it IS. "Published vN" was true only by
+          // coincidence: the baseline is the last version to hold the mark,
+          // which is not always the version currently published.
+          change.baselineIsMarked ? `Canonical v${change.baseVersion}` : `Published v${change.baseVersion}`,
+          `Proposed v${change.nextVersion}`,
+        )
       : '<p class="muted">The body is unchanged.</p>';
   return `
     <section class="panel review-change" id="review-change">
@@ -4594,6 +4675,20 @@ async function viewCompare(id, a, b) {
   ]);
   const rows = diffLines(va.body, vb.body);
   const changed = changedLines(rows);
+  // Fields are part of a version, so a compare that reads only the bodies is
+  // comparing part of each version and reporting on the whole: "identical
+  // bodies" over an alias-only change told an approver there was no change at
+  // all (third round, finding 1). Same rows, same rendering as the review
+  // panel — a field change must read the same on the screen that decides and
+  // the screen that checks.
+  const fieldRows = changedFieldRows(va.fields ?? {}, vb.fields ?? {}, true);
+  const extent = changed
+    ? `${changed} changed line${changed === 1 ? '' : 's'}${
+        fieldRows.length ? `, and ${fieldRows.length} changed field${fieldRows.length === 1 ? '' : 's'}` : ''
+      }.`
+    : fieldRows.length
+      ? `The bodies are identical; ${fieldRows.length} field${fieldRows.length === 1 ? '' : 's'} changed.`
+      : 'The two versions are identical in body and fields.';
   app.innerHTML = `
     <div class="page-wide">
       <p class="breadcrumb"><a href="#/pages/${esc(id)}/history">← Version history</a></p>
@@ -4602,7 +4697,8 @@ async function viewCompare(id, a, b) {
       </div>
       ${va.title !== vb.title ? `<p class="notice">Title changed:
         <del>${esc(va.title)}</del> → <ins>${esc(vb.title)}</ins></p>` : ''}
-      <p class="muted">${changed ? `${changed} changed line${changed === 1 ? '' : 's'}.` : 'The two versions have identical bodies.'}</p>
+      <p class="muted">${extent}</p>
+      ${fieldRowsHTML(fieldRows)}
       ${diffTableHTML(
         rows,
         `v${a} · ${fmtDateTime(va.createdAt)} · ${esc(actorName(va.authorId))}`,
