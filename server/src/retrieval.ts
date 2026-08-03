@@ -571,8 +571,8 @@ export function passageFor(body: string, terms: string[], preferred?: string): s
 // because where a page says the same thing twice the first is usually where it
 // is stated and the rest are references back to it.
 //
-// TWO REFINEMENTS THAT SOUNDED RIGHT AND MEASURED WORSE, recorded so they are
-// not tried again. Both were checked against the labelled answers — questions
+// THREE REFINEMENTS THAT SOUNDED RIGHT AND MEASURED WORSE OR FLAT, recorded so
+// they are not tried again. Both were checked against the labelled answers — questions
 // with a checkable answer in them, a period or a figure or a time — where the
 // plain rule above quotes correctly 75% of the time, up from 70%.
 //
@@ -585,6 +585,19 @@ export function passageFor(body: string, terms: string[], preferred?: string): s
 //     policy saying "retention" everywhere cannot use that word to locate
 //     anything. 70% with windows, 65% with sentences. It demotes exactly the
 //     words the question was mostly about.
+//   * ANSWER-SHAPE SCORING. A question opening "how long"/"when"/"how many"
+//     wants a window holding a duration, a time, an amount — knowable without
+//     a model, so bonus such windows. Flat at every bonus weight, flat with
+//     the bonus confined to sentences that also carry a question term, flat
+//     with a fall-back out of chunks holding no figure. The reason is worth
+//     keeping: on a retention schedule EVERY window holds a figure and the
+//     question's common words — "how long we keep" is the preamble's own
+//     phrasing — so the wrong bullet's "seven years" passes every test the
+//     right bullet's "three years" does, and position decides. What actually
+//     moved quotation quality was a better semantic CHUNK (bge-small with its
+//     query instruction: +14.3 points): which part of the page to quote from
+//     is settled before window scoring runs, and that is where the remaining
+//     misquotes live.
 //
 // It is still a verbatim window of the record's own words. What changed is
 // which words, not whose.
