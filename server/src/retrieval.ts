@@ -595,7 +595,7 @@ export class RetrievalService {
 export function passageFor(body: string, terms: string[], preferred?: string): string {
   const text = quotableText(preferred ?? body);
   if (!text || terms.length === 0) return clip(text, PASSAGE_LENGTH);
-  return bestWindow(text, terms);
+  return bestWindow(text, terms).text;
 }
 
 // WHICH PART OF THE PAGE TO QUOTE, which was decided two ways and both were
@@ -647,10 +647,28 @@ export function passageFor(body: string, terms: string[], preferred?: string): s
 //     query instruction: +14.3 points): which part of the page to quote from
 //     is settled before window scoring runs, and that is where the remaining
 //     misquotes live.
+//   * ANSWER-SHAPE AS A PURE TIE-BREAK, retried after the vocabulary seeding
+//     changed the quotable set — a new misquote (urgent claim, wanting
+//     "seventy-two hours") looked like exactly the two-windows-one-figure tie
+//     a break would decide. Flat, and the mechanism is the same blindness at
+//     a different weight: the page's opening window reaches into the first
+//     timeframe bullet, so the WRONG figure ("thirty calendar days")
+//     satisfies the break before the right one is considered. A shape says
+//     "a figure lives here", never "the figure you asked about".
+//   * LETTING THE WHOLE PAGE COMPETE WITH THE SEMANTIC CHUNK — window the
+//     chunk and the full body both, take the body's window when it strictly
+//     out-scores the chunk's (with the shape breaking exact ties). Fixed the
+//     purge-job misquote and broke the clock-start one in the same run,
+//     0.682 to 0.682: a body window with more question terms is a window
+//     about MORE OF THE QUESTION'S WORDS, not more of its answer — "when
+//     does the clock start" pulled a window about the clock STOPPING,
+//     because it also said "claim" and "clock". The chunk stays in charge,
+//     and the conclusion above stands: the remaining misquotes want a better
+//     chunk, which is a model question, not a window-arithmetic one.
 //
 // It is still a verbatim window of the record's own words. What changed is
 // which words, not whose.
-function bestWindow(text: string, terms: string[]): string {
+function bestWindow(text: string, terms: string[]): { text: string; score: number } {
   const haystack = text.toLowerCase();
   const needles = terms.map((t) => t.toLowerCase()).filter((t) => t.length > 0);
 
@@ -676,7 +694,7 @@ function bestWindow(text: string, terms: string[]): string {
       bestAt = start;
     }
   }
-  return clip(text.slice(bestAt), PASSAGE_LENGTH);
+  return { text: clip(text.slice(bestAt), PASSAGE_LENGTH), score: bestScore };
 }
 
 function clip(text: string, max: number): string {
