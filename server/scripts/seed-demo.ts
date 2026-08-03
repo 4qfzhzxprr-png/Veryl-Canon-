@@ -1886,8 +1886,12 @@ const SEEDED_ALIASES: Record<string, string[]> = {
   [pageKey('benefits', 'Qualifying Life Events')]: ['QLE'],
   // The claims team says "urgent" and "TAT"; the standard says "expedited"
   // and "turnaround". Dana taught the live record exactly these words in the
-  // fourth round; the seed ships what her triage produced.
-  [pageKey('benefits', 'Claims Processing Standard')]: ['urgent claims', 'claims turnaround', 'claims TAT'],
+  // fourth round; the seed ships what her triage produced. "Turn around" as
+  // two words is there because people write it both ways and the tokenizer
+  // does not know they are the same word — the fifth round caught "how fast
+  // do we have to turn around an urgent claim?" refusing while the one-word
+  // phrasing answered.
+  [pageKey('benefits', 'Claims Processing Standard')]: ['urgent claims', 'claims turnaround', 'claims turn around time', 'claims TAT'],
   [pageKey('benefits', 'Appeals Process')]: ['overturning a denial', 'clinical denial appeals'],
   [pageKey('benefits', 'Standard Plan (PLAN-7)')]: ['maternity cover', 'having a baby'],
   // Procurement says "supplier" and "security questionnaire"; the schedule
