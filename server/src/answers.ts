@@ -1940,8 +1940,22 @@ export class AnswerService {
       // What came closest, for the refusal to point at. Directly retrieved
       // candidates only — a graph neighbour is context for a hit, and with no
       // hit its presence explains nothing.
+      //
+      // AND ONLY CANDIDATES WITH THE GATE'S OWN MINIMUM OF EVIDENCE: two of
+      // the question's terms (one, for a one-word question), the same floor
+      // `topicalCoverage` applies before it will weigh a page at all. Without
+      // it, a question about submarine procurement pointed at a prescription
+      // policy because both contain "policy" — and a pointer to junk is worse
+      // than no pointer, because the framing says "this came closest" and the
+      // reader believes it. It also keeps a refusal to a question the record
+      // has nothing on looking exactly like it always did: no pointers, no
+      // section, and — for the Knowledge API — nothing in the shape of the
+      // response that varies with what a hidden collection might hold.
+      const questionTerms = contentTerms(question);
+      const floor = questionTerms.length === 1 ? 1 : 2;
       const nearest: NearestPage[] = eligible
         .filter((c) => c.via === null)
+        .filter((c) => coveredTerms(questionTerms, `${c.title} ${bodies.get(c.pageId) || c.passage}`).length >= floor)
         .slice(0, MAX_NEAREST)
         .map((c) => ({ pageId: c.pageId, title: c.title, status: c.status }));
       this.audit(actor, question, collectionId ?? null, true, [], null, null, null, nearest.map((c) => c.pageId));
