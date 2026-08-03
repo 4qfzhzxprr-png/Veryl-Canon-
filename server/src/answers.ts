@@ -1857,7 +1857,16 @@ export class AnswerService {
     }
   }
 
-  async ask(actorId: string, request: AskRequest): Promise<AnswerResponse> {
+  /**
+   * `opts.probe` is the internal dry-run the gaps triage runs: the same
+   * retrieval and the same gate, deciding only "would this answer today". A
+   * probe leaves no trace — no audit event, and no pointer work, because
+   * nobody asked and nobody will read a refusal. It exists so listGaps can
+   * annotate an open gap with `nowAnswers` without each probe becoming a
+   * phantom ask on the record (and without the store's gap recorder counting
+   * the record asking itself).
+   */
+  async ask(actorId: string, request: AskRequest, opts: { probe?: boolean } = {}): Promise<AnswerResponse> {
     const actor = this.host.getActor(actorId);
     // `AskRequest` is what the type system believes; this value came from
     // `JSON.parse` and is whatever the caller sent. Both doors to an answer —
@@ -2075,6 +2084,10 @@ export class AnswerService {
     }
 
     if (!generated || !generated.answer.trim() || citations.length === 0) {
+      // A probe wanted only the verdict. Pointers are for a person reading a
+      // refusal, and the audit event is for an ask that happened; a dry run
+      // has neither, so it stops here.
+      if (opts.probe) return { answer: null, citations: [], refused: true, reason: 'no_canonical_match' };
       // What came closest, for the refusal to point at. Directly retrieved
       // candidates only — a graph neighbour is context for a hit, and with no
       // hit its presence explains nothing.
@@ -2136,7 +2149,7 @@ export class AnswerService {
       };
     }
 
-    if (this.host.liveFields) {
+    if (this.host.liveFields && !opts.probe) {
       for (const citation of citations) {
         try {
           const fields = await this.host.liveFields(actorId, citation.pageId);
@@ -2260,16 +2273,18 @@ export class AnswerService {
       answer = `${disagreementNotice(disagreement, passages)}\n\n${answer}`;
     }
 
-    this.audit(
-      actor,
-      question,
-      collectionId ?? null,
-      false,
-      citations.map((c) => c.pageId),
-      disagreement,
-      citedSupersession,
-      citedSourceDisagreement,
-    );
+    if (!opts.probe) {
+      this.audit(
+        actor,
+        question,
+        collectionId ?? null,
+        false,
+        citations.map((c) => c.pageId),
+        disagreement,
+        citedSupersession,
+        citedSourceDisagreement,
+      );
+    }
     // Which of the cited pages are past review, named so a caller does not have
     // to parse the prose. Omitted entirely when none are.
     const pastReview = passages

@@ -2261,16 +2261,49 @@ export class CanonStore {
   }
 
   /**
+   * Would the record answer this question today? The same retrieval and the
+   * same gate as `ask`, and none of the bookkeeping: no audit event, no gap
+   * row, no pointers. It runs with `actorId`'s own permissions — there is no
+   * other identity to run it as — which is right for its one caller, because
+   * the operator reading the annotation is the person who would re-ask.
+   */
+  wouldAnswer(actorId: string, question: string, collectionId?: string | null): Promise<boolean> {
+    return this.answers
+      .ask(actorId, { question, ...(collectionId ? { collectionId } : {}) }, { probe: true })
+      .then((response) => !response.refused);
+  }
+
+  /**
    * The open gaps — questions the record refused — for the people who triage
    * them. OPERATORS ONLY, and this is the redaction rule from
    * `redactAuditDetails` carried forward rather than a new decision: question
    * text is private to the asker and to operators, and a gap IS question
    * text. It arrives here with no asker attached — the gaps table has no such
-   * column — so what an operator sees is "asked four times", never by whom.
+   * column — so this list itself never says by whom; an operator who needs
+   * that joins the gap to its ask in the audit log, deliberately, under that
+   * log's own rule (see the header of gaps.ts).
    */
-  listGaps(actorId: string, filter: { status?: string } = {}): Gap[] {
+  async listGaps(actorId: string, filter: { status?: string } = {}): Promise<Gap[]> {
     requireOrgRole(this.db, actorId, 'operator', 'Reading the record’s gaps');
-    return this.gapService.list(filter);
+    const gaps = this.gapService.list(filter);
+    // Which open gaps the record has since learned to answer (`wouldAnswer`).
+    // Capped at the first 50 open gaps — the list is ordered by last asking,
+    // so the cap lands on the gaps nobody has touched in longest, and a
+    // triage screen's load stays bounded by a constant rather than by how
+    // far behind the triage is. Beyond the cap the flag is simply absent,
+    // which the UI reads as "not probed", never as "still refused".
+    let probes = 0;
+    for (const gap of gaps) {
+      if (gap.status !== 'open' || probes >= 50) continue;
+      probes += 1;
+      try {
+        gap.nowAnswers = await this.wouldAnswer(actorId, gap.question, gap.collectionId);
+      } catch {
+        // The annotation is advisory; a probe that fails leaves the gap
+        // unannotated rather than costing the operator the list.
+      }
+    }
+    return gaps;
   }
 
   closeGap(

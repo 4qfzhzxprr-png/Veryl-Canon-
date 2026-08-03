@@ -560,3 +560,15 @@ test('editor: collision warnings render under the alias field, and none renders 
   assert.match(editor, /id="alias-warnings"/);
   assert.equal((editor.match(/#alias-warnings'\)\.innerHTML = aliasWarningsHTML\(/g) ?? []).length, 2);
 });
+
+test('editor: the alias field speaks to every collection, not just claims', () => {
+  // Ada read "e.g. urgent claims, COB" in an HR collection and concluded the
+  // field was not for her. The examples were the finding: a placeholder that
+  // names one domain excludes the rest, so the copy names what the field IS
+  // and the help line says what it does.
+  const editor = source.slice(source.indexOf('async function viewEditor('), source.indexOf('async function renderEditorReferences('));
+  assert.doesNotMatch(editor, /placeholder="e\.g\. urgent claims, COB"/);
+  assert.match(editor, /placeholder="other names people use for this subject"/);
+  assert.match(editor, /Searchable names people actually use/);
+  assert.match(editor, /steer search and Ask/);
+});

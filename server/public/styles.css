@@ -2314,6 +2314,21 @@ label.check input { width: auto; display: inline; margin: 0; }
 .gap-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
 .gap-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
 .gap-actions .gap-note { flex: 1 1 16rem; }
+/* A gap the record has since learned to answer. Amber like every other
+   "waiting on somebody" state: the news is good, but the row still wants an
+   act — re-check, then resolve with the sentence that says so. */
+.gap-nowanswers {
+  display: inline-block;
+  margin: 0.5rem 0 0;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.gap-guard { margin-top: 0.35rem; }
 
 /* Federated fields under a citation: the live figure beside the quoted prose. */
 .citation-fields { margin: 0.35rem 0 0.2rem 2.4rem; padding: 0; list-style: none; font-size: 0.85rem; }

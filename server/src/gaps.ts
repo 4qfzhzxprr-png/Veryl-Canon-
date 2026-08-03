@@ -18,11 +18,14 @@
 // ask's question text from everyone but the asker and operators, because the
 // harmful thing is the LINK between a person and what they did not know
 // ("how do I raise a grievance about my manager"). This table never stores the
-// asker at all — no column exists — so the surface cannot leak what the audit
-// log redacts, no matter what later code does with it. The question text is
-// deliberately shared with the people who triage gaps, and those people are
-// operators: exactly the audience the audit log already trusts with it. The
-// count says "asked four times" without saying by whom, or by how many.
+// asker at all — no column exists — so no query, export or screen built on it
+// can leak that link by accident, and nobody below operator sees the questions
+// at all. It is NOT anonymity from operators, and must not be described as
+// such: every refusal here is also an audit event, and an operator who needs
+// to know who asked can deliberately join the two — under the audit log's own
+// access rule, which already trusts exactly these people with question text.
+// What the missing column buys is that the join takes that deliberate act on
+// that governed surface, rather than being one SELECT on this one.
 //
 // WHAT A GAP IS NOT. It is not a queue item with an SLA and not a support
 // ticket. Resolving one records a sentence about what was done ("added
@@ -71,6 +74,15 @@ export interface Gap {
   resolution: string | null;
   resolvedBy: string | null;
   resolvedAt: string | null;
+  /**
+   * Whether the record would answer this question TODAY — a gap goes stale
+   * the moment somebody teaches the record the missing word, and until this
+   * flag an operator had no signal short of re-asking by hand. Derived, never
+   * stored: it is the store's dry-run probe (CanonStore.listGaps), run with
+   * the listing operator's own permissions, and absent where the probe was
+   * not run (closed gaps, past the probing cap, or a probe that failed).
+   */
+  nowAnswers?: boolean;
 }
 
 /**

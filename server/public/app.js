@@ -4422,10 +4422,15 @@ async function viewEditor(id) {
                   the title they search-and-ask in. "urgent" beside a page that
                   says "expedited" is the difference between that question being
                   answered and being refused — see the refused-questions view,
-                  which is where the missing words come from. */ ''}
+                  which is where the missing words come from. The placeholder
+                  and the help line are collection-neutral on purpose: a new
+                  joiner in HR was shown claims examples and read the field as
+                  not for her (third round, Ada). */ ''}
             <label>Also known as <span class="muted">(comma-separated)</span>
               <input type="text" name="aliases" value="${esc((draft.fields.aliases ?? []).join(', '))}"
-                placeholder="e.g. urgent claims, COB"></label>
+                placeholder="other names people use for this subject"></label>
+            <p class="muted type-help">Searchable names people actually use for what this page covers.
+              They steer search and Ask to this page once approved.</p>
             <p id="alias-live" class="muted type-help" aria-live="polite"></p>
             <div id="alias-warnings" aria-live="polite"></div>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
@@ -5028,7 +5033,10 @@ function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
 // answer, for the operators who close the loop. Each row is a decision —
 // teach the record a word (the nearest page's "Also known as" field), write
 // the missing page, or record that the record owes no answer. No asker is
-// shown because none is stored: the gaps table has no such column.
+// shown here and none is stored in this list; the audit log can join a gap
+// to its asker, deliberately, under its own rule — the screen says exactly
+// that, because the earlier wording claimed an anonymity the product does
+// not have (third round, finding 3).
 async function viewGaps(query = {}) {
   const status = query.status ?? 'open';
   let gaps;
@@ -5047,13 +5055,21 @@ async function viewGaps(query = {}) {
         <p class="gap-question">&ldquo;${esc(g.question)}&rdquo;</p>
         <p class="muted">Asked ${g.timesAsked === 1 ? 'once' : `${g.timesAsked} times`} · last ${fmtDateTime(g.lastAskedAt)}</p>
       </div>
+      ${g.nowAnswers === true ? `<p class="gap-nowanswers">The record now answers this — re-check before resolving.</p>` : ''}
       ${g.nearest.length ? `<p class="muted">Came closest: ${g.nearest.map((n) => `<a href="#/pages/${esc(n.pageId)}">${esc(n.title)}</a>`).join(' · ')}</p>` : ''}
       ${g.status === 'open' ? `
         <div class="gap-actions">
-          <input type="text" class="gap-note" placeholder="What was done — e.g. added ‘urgent’ as an alias on Claims Processing Standard">
+          <input type="text" class="gap-note" value="${g.nowAnswers === true ? 'Re-asked: the record answers this now.' : ''}"
+            placeholder="What was done — e.g. added the asker’s word as an alias on the page that answers">
           <button class="btn primary" data-close="resolved">Resolved</button>
           <button class="btn subtle" data-close="dismissed">Not the record’s business</button>
-        </div>` : `
+        </div>
+        ${/* Tomas's laundering path: a question can carry exactly what the
+              gaps view exists to keep out of public vocabulary ("grievance
+              about my manager", a client name). The guard is copy, and it
+              stands where the operator acts, not in a manual. */ ''}
+        <p class="muted type-help gap-guard">Add the asker&rsquo;s <em>words for the subject</em> as an alias —
+          never paste their question verbatim into a page.</p>` : `
         <p class="muted">${g.status === 'resolved' ? 'Resolved' : 'Dismissed'}${g.resolution ? `: ${esc(g.resolution)}` : ''}</p>`}
     </article>`).join('');
 
@@ -5062,7 +5078,8 @@ async function viewGaps(query = {}) {
       <div class="page-head"><h1>Gaps</h1><div class="actions">${tabs}</div></div>
       <p class="muted">Questions the record refused. Each one is a decision: teach a page the
         asker&rsquo;s word (its &ldquo;Also known as&rdquo; field), write the missing page, or record that this
-        record owes no answer. Who asked is not shown because it is not stored.</p>
+        record owes no answer. No asker is shown here, and none is stored in this list; operators can
+        read who asked what in the audit log, which has its own rule.</p>
       ${gaps.length ? rows : `<div class="empty-state"><p>No ${esc(status)} gaps. Every question the record refused has been looked at.</p></div>`}
     </div>`;
 
