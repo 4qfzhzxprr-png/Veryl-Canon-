@@ -763,6 +763,39 @@ test('aliases: normalised, bounded, and never someone else’s job to deduplicat
   );
 });
 
+test('aliases: a name another page in the collection already carries warns, and the save still stands', () => {
+  // Two pages answering to one name steers search and Ask both ways. That is
+  // sometimes vocabulary genuinely shared and sometimes an accident, and only
+  // the editor knows which — so the save succeeds and the sentence rides on
+  // the draft it was earned by, naming the other page.
+  const { store, dana, marc, collection } = setup();
+  const holder = publishNote(store, marc.id, collection.id, 'Coordination of benefits',
+    'Which plan pays first when a member holds two.');
+  store.editDraft(marc.id, holder.id, { fields: { aliases: ['COB'] } });
+  store.publish(marc.id, holder.id);
+
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Dual coverage intake' });
+  const draft = store.editDraft(marc.id, page.id, { fields: { aliases: ['cob', 'intake form'] } });
+  assert.deepEqual(draft.fields.aliases, ['cob', 'intake form'], 'the save happened — this is a warning, not a refusal');
+  assert.deepEqual(draft.warnings, ['The name “cob” is also carried by “Coordination of benefits” in this collection.'],
+    'compared without regard to case, and the other page is named');
+
+  // A name nobody else carries warns about nothing, and the array says so
+  // plainly rather than being absent.
+  assert.deepEqual(store.editDraft(marc.id, page.id, { fields: { aliases: ['intake form'] } }).warnings, []);
+
+  // The wall between collections holds here as everywhere: another
+  // collection's vocabulary is not this one's collision.
+  const elsewhere = store.createCollection(dana.id, { name: 'Operations' });
+  const away = store.createPage(dana.id, { collectionId: elsewhere.id, type: 'note', title: 'Ops intake' });
+  assert.deepEqual(store.editDraft(dana.id, away.id, { fields: { aliases: ['COB'] } }).warnings, []);
+
+  // What is live is what can collide: an archived carrier steers no search,
+  // so its names come free again without a warning trailing them.
+  store.archivePage(dana.id, holder.id);
+  assert.deepEqual(store.editDraft(marc.id, page.id, { fields: { aliases: ['COB'] } }).warnings, []);
+});
+
 // ---------------------------------------------------------------------------
 // Contradiction awareness — DATA-BACKBONE.md §7, "Answers must never smooth a
 // contradiction". An answer that reads two disagreeing passages into one

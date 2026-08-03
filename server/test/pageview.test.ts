@@ -536,3 +536,27 @@ test('editor: the failure trace is persistent and assistive-technology visible, 
   assert.match(editor, /form\.aliases\.addEventListener\('input', syncAliasNotice\)/);
   assert.match(editor, /aria-live="polite"/, 'the live counter is announced without stealing focus');
 });
+
+// ---------------------------------------------------------------------------
+// Alias collisions (third round, Priya): the save's warnings, rendered where
+// the field is and kept there.
+
+const aliasWarningsHTML = new Function(
+  'esc',
+  `${lift('aliasWarningsHTML')}\nreturn aliasWarningsHTML;`,
+)((x: string) => String(x).replace(/[<>]/g, '')) as (warnings: string[] | undefined) => string;
+
+test('editor: collision warnings render under the alias field, and none renders nothing', () => {
+  const html = aliasWarningsHTML(['The name “COB” is also carried by “Coordination of benefits” in this collection.']);
+  assert.match(html, /also carried by “Coordination of benefits”/);
+  assert.match(html, /steers search and Ask toward both pages/, 'the consequence is stated, not just the fact');
+  assert.equal(aliasWarningsHTML([]), '');
+  assert.equal(aliasWarningsHTML(undefined), '', 'an older server that sends no warnings breaks nothing');
+
+  // Wired to both moments a warning can arrive: the lock-acquiring load and
+  // every subsequent save — replaced wholesale, so a resolved collision stops
+  // being claimed.
+  const editor = source.slice(source.indexOf('async function viewEditor('), source.indexOf('async function renderEditorReferences('));
+  assert.match(editor, /id="alias-warnings"/);
+  assert.equal((editor.match(/#alias-warnings'\)\.innerHTML = aliasWarningsHTML\(/g) ?? []).length, 2);
+});

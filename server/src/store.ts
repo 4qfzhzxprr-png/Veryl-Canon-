@@ -831,7 +831,7 @@ export class CanonStore {
     actorId: string,
     pageId: string,
     input: { title?: string; body?: string; fields?: PageFields },
-  ): Draft {
+  ): Draft & { warnings: string[] } {
     const row = this.pageRow(pageId);
     this.requireRole(actorId, row.collection_id as string, 'edit', 'Editing');
     const page = this.toPage(row);
@@ -873,7 +873,58 @@ export class CanonStore {
         .run(pageId, title, body, JSON.stringify(fields), actorId, page.currentVersion, at);
       this.audit(actorId, 'draft.start', { collectionId: page.collectionId, pageId });
     }
-    return this.getDraft(actorId, pageId)!;
+    // Advisory, never a refusal: a name another page in this collection
+    // already carries steers search and Ask toward both pages, which is
+    // sometimes exactly what is meant (two pages legitimately share
+    // vocabulary) and sometimes a quiet mis-steering nobody chose. Only the
+    // editor knows which, so the save stands and the sentence travels with it.
+    return {
+      ...this.getDraft(actorId, pageId)!,
+      warnings: this.aliasCollisionWarnings(pageId, page.collectionId, fields.aliases ?? []),
+    };
+  }
+
+  /**
+   * The alias names this draft carries that another non-archived page in the
+   * same collection ALREADY carries — compared case-insensitively, because
+   * that is how validateFieldShape deduplicates and how the search index
+   * matches. The other page's aliases are read from its current published
+   * version's fields, the same place search.ts indexPage reads them: what is
+   * live is what can collide, and a name still sitting in somebody's draft
+   * steers nothing yet.
+   */
+  private aliasCollisionWarnings(pageId: string, collectionId: string, aliases: readonly string[]): string[] {
+    if (aliases.length === 0) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT p.title AS title, COALESCE(json_extract(v.fields_json, '$.aliases'), '[]') AS aliases
+           FROM pages p
+           JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+          WHERE p.collection_id = ? AND p.id != ? AND p.status != 'archived'`,
+      )
+      .all(collectionId, pageId) as { title: string; aliases: string }[];
+    const carriers = new Map<string, string>();
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.aliases) as unknown;
+        if (!Array.isArray(parsed)) continue;
+        for (const alias of parsed) {
+          if (typeof alias === 'string' && !carriers.has(alias.toLowerCase())) {
+            carriers.set(alias.toLowerCase(), row.title);
+          }
+        }
+      } catch {
+        // An unreadable list carries no names to collide with.
+      }
+    }
+    const warnings: string[] = [];
+    for (const alias of aliases) {
+      const other = carriers.get(alias.toLowerCase());
+      if (other !== undefined) {
+        warnings.push(`The name “${alias}” is also carried by “${other}” in this collection.`);
+      }
+    }
+    return warnings;
   }
 
   private draftRow(pageId: string): Record<string, unknown> | undefined {

@@ -4280,6 +4280,20 @@ function aliasFieldNotice(value) {
 }
 
 /**
+ * The collision warnings a save came back with, rendered under the field that
+ * earned them. A warning and deliberately not a refusal: two pages sometimes
+ * share vocabulary on purpose, and the person reading this sentence is the
+ * only one who knows whether this is that case. Persistent — it re-renders on
+ * every save rather than fading — because a mis-steered search stays
+ * mis-steered for as long as the name is shared.
+ */
+function aliasWarningsHTML(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return '';
+  return `<p class="notice notice-stale alias-collision">${warnings.map((w) => esc(w)).join('<br>')}<br>
+    A shared name steers search and Ask toward both pages. Keep it only if both should answer to it.</p>`;
+}
+
+/**
  * The two sentences a failed save leaves on screen. Both matter: the alert is
  * the persistent trace (the toast dies in seconds, and a save that failed must
  * not go on looking like a save that happened), and the save-state line is
@@ -4413,6 +4427,7 @@ async function viewEditor(id) {
               <input type="text" name="aliases" value="${esc((draft.fields.aliases ?? []).join(', '))}"
                 placeholder="e.g. urgent claims, COB"></label>
             <p id="alias-live" class="muted type-help" aria-live="polite"></p>
+            <div id="alias-warnings" aria-live="polite"></div>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
@@ -4441,6 +4456,10 @@ async function viewEditor(id) {
   };
   form.aliases.addEventListener('input', syncAliasNotice);
   syncAliasNotice();
+  // The lock-acquiring save above already answered for the names the draft
+  // carries, so a collision that predates this editing session is on screen
+  // from the first paint rather than after the first save.
+  app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(draft.warnings);
 
   // The toolbar and the preview. The preview is the same renderMarkdown() the
   // page view uses, inside the same .doc-body, because a preview that renders
@@ -4490,6 +4509,10 @@ async function viewEditor(id) {
     editorAlert.hidden = true;
     editorAlert.textContent = '';
     saveState.textContent = `Draft saved ${fmtDateTime(d.updatedAt)}`;
+    // What the save came back with about shared vocabulary, under the field
+    // it is about — replaced wholesale each save, so a collision the editor
+    // just removed stops being claimed.
+    app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(d.warnings);
     return d;
   };
 
