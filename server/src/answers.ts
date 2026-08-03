@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { Actor, CanonError, PageStatus } from './model.js';
 import { STOPWORDS } from './embeddings.js';
 import { objectBody, optionalCount, optionalString, optionalStringArray } from './input.js';
-import { ANSWERABLE_STATUSES, type RetrievalCandidate, type RetrievalService } from './retrieval.js';
+import { ANSWERABLE_STATUSES, answerShape, type RetrievalCandidate, type RetrievalService } from './retrieval.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
 // CORE-PLAN.md. Generation happens under the record's rules, and the rules are
@@ -544,7 +544,7 @@ export const MIN_TOPICAL_OVERLAP = 0.5;
  * this answer overclaims — and that is worth collecting from design partners
  * rather than inventing here.
  */
-export const DIRECT_TOPICAL_OVERLAP = 0.75;
+export const DIRECT_TOPICAL_OVERLAP = 0.7;
 
 /** How many pages a refusal may point at. Three reads as suggestions; eight reads as results. */
 export const MAX_NEAREST = 3;
@@ -709,6 +709,60 @@ export function isOnTopic(question: string, text: string, stats: TermStats | nul
  * covers fewer than two of them — the shape rule below, which is about the
  * question rather than about relevance and cannot be expressed as a ratio.
  */
+/**
+ * `topicalCoverage`, judged the way a reader judges: somewhere on the page,
+ * not smeared across it.
+ *
+ * The whole-page bag has a failure mode the third persona round hit hard: a
+ * question built of corpus-common words ("can I work from home 3 days a
+ * week?") was answered, "direct", from an offer-approval page — because
+ * "work", "home", "days" and "week" each appear SOMEWHERE on it, one in the
+ * filler, one in a related-page link, none within three paragraphs of another.
+ * A page is about a question when the question's words keep company, so the
+ * judgement is the best WINDOW's coverage, with the title in every window
+ * because the title names the whole page.
+ */
+export function topicalCoverageBest(
+  question: string,
+  title: string,
+  text: string,
+  stats: TermStats | null = null,
+): number {
+  // Sentence starts by regex rather than a literal '. ', because the indexed
+  // text separates blocks with newlines — a splitter blind to '.\n' never saw
+  // a bullet list's boundaries, every window anchored in the page's opening,
+  // and a page whose answering sentence sat in its final section scored ZERO
+  // while its whole-page bag scored 0.88. The tail window is always included
+  // for the same reason: a guard that stopped short of the last
+  // GATE_WINDOW characters threw away exactly the sentences most policy pages
+  // end with — the operative ones.
+  const starts = new Set<number>([0, Math.max(0, text.length - GATE_WINDOW)]);
+  for (const match of text.matchAll(/[.!?]["')\]]?\s+/g)) {
+    const at = match.index! + match[0].length;
+    if (at < text.length) starts.add(at);
+  }
+  const windows: string[] = [];
+  for (const start of starts) windows.push(text.slice(start, start + GATE_WINDOW));
+  let best = 0;
+  for (const window of windows) {
+    const score = topicalCoverage(question, `${title} ${window}`, stats);
+    if (score > best) best = score;
+  }
+  return best;
+}
+
+/** How much page a window spans when the gate reads it. Two paragraphs, about. */
+export const GATE_WINDOW = 480;
+
+export const WINDOW_FLOOR = 0.35;
+
+/**
+ * What the SECOND page of a two-anchor answer must cover for the pair to be
+ * read as corroboration rather than coincidence. Between the admission bar
+ * (0.5) and the single-anchor direct bar (DIRECT_TOPICAL_OVERLAP).
+ */
+export const CORROBORATION_OVERLAP = 0.55;
+
 export function topicalCoverage(question: string, text: string, stats: TermStats | null = null): number {
   const questionTerms = contentTerms(question);
   if (questionTerms.length === 0) return 0;
@@ -1860,9 +1914,11 @@ export class AnswerService {
     const coverage = new Map<string, number>();
     const anchors = eligible.filter((c) => {
       if (c.via !== null) return false;
-      const score = topicalCoverage(question, judgeable(c), stats);
+      const body = bodies.get(c.pageId) || c.passage;
+      const score = topicalCoverage(question, `${c.title} ${body}`, stats);
       coverage.set(c.pageId, score);
-      return score >= MIN_TOPICAL_OVERLAP;
+      if (score < MIN_TOPICAL_OVERLAP) return false;
+      return topicalCoverageBest(question, c.title, body, stats) >= WINDOW_FLOOR;
     });
     const anchored = new Set(anchors.map((c) => c.pageId));
     // How much of this answer is going to be an ANSWER — see
@@ -1875,9 +1931,37 @@ export class AnswerService {
     // "Thin" survives for what it was for: an answer assembled out of pages that
     // are NEAR the question — over the admission bar, under this one — plus
     // whatever the graph brought with them.
-    const best = anchors.reduce((n, c) => Math.max(n, coverage.get(c.pageId) ?? 0), 0);
+    const scores = anchors.map((c) => coverage.get(c.pageId) ?? 0).sort((a, b) => b - a);
+    const best = scores[0] ?? 0;
+    const second = scores[1] ?? 0;
+    // Two anchors used to be direct UNCONDITIONALLY, and the third persona
+    // round showed what that buys: "can I work from home 3 days a week?"
+    // presented under "The record says" because two filler pages each scraped
+    // past admission. Agreement between two barely-admitted pages is not
+    // corroboration — it is the same accident twice. So the headcount route
+    // now demands that both anchors clear a real bar of their own.
+    // The third route to "direct" is the evidence a reader can check without
+    // trusting any threshold: the question announces the SHAPE of its answer
+    // ("how many days…" wants a figure), and the best anchor's own quotation
+    // contains that shape. "How many days to file a first-level appeal?"
+    // quoting "The member has 180 days…" was reported under "nothing in the
+    // record answers this directly" — a hedge over a square answer, in the
+    // reader's own view. Coverage arithmetic cannot separate that case from a
+    // weak match, but the quotation can: the work-from-home page's filler
+    // carries no figure, and no shape means no route.
+    const bestAnchor = anchors.reduce(
+      (top, c) => ((coverage.get(c.pageId) ?? 0) > (coverage.get(top?.pageId ?? '') ?? -1) ? c : top),
+      anchors[0],
+    );
+    const shape = answerShape(question);
+    const quotedShape =
+      shape !== null && bestAnchor !== undefined && best >= CORROBORATION_OVERLAP && shape.test(bestAnchor.passage);
     const grounding: 'direct' | 'thin' =
-      best >= DIRECT_TOPICAL_OVERLAP || anchors.length >= 2 ? 'direct' : 'thin';
+      best >= DIRECT_TOPICAL_OVERLAP ||
+      (anchors.length >= 2 && second >= CORROBORATION_OVERLAP) ||
+      quotedShape
+        ? 'direct'
+        : 'thin';
     // What may be cited, once there is an anchor: the anchors themselves, and
     // the pages the record connects to one.
     //

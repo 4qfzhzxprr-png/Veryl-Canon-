@@ -339,6 +339,19 @@ export const EVAL_CASES: readonly EvalCase[] = [
     question: 'PLAN-7 deductible',
     relevant: ['PLAN-7 deductible and out-of-pocket maximum', 'Standard Plan (PLAN-7)'],
   },
+
+  // --- from the third persona round: questions real testers asked ---------
+  {
+    question: 'What do the COB rules require when a member has two plans?',
+    relevant: ['Coordination of benefits'],
+    why: 'round three: answered "direct" from three unrelated pages while the COB page sat unused',
+  },
+  {
+    question: 'How many days does a member have to file a first-level appeal?',
+    answerContains: ['180 days'],
+    relevant: ['Appeals Process'],
+    why: 'round three: quoted the 180-days sentence under "nothing answers this directly"',
+  },
 ];
 
 /**
@@ -367,6 +380,13 @@ export const UNANSWERABLE: readonly string[] = [
   'What is the fire evacuation procedure?',
   'How do I book a meeting room?',
   'What is the policy on office pets?',
+  // From the third persona round: a new joiner's real questions that the
+  // record genuinely does not answer — no page states days-per-week or a
+  // carry-over rule — and that were answered anyway, "direct", from
+  // offer-approval and interview pages. The worst failure class the product
+  // has: a confident wrong answer.
+  'Can I work from home 3 days a week?',
+  'How much unused holiday can I carry over into next year?',
 ];
 
 // ---------------------------------------------------------------------------

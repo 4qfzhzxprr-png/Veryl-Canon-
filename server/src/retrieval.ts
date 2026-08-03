@@ -100,6 +100,33 @@ export const EXPANSION_DAMPING = 0.5;
 
 export const PASSAGE_LENGTH = 320;
 
+// WHAT KIND OF ANSWER THIS KIND OF QUESTION EXPECTS, where that is knowable
+// without a model: "how long", "when", "how many", a deductible, a maximum —
+// all announce that their answer contains a figure, a duration, a time or an
+// amount. Tried and measured USELESS for choosing which window to quote (see
+// the negative-results list over bestWindow: on a schedule every window holds
+// a figure). It earns its keep in answers.ts instead, judging GROUNDING: a
+// quotation that carries the announced shape is evidence a reader can check.
+export function answerShape(question: string): RegExp | null {
+  const q = question.toLowerCase();
+  if (/\bhow (long|quickly|fast|soon|often|old|many|much)\b|\bwhen\b|\bdeadline\b|\bdeductible\b|\bmaximum\b|\bwhat time\b/.test(q)) {
+    return FIGURE;
+  }
+  return null;
+}
+
+// A figure, as policy prose writes one: digits with an optional unit, a
+// spelled-out number attached to a unit of time, a clock time, or money.
+const FIGURE = new RegExp(
+  [
+    String.raw`\b\d{1,2}:\d{2}\b`,
+    String.raw`[$£€]\s?\d`,
+    String.raw`\b\d[\d,]*(\.\d+)?\s*(calendar\s+)?(year|month|day|hour|week|minute|percent|%)s?\b`,
+    String.raw`\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|twenty|twenty-four|thirty|thirty-six|sixty|seventy-two|ninety)([\s-]+(calendar\s+)?(year|month|day|hour|week|minute)s?)\b`,
+  ].join('|'),
+  'i',
+);
+
 // A question is a question. Without a ceiling, one POST /ask can hand a
 // multi-megabyte string to the embedding provider — a per-request cost paid by
 // the server, and, with a hosted provider, a per-request bill. Refusing is the
