@@ -5482,6 +5482,23 @@ function answerHTML(answer, citations, disagreement = null, grounding = null) {
 
 function refusalHTML(result, question, collection) {
   const known = !result.reason || result.reason === 'no_canonical_match';
+  // The pages that came closest, as PLACES TO LOOK. No quotation and no
+  // snippet, deliberately: a quoted sentence under a refusal reads as the
+  // answer the refusal just said does not exist. Four of four wrongful
+  // refusals in the labelled set had the right page sitting top of the
+  // candidates — what the asker lacked was its name, not a paraphrase of it.
+  const nearest = Array.isArray(result.nearest) ? result.nearest.filter((n) => n && n.pageId && n.title) : [];
+  const nearestHTML = !nearest.length ? '' : `
+      <section class="refusal-nearest">
+        <h3 class="h-small">The nearest pages in the record</h3>
+        <p class="muted">Shown as places to look — the record has not answered, and these are
+          not being quoted at you.</p>
+        <ul class="nearest-list">
+          ${nearest.map((n) => `
+            <li><a href="#/pages/${esc(n.pageId)}">${esc(n.title)}</a>
+              ${citationBadge(n)}</li>`).join('')}
+        </ul>
+      </section>`;
   return `
     <section class="refusal">
       <h2>The record does not answer this yet.</h2>
@@ -5489,6 +5506,7 @@ function refusalHTML(result, question, collection) {
         covers ${question ? `&ldquo;${esc(question)}&rdquo;` : 'this question'}. Canon says so rather
         than assembling an answer it cannot cite — a confident guess is the one thing a
         knowledge record must never produce.</p>
+      ${nearestHTML}
       ${known ? '' : `<p class="muted">Reported reason: <code>${esc(result.reason)}</code></p>`}
       <p class="refusal-why">Answers are drawn only from ${badge('canonical', 'sm')} pages you are
         permitted to see. If someone has written this up in a Draft, a Note, or a page still in

@@ -2293,3 +2293,10 @@ label.check input { width: auto; display: inline; margin: 0; }
    unchanged; only the claim is withdrawn. */
 .answer.is-thin { border-left-color: var(--border); background: var(--surface-2); }
 .answer.is-thin .answer-grounding { font-style: italic; }
+
+/* A refusal's pointers: places to look, styled as a list of links rather than
+   as results — a refusal must not dress up as an answer. */
+.refusal-nearest { margin: 0.85rem 0 0.35rem; padding: 0.7rem 0.9rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.refusal-nearest h3 { margin: 0 0 0.25rem; }
+.nearest-list { margin: 0.4rem 0 0.1rem; padding-left: 1.1rem; }
+.nearest-list li { margin: 0.25rem 0; }

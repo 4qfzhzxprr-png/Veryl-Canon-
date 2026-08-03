@@ -262,6 +262,13 @@ export interface SourceDisagreement {
 // The answer contract from DATA-BACKBONE.md §5, used by Canon's own question
 // box, by agents, and — when it lands — by Studio apps through the Knowledge
 // API. One shape, one set of rules.
+/** A pointer a refusal may offer: where to look, never what it says. */
+export interface NearestPage {
+  pageId: string;
+  title: string;
+  status?: PageStatus;
+}
+
 export interface AnswerResponse {
   answer: string | null;
   citations: Citation[];
@@ -275,6 +282,20 @@ export interface AnswerResponse {
    * this is the machine-readable half, for a UI that wants to flag it.
    */
   pastReview?: { pageId: string; title: string }[];
+  /**
+   * On a refusal only: the pages that came closest, as places to look.
+   *
+   * THESE ARE NOT CITATIONS AND CARRY NO QUOTATION, on purpose. A refusal
+   * means the record did not answer, and a quoted sentence under that verdict
+   * would read as the answer the verdict just said does not exist. What a
+   * refused asker actually lacked, four times out of four in the labelled
+   * set, was the name of a page sitting at rank 1 the whole time — asked
+   * about "urgent" claims, the page that says "expedited" was the top
+   * candidate and the asker was shown nothing. So: titles and standing only,
+   * from the same permission-filtered, Canonical-only candidate set an answer
+   * would have drawn on, and the reader goes and reads the page itself.
+   */
+  nearest?: NearestPage[];
   /**
    * Set when the cited pages disagree with each other — because their
    * passages' text says so, or because a person asserted that they do.
@@ -524,6 +545,9 @@ export const MIN_TOPICAL_OVERLAP = 0.5;
  * rather than inventing here.
  */
 export const DIRECT_TOPICAL_OVERLAP = 0.75;
+
+/** How many pages a refusal may point at. Three reads as suggestions; eight reads as results. */
+export const MAX_NEAREST = 3;
 
 /**
  * How much more than the middle of a question a single word may weigh.
@@ -1913,8 +1937,21 @@ export class AnswerService {
     }
 
     if (!generated || !generated.answer.trim() || citations.length === 0) {
-      this.audit(actor, question, collectionId ?? null, true, []);
-      return { answer: null, citations: [], refused: true, reason: 'no_canonical_match' };
+      // What came closest, for the refusal to point at. Directly retrieved
+      // candidates only — a graph neighbour is context for a hit, and with no
+      // hit its presence explains nothing.
+      const nearest: NearestPage[] = eligible
+        .filter((c) => c.via === null)
+        .slice(0, MAX_NEAREST)
+        .map((c) => ({ pageId: c.pageId, title: c.title, status: c.status }));
+      this.audit(actor, question, collectionId ?? null, true, [], null, null, null, nearest.map((c) => c.pageId));
+      return {
+        answer: null,
+        citations: [],
+        refused: true,
+        reason: 'no_canonical_match',
+        ...(nearest.length ? { nearest } : {}),
+      };
     }
 
     // ---- the disagreement survives the generator ------------------------
@@ -2077,6 +2114,7 @@ export class AnswerService {
     disagreement?: Disagreement | null,
     supersession?: Supersession | null,
     sourceDisagreement?: SourceDisagreement | null,
+    nearestPageIds?: string[],
   ): void {
     this.db
       .prepare(
@@ -2092,6 +2130,7 @@ export class AnswerService {
           question,
           refused,
           citedPageIds,
+          ...(nearestPageIds?.length ? { nearestPageIds } : {}),
           generator: this.generator.name,
           ...(disagreement ? { disagreement: disagreement.pageIds } : {}),
           // Whether a person asserted it, or Canon read it off the passages.

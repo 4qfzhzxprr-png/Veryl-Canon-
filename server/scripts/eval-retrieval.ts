@@ -438,6 +438,13 @@ export interface EvalReport {
   misquoted: readonly { question: string; want: readonly string[]; quoted: string }[];
   /** The answerable questions Ask refused, named. */
   wrongfulRefusals: readonly string[];
+  /**
+   * Of the wrongful refusals, the fraction whose refusal at least POINTED at a
+   * page the labels call relevant. A refusal that names the right page is a
+   * recoverable failure — one click and the reader is on it; a refusal that
+   * names nothing is a dead end. The two were indistinguishable before.
+   */
+  refusalPointedRight: number;
   /** Every question's outcome, for comparing two runs question by question. */
   perQuestion: readonly QuestionOutcome[];
   /** Which embedding provider built the index, and what it cost to build. */
@@ -473,6 +480,7 @@ type RankingReport = Omit<
   | 'quotableCases'
   | 'misquoted'
   | 'wrongfulRefusals'
+  | 'refusalPointedRight'
   | 'perQuestion'
   | 'provider'
   | 'indexSeconds'
@@ -582,6 +590,7 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
 
   // The other half: what Ask does with the questions the record answers.
   const wrongfulRefusals: string[] = [];
+  let pointedRight = 0;
   const misquoted: { question: string; want: readonly string[]; quoted: string }[] = [];
   let direct = 0;
   let citedRelevant = 0;
@@ -605,6 +614,7 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
     perQuestion.push(outcome);
     if (answer.refused) {
       wrongfulRefusals.push(evalCase.question);
+      if (answer.nearest?.some((n) => evalCase.relevant.includes(n.title))) pointedRight += 1;
       continue;
     }
     if (answer.grounding === 'direct') direct += 1;
@@ -639,6 +649,7 @@ export async function evaluate(corpus: EvalCorpus): Promise<EvalReport> {
     quotableCases: quotable,
     misquoted,
     wrongfulRefusals,
+    refusalPointedRight: pointedRight / (wrongfulRefusals.length || 1),
     perQuestion,
     provider: corpus.provider,
     indexSeconds: corpus.indexSeconds,
@@ -687,7 +698,10 @@ export function formatReport(report: EvalReport, pages: number): string {
     }
   }
   if (report.wrongfulRefusals.length) {
-    lines.push('', 'REFUSED WHAT THE RECORD ANSWERS');
+    lines.push(
+      '',
+      `REFUSED WHAT THE RECORD ANSWERS (${pct(report.refusalPointedRight).trim()} of these at least pointed at a relevant page)`,
+    );
     for (const question of report.wrongfulRefusals) lines.push(`  ${question}`);
   }
   return lines.join('\n');

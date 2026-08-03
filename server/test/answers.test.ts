@@ -554,6 +554,69 @@ test('isOnTopic: the corpus statistic is used where it says something and counte
   );
 });
 
+test('refusal: points at the nearest pages without quoting them', async () => {
+  const { store, marc, iris, collection } = setup();
+  // The labelled failure this exists for: the page says "expedited", the asker
+  // says "urgent", the gate refuses — and the page was the top candidate all
+  // along. The refusal now says where to look.
+  const page = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Claims Processing Standard',
+    'An expedited claim, where delay would jeopardise the member’s health, is decided within seventy-two hours of receipt of the claim.',
+  );
+  // Enough neighbours for the corpus statistic to mean something: with one
+  // page the gate falls back to counting words and the question squeaks
+  // through, which is right for a tiny record and not the case under test.
+  publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Claims intake register',
+    'Every claim received is entered in the intake register on the day it arrives.',
+  );
+  publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Office plant care',
+    'Plants are watered on Fridays by whoever is on the rota.',
+  );
+  await store.embeddings.ready();
+
+  const refusal = await store.ask(marc.id, { question: 'How quickly must we decide an urgent claim?' });
+  assert.equal(refusal.refused, true);
+  assert.deepEqual(refusal.citations, [], 'a refusal still cites nothing');
+  assert.ok(refusal.nearest && refusal.nearest.length >= 1, 'and now says where to look');
+  assert.ok(refusal.nearest.length <= 3, 'suggestions, not results');
+  const pointer = refusal.nearest.find((n) => n.pageId === page.id);
+  assert.ok(pointer, 'the page that came closest is named');
+  assert.equal(pointer.title, 'Claims Processing Standard');
+  assert.equal(pointer.status, 'canonical');
+  assert.ok(!('snippet' in pointer), 'a pointer carries no quotation — that would dress a refusal as an answer');
+
+  // A successful answer carries no nearest: the citations are the pointers.
+  const answered = await store.ask(marc.id, { question: 'How quickly is an expedited claim decided?' });
+  assert.equal(answered.refused, false);
+  assert.equal(answered.nearest, undefined);
+});
+
+test('refusal: nearest pages obey the asker’s permissions like everything else', async () => {
+  const { store, dana, marc, iris, collection } = setup();
+  publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Visible expedited claims',
+    'An expedited claim is decided within seventy-two hours.',
+  );
+  // A better-matching page in a collection the asker cannot see.
+  const secret = store.createCollection(dana.id, { name: 'Leadership only' });
+  const hiddenPage = store.createPage(dana.id, { collectionId: secret.id, type: 'note', title: 'Urgent claims desk note' });
+  store.editDraft(dana.id, hiddenPage.id, { body: 'Urgent claim decisions and the urgent claims rota.' });
+  store.publish(dana.id, hiddenPage.id);
+  await store.embeddings.ready();
+
+  const refusal = await store.ask(marc.id, { question: 'Who staffs the urgent claims rota on weekends?' });
+  assert.equal(refusal.refused, true);
+  for (const pointer of refusal.nearest ?? []) {
+    assert.notEqual(pointer.pageId, hiddenPage.id, 'a refusal must not leak titles the asker cannot open');
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Contradiction awareness — DATA-BACKBONE.md §7, "Answers must never smooth a
 // contradiction". An answer that reads two disagreeing passages into one
@@ -1030,6 +1093,42 @@ test('ask view: a citation badge is drawn only from a status the server sent', (
   assert.equal(citationBadge({ status: 'needs_update' }), '<badge needs_update sm>');
   assert.equal(citationBadge({ status: 'canonical' }), '<badge canonical sm>');
   assert.equal(citationBadge({ status: null }), '', 'no status, no badge');
+});
+
+test('ask view: a refusal renders nearest pages as links, never as quotations', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const lifted = /function refusalHTML\(result, question, collection\) \{[\s\S]*?\n\}/.exec(source);
+  assert.ok(lifted, 'the refusal view is drawn by refusalHTML');
+  const refusalHTML = new Function(
+    'esc', 'citationBadge', 'state', 'badge',
+    `${lifted[0]}\nreturn refusalHTML;`,
+  )(
+    (x: string) => String(x),
+    (n: { status?: string }) => (n.status ? `[${n.status}]` : ''),
+    { features: { search: false } },
+    () => '',
+  ) as (result: unknown, question: string, collection: unknown) => string;
+
+  const html = refusalHTML(
+    {
+      refused: true,
+      reason: 'no_canonical_match',
+      nearest: [
+        { pageId: 'p-1', title: 'Claims Processing Standard', status: 'canonical' },
+        { pageId: 'p-2', title: 'Appeals Process', status: 'needs_update' },
+      ],
+    },
+    'urgent claims',
+    null,
+  );
+  assert.ok(html.includes('#/pages/p-1') && html.includes('Claims Processing Standard'));
+  assert.ok(html.includes('[canonical]') && html.includes('[needs_update]'), 'standing is shown on each pointer');
+  assert.ok(html.includes('places to look'), 'and the framing says what these are not');
+  assert.ok(!html.includes('The record says'), 'a refusal never wears an answer’s clothes');
+
+  // Without nearest pages the section is simply absent.
+  const bare = refusalHTML({ refused: true, reason: 'no_canonical_match' }, 'q', null);
+  assert.ok(!bare.includes('nearest'), 'no pointers, no section');
 });
 
 // ---------------------------------------------------------------------------
