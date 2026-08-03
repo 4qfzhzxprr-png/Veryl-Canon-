@@ -480,6 +480,13 @@ label.check input { width: auto; display: inline; margin: 0; }
 .notice .btn { margin-left: 0.5rem; }
 .notice del { color: var(--del-ink); background: var(--del-bg); text-decoration: line-through; padding: 0 0.2em; border-radius: 3px; }
 .notice ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; padding: 0 0.2em; border-radius: 3px; }
+/* A failed save. Danger, not amber: nothing is waiting on anybody — work the
+   editor believes is stored does not exist, which is the sharpest thing this
+   screen can have to say. */
+.editor-alert { border-left-color: var(--danger); background: var(--danger-soft); }
+/* The alias field talking back mid-keystroke: a counter is calm, a named
+   refusal-to-come is not. */
+.alias-problem { color: var(--danger); }
 
 /* ---------- structured field block ------------------------------------- */
 

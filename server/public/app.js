@@ -4245,6 +4245,57 @@ async function openSubmitReviewDialog(page, draftFields, afterSubmit) {
   });
 }
 
+// The server's alias bounds, restated so the editor can warn BEFORE a save is
+// attempted. The server refuses an out-of-bounds list atomically — the whole
+// save, every pending field, not just the aliases (store.ts validateFieldShape)
+// — and a policy owner lost twenty minutes of edits to a toast she never saw.
+// The numbers must match CanonStore.MAX_ALIASES and its per-name cap; a drift
+// here only makes the warning early or late, never the save wrong, because the
+// server still decides.
+const ALIAS_MAX_NAMES = 20;
+const ALIAS_MAX_LENGTH = 64;
+// When the counter appears: early enough to see the ceiling coming, late
+// enough that a three-name list is not decorated with arithmetic.
+const ALIAS_COUNTER_FROM = 15;
+
+/**
+ * What the "Also known as" input should say about itself as it is typed:
+ * a counter once the list approaches the ceiling, and the refusal the server
+ * WILL give — named now, while the words are still under the editor's cursor —
+ * once a name is too long or the list too large.
+ */
+function aliasFieldNotice(value) {
+  const names = String(value ?? '').split(',').map((a) => a.trim()).filter(Boolean);
+  const problems = [];
+  for (const name of names) {
+    if (name.length > ALIAS_MAX_LENGTH) {
+      problems.push(`“${name.slice(0, 24)}…” is ${name.length} characters — an alias is a short name of at most ${ALIAS_MAX_LENGTH}. Saving will fail until it is shortened.`);
+    }
+  }
+  if (names.length > ALIAS_MAX_NAMES) {
+    problems.push(`${names.length} names — a page carries at most ${ALIAS_MAX_NAMES}. Saving will fail until the list is back under that.`);
+  }
+  const counter = names.length >= ALIAS_COUNTER_FROM ? `${names.length} of ${ALIAS_MAX_NAMES} names` : '';
+  return { counter, problems };
+}
+
+/**
+ * The two sentences a failed save leaves on screen. Both matter: the alert is
+ * the persistent trace (the toast dies in seconds, and a save that failed must
+ * not go on looking like a save that happened), and the save-state line is
+ * corrected in place because "Draft saved 14:02" standing next to work the
+ * server refused is the exact lie that lost an editor her afternoon.
+ */
+function editorSaveFailure(err) {
+  const why = err.status === 423
+    ? `This page is being edited by ${err.details?.editorName ?? 'someone else'}.`
+    : (err.message || 'The server refused the save.');
+  return {
+    alert: `This draft is NOT saved. ${why}`,
+    saveState: 'Saving failed — nothing was stored. Fix the field named above and save again.',
+  };
+}
+
 async function viewEditor(id) {
   const page = await api('GET', `/pages/${id}`);
   await loadActors().catch(() => null);
@@ -4306,6 +4357,12 @@ async function viewEditor(id) {
         <h1>Editing <span class="muted">(${esc(TYPE_LABELS[page.type])})</span></h1>
         <span id="save-state" class="muted"></span>
       </div>
+      ${/* The persistent trace of a failed save. The toast is transient by
+            design, and a refusal that lives only in a toast is a refusal the
+            editor can miss — after which "Draft saved 14:02" above keeps
+            vouching for work the server threw away. This region holds the
+            server's own sentence until a save actually succeeds. */ ''}
+      <p id="editor-alert" class="notice editor-alert" role="alert" aria-live="assertive" hidden></p>
       ${page.status === 'canonical' ? `
         <div class="notice">This page is Canonical. <strong>Submit for review</strong> keeps it that way —
         readers and Ask keep the approved version until the approver accepts your changes. Publishing
@@ -4355,6 +4412,7 @@ async function viewEditor(id) {
             <label>Also known as <span class="muted">(comma-separated)</span>
               <input type="text" name="aliases" value="${esc((draft.fields.aliases ?? []).join(', '))}"
                 placeholder="e.g. urgent claims, COB"></label>
+            <p id="alias-live" class="muted type-help" aria-live="polite"></p>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
@@ -4370,6 +4428,19 @@ async function viewEditor(id) {
 
   const form = app.querySelector('#editor-form');
   const saveState = app.querySelector('#save-state');
+  const editorAlert = app.querySelector('#editor-alert');
+
+  // The alias bounds, said while they are being typed rather than after the
+  // save they would sink (aliasFieldNotice). The server still decides; this
+  // only moves the sentence to before the click.
+  const aliasLive = app.querySelector('#alias-live');
+  const syncAliasNotice = () => {
+    const { counter, problems } = aliasFieldNotice(form.aliases.value);
+    aliasLive.textContent = problems.length ? problems.join(' ') : counter;
+    aliasLive.classList.toggle('alias-problem', problems.length > 0);
+  };
+  form.aliases.addEventListener('input', syncAliasNotice);
+  syncAliasNotice();
 
   // The toolbar and the preview. The preview is the same renderMarkdown() the
   // page view uses, inside the same .doc-body, because a preview that renders
@@ -4413,6 +4484,11 @@ async function viewEditor(id) {
 
   const save = async () => {
     const d = await api('PUT', `/pages/${id}/draft`, gather());
+    // Only a save that happened may say so — and it also retires whatever a
+    // failed one left standing, because the alert's claim ("NOT saved") has
+    // just stopped being true.
+    editorAlert.hidden = true;
+    editorAlert.textContent = '';
     saveState.textContent = `Draft saved ${fmtDateTime(d.updatedAt)}`;
     return d;
   };
@@ -4428,7 +4504,11 @@ async function viewEditor(id) {
       submitLabel: 'Publish',
       body: publishDialogBodyHTML(page, reviewed),
       onSubmit: async (mform) => {
-        await save();
+        // A failed save here surfaces twice on purpose: the modal shows the
+        // sentence (it is where the click happened), and the editor behind it
+        // is marked failed too — cancelling the dialog must not land the
+        // editor back on a stale "Draft saved …".
+        try { await save(); } catch (err) { markSaveFailed(err); throw err; }
         await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
         toast('Published.', 'ok');
         location.hash = `#/pages/${id}`;
@@ -4459,10 +4539,21 @@ async function viewEditor(id) {
     },
   }));
 
+  function markSaveFailed(err) {
+    const failure = editorSaveFailure(err);
+    editorAlert.textContent = failure.alert;
+    editorAlert.hidden = false;
+    saveState.textContent = failure.saveState;
+  }
+
   function handleEditError(err) {
+    // The toast still announces the failure; it just stopped being the only
+    // trace of it. What persists is the alert region and a corrected
+    // save-state line (editorSaveFailure) — the two places an editor looks
+    // before deciding it is safe to navigate away.
+    markSaveFailed(err);
     if (err.status === 423) {
-      const editor = err.details?.editorName ?? 'someone else';
-      toast(`This page is being edited by ${editor}.`, 'error');
+      toast(`This page is being edited by ${err.details?.editorName ?? 'someone else'}.`, 'error');
     } else toastError(err);
   }
 

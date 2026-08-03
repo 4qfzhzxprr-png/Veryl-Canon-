@@ -460,3 +460,79 @@ test('standing: the notices are drawn above the body, not below it', () => {
   assert.ok(standing < body, 'a page states its standing above the text somebody is about to rely on');
   assert.ok(body < register, 'the conflicts register stays below the body: it is the detail, not the warning');
 });
+
+// ---------------------------------------------------------------------------
+// The editor when a save fails (USER-TESTING.md, third round, finding 7).
+//
+// The server refuses an out-of-bounds alias list atomically and correctly; the
+// defect was the editor's account of it. The only trace was a toast, so a save
+// that failed looked exactly like a save that happened — "Draft saved 14:02"
+// stood over work the server had thrown away, and navigating off lost it. What
+// is pinned here: the failure leaves a persistent, assistive-technology-visible
+// trace; the save-state line is corrected in place; and the alias field warns
+// about the server's bounds while they are still being typed.
+
+const aliasFieldNotice = new Function(
+  'ALIAS_MAX_NAMES', 'ALIAS_MAX_LENGTH', 'ALIAS_COUNTER_FROM',
+  `${lift('aliasFieldNotice')}\nreturn aliasFieldNotice;`,
+)(20, 64, 15) as (value: string) => { counter: string; problems: string[] };
+
+test('editor: the alias field stays quiet while the list is unremarkable', () => {
+  const { counter, problems } = aliasFieldNotice('urgent claims, COB, dual coverage');
+  assert.equal(counter, '');
+  assert.deepEqual(problems, []);
+});
+
+test('editor: the counter appears as the list approaches the ceiling', () => {
+  const fifteen = Array.from({ length: 15 }, (_, i) => `name ${i}`).join(', ');
+  assert.equal(aliasFieldNotice(fifteen).counter, '15 of 20 names');
+  const fourteen = Array.from({ length: 14 }, (_, i) => `name ${i}`).join(', ');
+  assert.equal(aliasFieldNotice(fourteen).counter, '', 'a short list is not decorated with arithmetic');
+});
+
+test('editor: a name past 64 characters is named as the save-sinker it will be, before the save', () => {
+  const long = 'x'.repeat(65);
+  const { problems } = aliasFieldNotice(`COB, ${long}`);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0]!, /65 characters/);
+  assert.match(problems[0]!, /at most 64/, 'the limit itself is in the sentence');
+  assert.match(problems[0]!, /Saving will fail/, 'and so is the consequence');
+});
+
+test('editor: a list past 20 names warns with the limit, before the save', () => {
+  const many = Array.from({ length: 21 }, (_, i) => `name ${i}`).join(', ');
+  const { problems } = aliasFieldNotice(many);
+  assert.ok(problems.some((p) => /at most 20/.test(p) && /Saving will fail/.test(p)));
+});
+
+const editorSaveFailure = new Function(`${lift('editorSaveFailure')}\nreturn editorSaveFailure;`)() as (
+  err: { status?: number; message?: string; details?: { editorName?: string } },
+) => { alert: string; saveState: string };
+
+test('editor: a failed save says NOT saved with the server’s sentence, and corrects the save-state line', () => {
+  const failure = editorSaveFailure({ status: 400, message: 'A page carries at most 20 aliases' });
+  assert.match(failure.alert, /NOT saved/);
+  assert.match(failure.alert, /A page carries at most 20 aliases/, 'the server’s own sentence, not a paraphrase');
+  assert.match(failure.saveState, /Saving failed/);
+  assert.doesNotMatch(failure.saveState, /Draft saved/, 'the line that vouched for lost work never survives a failure');
+  // The lock case still names the other editor.
+  const locked = editorSaveFailure({ status: 423, details: { editorName: 'Priya Nair' } });
+  assert.match(locked.alert, /Priya Nair/);
+});
+
+test('editor: the failure trace is persistent and assistive-technology visible, and success clears it', () => {
+  const editor = source.slice(source.indexOf('async function viewEditor('), source.indexOf('async function renderEditorReferences('));
+  // The region exists, announces itself, and starts empty.
+  assert.match(editor, /id="editor-alert"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*hidden/);
+  // Every failure path fills it (markSaveFailed is what handleEditError and the
+  // publish dialog share), and only a successful save empties it.
+  assert.match(editor, /function markSaveFailed\(err\)/);
+  assert.match(editor, /markSaveFailed\(err\); throw err;/, 'the publish dialog’s save failure marks the editor behind it too');
+  const save = editor.slice(editor.indexOf('const save = async'), editor.indexOf('form.addEventListener'));
+  assert.match(save, /editorAlert\.hidden = true/, 'the alert outlives everything except an actual save');
+  assert.match(save, /Draft saved/, 'and only that path writes "Draft saved"');
+  assert.equal((editor.match(/Draft saved \$\{/g) ?? []).length, 1, 'no other line can claim a save happened');
+  // The alias field is wired to the validator as it is typed.
+  assert.match(editor, /form\.aliases\.addEventListener\('input', syncAliasNotice\)/);
+  assert.match(editor, /aria-live="polite"/, 'the live counter is announced without stealing focus');
+});
