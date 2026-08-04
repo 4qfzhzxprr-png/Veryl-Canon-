@@ -5997,6 +5997,32 @@ function answerHTML(answer, citations, disagreement = null) {
     ${citationsHTML(citations, disputed)}`;
 }
 
+// The content words of a question, for handing a natural-language question to
+// a keyword search. Lowercase alphanumeric runs, minus the common words a
+// question is mostly made of. It starts from the server's STOPWORDS
+// (embeddings.ts) but strips MORE, and deliberately: the server's list feeds a
+// weighted-coverage score where a missing term only lowers the total, while
+// the search box runs an FTS AND where every surviving term must be on the
+// page. So the question-framing verbs ("need", "want", "get", "use"…) that
+// never appear on a subject's page are dropped too — otherwise "do I need a
+// sick note?" would search for a page containing "need", and miss. A
+// convenience, not a correctness surface; returns a space-joined string, or ''
+// when nothing meaningful survives.
+const SEARCH_STOPWORDS = new Set([
+  'a','about','all','an','and','any','are','as','at','be','been','but','by','can','did','do','does',
+  'for','from','get','got','give','has','have','how','i','if','in','is','it','its','make','made','may',
+  'me','must','my','need','no','not','of','on','or','our','should','so','some','take','than','that','the',
+  'their','them','then','there','these','they','this','to','us','use','want','was','we','were','what',
+  'when','where','which','who','why','will','with','would','you','your',
+]);
+function searchTermsOf(question) {
+  const terms = String(question ?? '')
+    .toLowerCase()
+    .match(/[a-z0-9]+/g);
+  if (!terms) return '';
+  return terms.filter((t) => t.length > 1 && !SEARCH_STOPWORDS.has(t)).join(' ');
+}
+
 function refusalHTML(result, question, collection) {
   const known = !result.reason || result.reason === 'no_canonical_match';
   // The pages that came closest, as PLACES TO LOOK. No quotation and no
@@ -6143,9 +6169,18 @@ async function viewAsk(collectionId = null) {
     resultHost.querySelector('#refusal-search')?.addEventListener('click', () => {
       const box = document.getElementById('search-input');
       if (!box) return;
-      box.value = question;
+      // Hand search the QUESTION'S TERMS, not the question. The search box runs
+      // an FTS MATCH that ANDs every token, so pre-filling "do I need a sick
+      // note?" verbatim required a page containing "do", "a", and the literal
+      // "note?" — a guaranteed second dead end after the refusal (fifth round,
+      // Ada). Stripped to "sick note", it finds the page the alias carries.
+      // If nothing meaningful survives the strip, the box is left empty and
+      // focused rather than pre-filled with junk.
+      const terms = searchTermsOf(question);
+      box.value = terms;
       box.dispatchEvent(new Event('input'));
       box.focus();
+      if (!terms) box.select();
     });
     resultHost.querySelector('#refusal-draft')?.addEventListener('click', async () => {
       try {

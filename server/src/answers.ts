@@ -2183,17 +2183,29 @@ export class AnswerService {
       // and refusing to even NAME a page the asker can see and open helped
       // nobody. The status travels with the pointer, so the screen can label
       // exactly what kind of page it is pointing at.
-      // In retrieval order, and two reorderings were tried and reverted when
-      // the fifth round showed the work-from-home refusal leading with three
-      // floor-scraping pages: sorting by covered-term count (everything
-      // available tied at two), and sorting by the gate's weighted coverage
-      // (which promoted "Take-home exercise standards", whose hyphenated
-      // "home" carries the question's rarest word — junk in a different
-      // order). Both were measurement-neutral over the labelled refusals.
-      // The actual limit on that case is the pool: the page that should be
-      // pointed at ranks twelfth for a question the record cannot answer,
-      // and the pool is the top eight — a pointer pass that searched deeper,
-      // or semantically, is the real shape of an improvement here.
+      // In retrieval order, then the wider search pass backfills — and THREE
+      // reorderings are now recorded as unable to fix the one measured pointer
+      // miss, because the miss is not an ordering problem. Sorting the
+      // retrieval pool by covered-term count (everything ties at the floor);
+      // by the gate's weighted coverage (fifth round); and — fresh, and the
+      // reason this note grew — merging the retrieval and search pools and
+      // sorting the union by weighted coverage. The last was the strongest
+      // guess: it lets a page retrieval ranked low but a rare word points at
+      // compete, and orders by the same document-frequency weight admission
+      // uses. It moved pointedRight by nothing. The case it was aimed at —
+      // "can somebody who is not a doctor turn down a medical claim on
+      // appeal?" should point at Appeals Process — is not winnable this way:
+      // Appeals Process shares "appeal" and "claim" with the question and
+      // scores 0.206, while Claims Processing Standard shares "claim",
+      // "medical", and "turn" and scores 0.437. By any term-overlap measure,
+      // weighted or not, the claims page IS closer; the label says appeals
+      // because a person knows that is where an overturned denial lives, which
+      // is a semantic judgement the lexical channel cannot make. This is the
+      // "needs a semantic pointer pass" the note has named since the fifth
+      // round, now with a measurement behind it rather than a guess: the pool
+      // and the order are not the lever, the channel is.
+      const narrowed =
+        request && typeof request === 'object' && ('alsoVisibleTo' in request || 'collectionIds' in request);
       const nearest: NearestPage[] = eligible
         .filter((c) => c.via === null)
         .filter((c) => coveredTerms(questionTerms, `${c.title} ${bodies.get(c.pageId) || c.passage}`).length >= floor)
@@ -2204,8 +2216,6 @@ export class AnswerService {
       // the Knowledge API's narrowed asks keep official-only pointers, because
       // widening there would need the app-intersection re-applied and a
       // narrower pointer list is the safe default.
-      const narrowed =
-        request && typeof request === 'object' && ('alsoVisibleTo' in request || 'collectionIds' in request);
       if (nearest.length < MAX_NEAREST && this.host.searchIndex?.search && !narrowed) {
         try {
           // The evidence floor is judged on the page's INDEXED text — body

@@ -1310,6 +1310,31 @@ test('ask view: a refusal renders nearest pages as links, never as quotations', 
   assert.ok(!bare.includes('nearest'), 'no pointers, no section');
 });
 
+test('ask view: "search instead" hands search the question’s terms, not the question', () => {
+  // Fifth round, Ada: the button pre-filled the whole question into an FTS
+  // MATCH that ANDs every token, so "do I need a sick note?" required a page
+  // containing "do", "a", and the literal "note?" — a guaranteed dead end.
+  // The terms it hands over now are keyword-searchable.
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const lifted = /const SEARCH_STOPWORDS = new Set\(\[[\s\S]*?\nfunction searchTermsOf\(question\) \{[\s\S]*?\n\}/.exec(
+    source,
+  );
+  assert.ok(lifted, 'searchTermsOf is defined in app.js');
+  const searchTermsOf = new Function(`${lifted[0]}\nreturn searchTermsOf;`)() as (q: string) => string;
+
+  // "need" and other question-framing verbs are stripped too — an FTS AND
+  // would otherwise require the target page to contain "need".
+  assert.equal(searchTermsOf('do I need a sick note?'), 'sick note', 'framing words and punctuation gone');
+  assert.equal(searchTermsOf('How quickly must we decide an urgent claim?'), 'quickly decide urgent claim');
+  // A question made entirely of stopwords/framing leaves nothing to pre-fill —
+  // the box is left empty rather than seeded with junk.
+  assert.equal(searchTermsOf('what is it for'), '');
+  assert.equal(searchTermsOf('how should we do this'), '');
+  assert.equal(searchTermsOf(''), '');
+  // The tokens it keeps are exactly what an FTS AND can match against a page.
+  assert.equal(searchTermsOf('PTO carry-over rules'), 'pto carry over rules');
+});
+
 // ---------------------------------------------------------------------------
 // What the RECORD states, not what Canon reads off the prose
 // (USER-TESTING.md T1.2, DATA-BACKBONE.md §7).
