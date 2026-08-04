@@ -114,6 +114,12 @@ Query the record by its fields: "all Canonical policies owned by Compliance with
 ### Home and dashboards
 A personal home surfacing what matters: pages you own that need review, tasks assigned to you, activity on what you watch. Collection dashboards do the same for teams. *(Jira: dashboards. Confluence: space overviews.)*
 
+### Aliases: the record learns your words
+A page carries the names people actually use for its subject — "urgent" beside a page that says "expedited", "COB" beside Coordination of benefits. An alias is a field like any other: versioned, attributed, reviewed before it steers anything, and read by search and by grounded answers alike. It exists because no ranking improvement closes a vocabulary gap; a person closes it, once, with their name on the change.
+
+### Gaps: what the record was asked and could not answer
+Every refused question is kept — with how often it was asked, never by whom — until an operator closes it: teach a page the asker's word, write the missing page, or record that the record owes no answer. A refusal also shows the asker the nearest pages as places to look, so a dead end becomes one click from recovery. This is the loop that makes Ask improve with use.
+
 ## 7. Governance and audit
 
 What regulated buyers need on day one.

@@ -1,0 +1,18 @@
+# What never goes into a build context.
+#
+# Two of these are correctness, not tidiness: `**/dist` keeps a stale local
+# build from being copied over a fresh one, and `**/*.db` keeps a developer's
+# record — which may be a partner's record — out of an image that gets pushed
+# to a registry.
+**/node_modules
+**/dist
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+backups/
+.git
+.gitignore
+.claude/
+**/.DS_Store
+*.md

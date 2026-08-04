@@ -1,0 +1,169 @@
+# Veryl Canon — a demo environment.
+#
+#   docker compose up --build          Canon, the Registry, the IdP, a source system
+#   open http://localhost:3000
+#
+# ###########################################################################
+# ##  THE STUBS IN THIS FILE ARE TEST DOUBLES. NEVER RUN THEM IN A         ##
+# ##  DEPLOYMENT, AND NEVER POINT A DEPLOYMENT AT ONE.                     ##
+# ##                                                                       ##
+# ##  idp-stub issues a valid ID token for anybody it is asked about and   ##
+# ##  can be told to lie on purpose. registry-stub keeps agent state in    ##
+# ##  memory behind an unauthenticated administrative face — anyone who    ##
+# ##  can reach it can certify any agent. source-stub invents benefits     ##
+# ##  figures. SECURITY.md §5, assumption 1: "an identity provider that    ##
+# ##  will issue a token for anybody is a Canon anybody can enter."        ##
+# ##                                                                       ##
+# ##  A real deployment runs the `canon` service ALONE, against the        ##
+# ##  organization's own identity provider and the live Veryl Agent        ##
+# ##  Registry, with CANON_DEV_AUTH unset. See OPERATIONS.md and           ##
+# ##  CONFIGURATION.md.                                                    ##
+# ###########################################################################
+
+name: veryl-canon-demo
+
+services:
+  canon:
+    build:
+      context: .
+      target: canon
+    image: veryl-canon:local
+    ports:
+      - '3000:3000'
+    volumes:
+      # The whole of Canon's state, including the audit log, is this one file.
+      # A named volume so `docker compose down` does not take the record with it
+      # — and back it up anyway: see OPERATIONS.md, "Back up".
+      - canon-data:/data
+    environment:
+      CANON_DB: /data/canon.db
+      PORT: '3000'
+      CANON_BASE_URL: http://localhost:3000
+      CANON_LOG_FORMAT: json
+      CANON_LOG_LEVEL: info
+
+      # ---- the doors --------------------------------------------------
+      # DEMO ONLY. X-Actor-Id is believed without verification, so anyone who
+      # can reach port 3000 is anyone they name. The server says so, loudly, on
+      # every start. To demonstrate real single sign-on instead, comment this
+      # out and uncomment the SSO block below.
+      CANON_DEV_AUTH: 'true'
+
+      # Agents: the passport door, verified against the Registry stub.
+      CANON_REGISTRY_URL: http://registry:3100
+      CANON_REGISTRY_TTL_MS: '30000'
+
+      # ---- single sign-on, against idp-stub ---------------------------
+      # Canon reaches the provider as `idp` on the compose network; the person's
+      # browser must reach it under the SAME name, because OpenID Connect
+      # requires the discovery document's issuer to match the configured issuer
+      # exactly (auth.ts refuses a provider that redirects into a different
+      # one). So add one line to /etc/hosts before uncommenting these:
+      #
+      #     127.0.0.1  idp
+      #
+      # and then remove CANON_DEV_AUTH above — the two together are refused at
+      # start-up, on purpose (config.ts).
+      #
+      # CANON_OIDC_ISSUER: http://idp:3200
+      # CANON_OIDC_CLIENT_ID: veryl-canon
+      # CANON_OIDC_CLIENT_SECRET: canon-dev-secret
+      # CANON_OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
+      # CANON_SESSION_SECRET: replace-me-with-32-random-characters
+
+      # ---- federation --------------------------------------------------
+      # Which hosts Canon may reach at all. Unset means nothing is reachable.
+      CANON_SOURCE_ALLOWED_HOSTS: source:3400
+      CANON_SOURCE_ALLOWED_SCHEMES: http
+      # DEVELOPMENT ONLY: compose gives containers private addresses, and the
+      # outbound policy blocks private ranges by default precisely so a
+      # federated source cannot be aimed at the network Canon sits on
+      # (SECURITY.md F1). A deployment leaves this unset.
+      CANON_SOURCE_ALLOW_PRIVATE: 'true'
+      CANON_SOURCE_SERVICE_IDENTITY: canon-demo
+      CANON_SOURCE_TIMEOUT_MS: '3000'
+
+      # ---- timers ------------------------------------------------------
+      # No SMTP relay in the demo, so notifications are logged rather than sent
+      # and the flush timer has nothing to do. The freshness sweep needs nothing
+      # at all: it runs hourly, and once at start-up, as Canon's own system
+      # actor. This line is the default written out so it is visible, not a
+      # requirement — CANON_MAINTENANCE_ACTOR_ID is deliberately absent, because
+      # naming a person there puts their name on work the clock did.
+      CANON_FRESHNESS_INTERVAL_MS: '3600000'
+      CANON_SHUTDOWN_TIMEOUT_MS: '10000'
+    depends_on:
+      registry:
+        condition: service_started
+      source:
+        condition: service_started
+    # docker stop sends SIGTERM; src/shutdown.ts drains in-flight requests and
+    # closes the database. 20s of grace for a 10s drain deadline.
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  # ---- the stubs. Demo only. See the banner at the top of this file. ------
+
+  registry:
+    build:
+      context: .
+      target: stubs
+    image: veryl-canon-stubs:local
+    command: ['node', 'registry-stub/dist/registry-stub/src/index.js']
+    environment:
+      PORT: '3100'
+    ports:
+      - '3100:3100'
+
+  idp:
+    build:
+      context: .
+      target: stubs
+    image: veryl-canon-stubs:local
+    command: ['node', 'idp-stub/dist/idp-stub/src/index.js']
+    environment:
+      PORT: '3200'
+      IDP_ISSUER: http://idp:3200
+      IDP_CLIENT_ID: veryl-canon
+      IDP_CLIENT_SECRET: canon-dev-secret
+      IDP_REDIRECT_URIS: http://localhost:3000/auth/callback,http://127.0.0.1:3000/auth/callback
+    ports:
+      - '3200:3200'
+
+  source:
+    build:
+      context: .
+      target: stubs
+    image: veryl-canon-stubs:local
+    command: ['node', 'source-stub/dist/source-stub/src/index.js']
+    environment:
+      PORT: '3400'
+    ports:
+      - '3400:3400'
+
+  # A Veryl Studio app. It needs an Agent Passport, which the Registry issues at
+  # run time, so it starts only when you have one and have put it in the
+  # environment:
+  #
+  #   PASSPORT=$(curl -s localhost:3100/agents -d '{"name":"Benefits Assistant"}' | ...)
+  #   STUDIO_PASSPORT=$PASSPORT docker compose --profile studio up studio
+  #
+  # See studio-stub/README.md for the three-command version.
+  studio:
+    profiles: ['studio']
+    build:
+      context: .
+      target: stubs
+    image: veryl-canon-stubs:local
+    command: ['node', 'studio-stub/dist/studio-stub/src/index.js']
+    environment:
+      PORT: '3300'
+      CANON_URL: http://canon:3000
+      STUDIO_PASSPORT: ${STUDIO_PASSPORT:-}
+    ports:
+      - '3300:3300'
+    depends_on:
+      - canon
+
+volumes:
+  canon-data:

@@ -1,0 +1,19 @@
+{
+  "name": "@veryl/idp-stub",
+  "version": "0.1.0",
+  "description": "OpenID Connect provider stub: the identity provider Canon's people-facing SSO (server/src/auth.ts) is built and demonstrated against.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test \"dist/idp-stub/test/**/*.test.js\"",
+    "start": "npm run build && node dist/idp-stub/src/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "5.6"
+  },
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@veryl/studio-stub",
+  "version": "0.1.0",
+  "description": "Veryl Studio app stub: a benefits question-answering app built on Canon's Knowledge API, per STUDIO-CONTRACT.md.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && CANON_DEV_AUTH=true node --test \"dist/studio-stub/test/**/*.test.js\"",
+    "start": "npm run build && node dist/studio-stub/src/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "5.6"
+  },
+  "private": true,
+  "type": "module"
+}

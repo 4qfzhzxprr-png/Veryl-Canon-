@@ -1,0 +1,66 @@
+# Continuous integration for Veryl Canon.
+#
+# The production-readiness review found no pipeline: the invariant suite that
+# makes this product trustworthy — permissions, refusal, citation, the audit
+# chain — ran only when somebody remembered to. This runs it on every push and
+# pull request, for the server and each stub, and reports the dependency-audit
+# surface (which is tiny by design: Canon ships one runtime dependency, and it
+# is optional).
+#
+# Node is pinned to 22.x because Canon uses `node:sqlite`, which is available
+# without a flag from 22.5 onward (OPERATIONS.md, "The shape of the thing").
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# A newer push to the same branch/PR cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build + test (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [server, idp-stub, registry-stub, source-stub, studio-stub]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+      # `npm ci` installs exactly the lockfile, and fails if it is out of date —
+      # so a dependency added without updating the lock is caught here.
+      - run: npm ci
+      # `npm test` builds first (tsc), then runs the node:test suite. The server
+      # and studio-stub suites set CANON_DEV_AUTH themselves in their scripts.
+      - run: npm test
+
+  audit:
+    name: dependency audit (server runtime)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Runtime dependencies only: Canon installs with one, and it is the thing
+      # a deployment actually ships. A high-severity advisory here fails the run;
+      # dev-only tooling (TypeScript) is out of scope for what a partner runs.
+      - name: Audit server runtime dependencies
+        working-directory: server
+        run: npm audit --omit=dev --audit-level=high

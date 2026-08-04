@@ -96,11 +96,22 @@ Four milestones, sequenced so each one is usable by the design partner as it lan
 
 **M4: Ready for the auditor.** Epic E, plus hardening. Audit log, import, and a security review. Exit: the design partner's existing material is imported and reviewed into the record, and an administrator can answer "who did what, when" from the audit log alone.
 
-Private beta with design partners begins at M2 and widens at each milestone. General availability is a decision taken after M4, not a milestone in this plan.
+The design-partner phase is called the alpha, matching the public status on Veryl.ai. The alpha begins at M2 and widens at each milestone. General availability is a decision taken after M4, not a milestone in this plan.
+
+### Where the build actually stands
+
+Every milestone above states its exit in terms of a design partner using the product. Those exits are deliberately not something the team can mark complete on its own, so this section tracks two different things: what is **built**, which we control, and what is **proven with a partner**, which we do not. Nothing below claims an exit.
+
+- **M1 — built.** Collections, page trees, the four document types with structured fields, the editor's draft-and-publish loop with the page lock, and append-only version history with restore. Immutability is enforced in the storage layer, not only in application code.
+- **M2 — built.** Status, the type-driven review workflow, comments with mentions, and notifications written to an outbox and delivered by real email, with bounded retry and a deep link into review. Search shipped here too, ahead of its place in the plan, because grounded answers needed the index.
+- **M3 — built, against a stubbed Registry and stubbed models.** The Registry contract is agreed and written down; a stub implements it; Agent Passport authentication is live at Canon's door, enforcing the Registry's limits and Canon's own permissions as an intersection, failing closed, with revocation inside the one-minute guarantee. Grounded answers follow the retrieval architecture in DATA-BACKBONE.md section 5 and refuse when the record is silent. Two seams are still stubs: the embedding provider is a hashed bag of words rather than a semantic model, and the answer generator quotes the record rather than composing prose. Both are interfaces a real model plugs into without changing anything else, and both are honest placeholders rather than pretend intelligence.
+- **M4 — built, except the security review.** The audit log is queryable and exports as RFC 4180 CSV under a hard row cap. Confluence and Google Docs importers read unpacked export directories through a shared HTML converter, recover the Confluence page tree with documented fallbacks, land everything as Draft attributed to the importing actor, report per-file failures without aborting the run, and are idempotent per run. The security review remains, and it is not a task the team can mark done for itself.
+
+The honest summary: every feature in this plan is now coded and tested, and none of the milestone exits is claimed. What is left is the part that was always going to decide the product — a real partner's corpus in the system, a real Registry behind the passport, and real models behind the two retrieval seams. Section 7 names import quality as the risk that decides first impressions; the importer now exists and has been exercised against fixtures built to resemble real exports, which is not the same as surviving a partner's actual Confluence space. That test is the next real one.
 
 ## 6. Success measures
 
-Measured with the design partners during beta:
+Measured with the design partners during the alpha:
 
 - **Adoption.** Weekly active contributors as a share of the pilot team, and pages published per week. The record is alive, not a launch-day dump.
 - **Officialness.** Share of reads that land on Canonical pages, and median time from Draft to Canonical. The mark is being earned and used.

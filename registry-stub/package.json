@@ -1,0 +1,19 @@
+{
+  "name": "@veryl/registry-stub",
+  "version": "0.1.0",
+  "description": "Veryl Agent Registry stub: the test double Canon's Epic D is built and demonstrated against, per REGISTRY-CONTRACT.md.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test \"dist/registry-stub/test/**/*.test.js\"",
+    "start": "npm run build && node dist/registry-stub/src/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "5.6"
+  },
+  "private": true,
+  "type": "module"
+}

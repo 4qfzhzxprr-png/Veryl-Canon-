@@ -1,0 +1,288 @@
+import { CanonError } from './model.js';
+
+// Rate limiting (SECURITY.md R8).
+//
+// WHAT THIS IS FOR, AND WHAT IT IS NOT FOR. Canon is not trying to survive a
+// botnet here; a deployment that needs that puts something in front of the
+// port, which is what §1 of SECURITY.md already assumes. What this bounds is
+// the handful of Canon routes where one authenticated caller can spend a lot
+// of somebody else's resources with one cheap request:
+//
+//   - `POST /ask` and `POST /knowledge/ask` run retrieval over the whole
+//     visible corpus and then a generator. With a hosted embedding provider
+//     that is also a per-request bill.
+//   - `GET /pages/:id/references` reaches an external system, once per
+//     reference on the page. A loop over it is Canon hammering somebody
+//     else's service with Canon's own service identity on it.
+//   - `POST /imports` walks an operator-named directory of up to
+//     MAX_FILES_PER_RUN documents and writes a page for each.
+//   - Passport authentication, whose failures are the brute-forceable door.
+//     When SSO lands (R1) its login route belongs in this same bucket.
+//
+// WHAT IS DELIBERATELY NOT LIMITED: reading the record. No bucket covers
+// `GET /pages/:id`, `GET /search`, `GET /collections`, `GET /audit` or any
+// other ordinary read, because the one failure this must not have is a person
+// unable to read a policy at the moment they need it. A limiter that can lock
+// somebody out of the record has done more damage than the load it prevented.
+//
+// SHAPE. A token bucket per (bucket, key): `burst` tokens, refilled at
+// `perMinute`, one token per request, refused when empty. In-process and
+// per-server — one `RateLimiter` belongs to one `createApi`, so a deployment
+// running several Canon processes limits per process. That is proportionate
+// for the alpha and it is stated here rather than implied: a distributed
+// limiter is a different piece of work, and it needs a store Canon does not
+// have.
+//
+// WHAT A CALLER IS, AND WHY STUDIO NEEDED A SECOND BUCKET (USER-TESTING.md
+// T3.8). Every bucket here except `auth` used to key on the actor, and that is
+// right for every door but one. On Veryl Studio's surface the actor is the
+// APP, and one app is a whole company's worth of people: keyed that way, a
+// benefits assistant serving four thousand employees got twelve questions a
+// minute between all of them, and one impatient person could spend the lot.
+//
+// The natural key is the person the call is for — `X-On-Behalf-Of`, which the
+// Studio surface already requires and which the three-way intersection already
+// depends on. But that header is ASSERTED BY THE APP. It is not authenticated
+// (STUDIO-CONTRACT.md §3 is explicit that Canon takes the app's word for it),
+// so an app that wanted a bigger budget could invent a person per request and
+// mint one. A limiter must never be keyed solely on something the limited
+// party chooses.
+//
+// So: two buckets, both charged, and a call needs a token from each.
+//
+//   `ask`     keyed by (app, person) on the Studio surface and by the person
+//             on Canon's own /ask. This is the FAIRNESS half: it stops one
+//             person exhausting everybody else's share. Being able to forge
+//             the key only ever gives an app more of these buckets, which is
+//             worth nothing on its own, because —
+//   `askApp`  keyed by the app's actor alone, whatever person it names. This
+//             is the CEILING half, and it is the one that cannot be forged:
+//             an app's actor is resolved from its passport by the Registry.
+//             Inventing person identifiers buys nothing above it.
+//
+// The asserted header is therefore used exactly where assertion is harmless —
+// SUBDIVIDING a budget the app already holds — and nowhere near the total. It
+// is the same reasoning `auth` uses in the opposite direction: there the
+// credential being guessed cannot be the key, so the connection's origin is;
+// here the person being named cannot be the whole key, so the app's verified
+// actor is the other half of it.
+//
+// WHEN A TOKEN IS SPENT. When the call was well formed enough that Canon did
+// the work the bucket exists to bound. The bucket is CHECKED before the body
+// is read — an empty bucket must refuse cheaply, before an eight-megabyte body
+// is buffered — and CHARGED after the handler returns. So a malformed body, a
+// missing header, or a refusal at one of the gates costs nothing: none of them
+// reaches retrieval, and T3.8's second half is precisely that a mistake should
+// not spend somebody's question. Those refusals are not unbounded work — they
+// cost one or two indexed SELECTs, exactly what an ordinary read costs, and
+// ordinary reads are deliberately unlimited here for the reason above.
+
+/** One bucket's configuration: the burst it holds and the rate it refills. */
+export interface BucketLimit {
+  /** Tokens the bucket holds when full — the largest burst permitted. */
+  burst: number;
+  /** Tokens added per minute — the sustained rate. May be fractional. */
+  perMinute: number;
+}
+
+export type BucketName = 'ask' | 'askApp' | 'references' | 'import' | 'auth';
+
+export const BUCKET_NAMES: readonly BucketName[] = ['ask', 'askApp', 'references', 'import', 'auth'];
+
+// Defaults chosen to be invisible to a person using Canon and visible to a
+// loop. A reader who asks twelve questions in a minute is working hard; one
+// asking twelve hundred is a script. Every one of them is configurable,
+// because the right number depends on the deployment's corpus and provider.
+export const DEFAULT_RATE_LIMITS: Record<BucketName, BucketLimit> = {
+  // Retrieval plus generation, per asker: the person on Canon's own door, and
+  // the (app, person) pair on Studio's.
+  ask: { burst: 12, perMinute: 12 },
+  // The ceiling on one Studio app, whatever people it names. Ten askers'
+  // worth: generous enough that a company asking through one app never meets
+  // it in ordinary use, and finite, so an app that invented a person per
+  // request would gain ten times a person's budget rather than all of it. A
+  // deployment with a large Studio population raises this one, not `ask`.
+  askApp: { burst: 120, perMinute: 120 },
+  // Reference resolution, per actor. Higher, because opening a page with
+  // references is an ordinary act and the UI does it on every page view.
+  references: { burst: 60, perMinute: 60 },
+  // An import is an operator's act measured in minutes, not requests.
+  import: { burst: 2, perMinute: 0.5 },
+  // Failed passport authentications, keyed by origin rather than by actor —
+  // see the note on `authKey` in api.ts. Only failures spend a token, so a
+  // busy honest agent is never limited by this bucket at all.
+  auth: { burst: 20, perMinute: 20 },
+};
+
+const ENV_KEY: Record<BucketName, string> = {
+  ask: 'CANON_RATE_LIMIT_ASK',
+  askApp: 'CANON_RATE_LIMIT_ASK_APP',
+  references: 'CANON_RATE_LIMIT_REFERENCES',
+  import: 'CANON_RATE_LIMIT_IMPORT',
+  auth: 'CANON_RATE_LIMIT_AUTH',
+};
+
+/** `burst/perMinute`, e.g. `30/10`; `off` disables the bucket entirely. */
+export function parseBucketLimit(raw: string): BucketLimit | null {
+  const value = raw.trim().toLowerCase();
+  if (!value || value === 'off' || value === 'none' || value === '0') return null;
+  const match = /^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/.exec(value);
+  if (!match) {
+    throw new Error(`a rate limit is written burst/perMinute (for example 30/10), or 'off', not '${raw}'`);
+  }
+  const burst = Number(match[1]);
+  const perMinute = Number(match[2]);
+  if (burst < 1) throw new Error(`a rate limit's burst must be at least 1, not '${raw}'`);
+  return { burst, perMinute };
+}
+
+/**
+ * The deployment's limits. `CANON_RATE_LIMIT=off` turns every bucket off in
+ * one move (for a deployment whose front door already limits); otherwise each
+ * bucket takes its default unless its own variable overrides it.
+ */
+export function rateLimitsFromEnv(env: NodeJS.ProcessEnv = process.env): Partial<Record<BucketName, BucketLimit>> {
+  if ((env.CANON_RATE_LIMIT ?? '').trim().toLowerCase() === 'off') return {};
+  const limits: Partial<Record<BucketName, BucketLimit>> = {};
+  for (const name of BUCKET_NAMES) {
+    const raw = env[ENV_KEY[name]];
+    limits[name] = raw === undefined ? DEFAULT_RATE_LIMITS[name] : (parseBucketLimit(raw) ?? undefined);
+  }
+  return limits;
+}
+
+interface Bucket {
+  tokens: number;
+  at: number; // when `tokens` was last computed
+}
+
+// Keys are actor ids, actor pairs and remote addresses, so the map is bounded
+// by the number of callers rather than by traffic — but a long-lived process
+// that has seen a great many callers should not hold them all forever. A
+// bucket that has refilled to full carries no information, so it can be
+// dropped.
+const PRUNE_ABOVE = 4096;
+
+// What separates the bucket's name from the caller's key inside the map. It is
+// a NUL because a NUL cannot occur in an actor id, in a header value, or in a
+// remote address, so no key a caller controls can forge a bucket boundary —
+// and that matters more now that one key is TWO ids joined together and half
+// of the pair is asserted by the app (see `chargesFor` in api.ts).
+//
+// It is a named constant, and building an id is a function, because the
+// character was previously spelled out at each of four uses and this change
+// adds a fifth. Four identical template literals in one file are four chances
+// to type a space instead, and a bucket written under one spelling and read
+// under another does not refuse anything — it silently grants an unlimited
+// budget, which is the one failure a limiter must not have quietly.
+const KEY_SEPARATOR = '\u0000';
+
+function bucketId(bucket: BucketName, key: string): string {
+  return `${bucket}${KEY_SEPARATOR}${key}`;
+}
+
+export class RateLimiter {
+  private readonly buckets = new Map<string, Bucket>();
+
+  constructor(
+    private readonly limits: Partial<Record<BucketName, BucketLimit>> = rateLimitsFromEnv(),
+    private readonly clock: () => number = () => Date.now(),
+  ) {}
+
+  /** Is this bucket configured at all? An unconfigured bucket never refuses. */
+  enabled(bucket: BucketName): boolean {
+    return this.limits[bucket] !== undefined;
+  }
+
+  /**
+   * Refuse if the bucket is empty, WITHOUT spending a token. The
+   * authentication bucket needs this: a failed passport must cost a token and
+   * a successful one must not, so the refusal is decided before the attempt
+   * and charged after it.
+   */
+  check(bucket: BucketName, key: string): void {
+    this.spend(bucket, key, 0);
+  }
+
+  /**
+   * Spend one token, or refuse. `key` is the actor id wherever there is one;
+   * the caller decides, because the auth bucket is keyed by origin.
+   */
+  take(bucket: BucketName, key: string): void {
+    this.spend(bucket, key, 1);
+  }
+
+  /**
+   * Spend a token that `check` already granted, and NEVER refuse.
+   *
+   * This is the other half of the check-then-charge pair, and it must not
+   * throw: a request that has already run retrieval and composed a cited
+   * answer cannot have that answer thrown away because a concurrent request
+   * emptied the bucket in between. So the bucket is allowed to go a little
+   * negative — by at most the number of requests in flight — and the next
+   * `check` refuses until the refill has paid it back. Overdrawn by the
+   * concurrency is honest; discarding completed work is not.
+   */
+  charge(bucket: BucketName, key: string): void {
+    const limit = this.limits[bucket];
+    if (!limit) return;
+    const id = bucketId(bucket, key);
+    const now = this.clock();
+    const held = this.buckets.get(id);
+    const tokens = held
+      ? Math.min(limit.burst, held.tokens + ((now - held.at) / 60_000) * limit.perMinute)
+      : limit.burst;
+    this.buckets.set(id, { tokens: tokens - 1, at: now });
+    if (this.buckets.size > PRUNE_ABOVE) this.prune(now);
+  }
+
+  private spend(bucket: BucketName, key: string, cost: 0 | 1): void {
+    const limit = this.limits[bucket];
+    if (!limit) return;
+    const id = bucketId(bucket, key);
+    const now = this.clock();
+    const held = this.buckets.get(id);
+    const tokens = held
+      ? Math.min(limit.burst, held.tokens + ((now - held.at) / 60_000) * limit.perMinute)
+      : limit.burst;
+    if (tokens < 1) {
+      // How long until one whole token exists again. Rounded up, and at least
+      // one second, so a client that obeys it does not come straight back.
+      const wait = limit.perMinute > 0 ? ((1 - tokens) / limit.perMinute) * 60 : Infinity;
+      this.buckets.set(id, { tokens, at: now });
+      throw new CanonError(
+        'rate_limited',
+        `Too many ${bucket} requests; wait ${Number.isFinite(wait) ? `${Math.max(1, Math.ceil(wait))}s` : 'and try again'} and retry`,
+        {
+          bucket,
+          retryAfterSeconds: Number.isFinite(wait) ? Math.max(1, Math.ceil(wait)) : null,
+        },
+      );
+    }
+    if (cost === 0) return; // a check, not a charge
+    this.buckets.set(id, { tokens: tokens - 1, at: now });
+    if (this.buckets.size > PRUNE_ABOVE) this.prune(now);
+  }
+
+  /** Tokens currently available. For tests and for an operator's sanity. */
+  remaining(bucket: BucketName, key: string): number {
+    const limit = this.limits[bucket];
+    if (!limit) return Infinity;
+    const held = this.buckets.get(bucketId(bucket, key));
+    if (!held) return limit.burst;
+    return Math.min(limit.burst, held.tokens + ((this.clock() - held.at) / 60_000) * limit.perMinute);
+  }
+
+  private prune(now: number): void {
+    for (const [id, held] of this.buckets) {
+      const bucket = id.slice(0, id.indexOf(KEY_SEPARATOR)) as BucketName;
+      const limit = this.limits[bucket];
+      if (!limit) {
+        this.buckets.delete(id);
+        continue;
+      }
+      const tokens = held.tokens + ((now - held.at) / 60_000) * limit.perMinute;
+      if (tokens >= limit.burst) this.buckets.delete(id);
+    }
+  }
+}

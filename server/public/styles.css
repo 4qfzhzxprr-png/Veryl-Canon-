@@ -1,0 +1,2337 @@
+/* Veryl Canon web UI — calm document-product aesthetic.
+   Sans-serif chrome, serif page bodies, one restrained accent. */
+
+:root {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #efede8;
+  --text: #21242a;
+  --muted: #6d7178;
+  --border: #e0ddd6;
+  --border-strong: #c9c5bc;
+  --accent: #2e6e5c;
+  --accent-ink: #ffffff;
+  --accent-soft: #e4efeb;
+  --amber: #8a6116;
+  --amber-soft: #f6ecd7;
+  --danger: #9c3a30;
+  --danger-soft: #f6e2df;
+  --add-bg: #e3f0e5;
+  --add-ink: #23572f;
+  --del-bg: #f6e2e0;
+  --del-ink: #7c3128;
+  --shadow: 0 10px 30px rgba(30, 32, 36, 0.10);
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191d;
+    --surface: #1f2126;
+    --surface-2: #26292f;
+    --text: #e8e6e1;
+    --muted: #9a9da3;
+    --border: #2e3138;
+    --border-strong: #43474f;
+    --accent: #4f9a84;
+    --accent-ink: #10231d;
+    --accent-soft: #22352f;
+    --amber: #d3a44a;
+    --amber-soft: #33301f;
+    --danger: #d1746a;
+    --danger-soft: #3a2725;
+    --add-bg: #22331f;
+    --add-ink: #a4cba2;
+    --del-bg: #392225;
+    --del-ink: #d9a29b;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 0.08em 0.35em;
+}
+
+hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+
+/* ---------- top bar -------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0 1.5rem;
+  height: 56px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.brand {
+  font-weight: 650;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
+.brand:hover { text-decoration: none; }
+
+.stage {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 99px;
+  padding: 0.05rem 0.5rem;
+  margin-left: 0.55rem;
+  vertical-align: 2px;
+}
+
+.topnav { display: flex; gap: 0.25rem; margin-left: auto; }
+.topnav a {
+  color: var(--muted);
+  padding: 0.35rem 0.7rem;
+  border-radius: 6px;
+  font-weight: 500;
+}
+/* A nav entry is one line. "My queue" carries a count beside it, and a label
+   that breaks across two lines with the number underneath reads as two
+   things. */
+.topnav a { white-space: nowrap; }
+.topnav a:hover { color: var(--text); text-decoration: none; background: var(--surface-2); }
+.topnav a.active { color: var(--text); background: var(--surface-2); }
+
+.actor-chip { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; }
+.chip-name { font-weight: 600; }
+
+/* search */
+.search-slot { position: relative; flex: 0 1 340px; margin-left: 0.5rem; }
+.search-slot input {
+  width: 100%;
+  padding: 0.42rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.search-slot input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.search-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  max-height: 60vh;
+  overflow: auto;
+  z-index: 50;
+}
+.search-hit {
+  display: block;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.search-hit:last-child { border-bottom: none; }
+.search-hit:hover { background: var(--surface-2); text-decoration: none; }
+.search-hit-title { font-weight: 600; }
+.search-snippet { display: block; color: var(--muted); font-size: 0.85rem; margin-top: 0.15rem; }
+/* The matched terms, which FTS5 wraps in <mark>. The default UA yellow is far
+   too loud against a muted snippet and reads as a highlighter pen; this is the
+   same emphasis the rest of the product uses for "this is the bit you asked
+   about" — weight and colour, not a block of paint. */
+.search-snippet mark { background: none; color: var(--text); font-weight: 600; }
+.search-empty { padding: 0.7rem 0.9rem; color: var(--muted); }
+/* What search covers, under the results and under the empty line. It is a
+   footnote in weight and not in position: a rule a searcher can only discover
+   by being confused by it belongs where they are searching. */
+.search-scope {
+  margin: 0;
+  padding: 0.5rem 0.9rem 0.6rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.search-scope .badge { vertical-align: baseline; }
+
+/* ---------- layout ---------------------------------------------------- */
+
+.app { max-width: 1200px; margin: 0 auto; padding: 1.75rem 1.5rem 4rem; }
+
+.page-wide { max-width: 1080px; margin: 0 auto; }
+.page-narrow { max-width: 640px; margin: 3rem auto 0; }
+
+.layout {
+  display: grid;
+  /* Wide enough that a real page title fits on one or two lines rather than
+     being cut to a prefix. See .tree-link. */
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 2rem;
+  align-items: start;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 1rem;
+}
+.page-head h1 { margin: 0; font-size: 1.55rem; line-height: 1.25; font-weight: 650; }
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+
+.breadcrumb { margin: 0 0 0.6rem; font-size: 0.86rem; color: var(--muted); }
+
+.loading { color: var(--muted); padding: 3rem 0; text-align: center; }
+
+.muted { color: var(--muted); }
+.t-right { text-align: right; }
+.nowrap { white-space: nowrap; }
+.h-small {
+  font-size: 0.8rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 0 0 0.7rem;
+}
+
+/* ---------- sidebar / tree ------------------------------------------- */
+
+.sidebar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  position: sticky;
+  top: 76px;
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+}
+/* A tree taller than the space a sticky column can have stops being sticky
+   (see wireSidebar). A scroll region inside a scrolling page clipped an entry
+   mid-word and hid a newly created page below a fold nobody looks for; the
+   whole column moves with the page instead, and nothing is cut. */
+.sidebar.is-long { position: static; max-height: none; overflow: visible; }
+.tree-toggle { display: block; width: 100%; text-align: left; margin: 0.5rem 0 0; }
+/* An author rule for `display` outranks the UA's `[hidden] { display: none }`,
+   so a control that is only for narrow screens has to say so itself — without
+   this the disclosure button was on screen at every width, doing nothing. */
+.tree-toggle[hidden] { display: none; }
+
+.sidebar-collection {
+  display: block;
+  font-weight: 650;
+  font-size: 1.02rem;
+  color: var(--text);
+  margin-bottom: 0.15rem;
+}
+
+.sidebar-new { margin: 0.5rem 0 0.75rem; }
+
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { padding-left: 0.95rem; border-left: 1px solid var(--border); margin-left: 0.45rem; }
+.tree li { margin: 0.1rem 0; }
+.tree summary { cursor: pointer; }
+.tree summary::marker { color: var(--muted); font-size: 0.8em; }
+/* The title wraps and the badge follows it. Nothing here truncates: a page
+   whose title reads "Escal…" is a page nobody can navigate to. */
+.tree-link {
+  /* inline-block, not block: inside a <summary> it has to sit beside the
+     disclosure marker, and it still wraps its own text at max-width. */
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.22rem 0.45rem;
+  border-radius: 6px;
+  color: var(--text);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.tree-link .badge { vertical-align: baseline; margin-left: 0.1rem; }
+.tree-link:hover { background: var(--surface-2); text-decoration: none; }
+.tree-link.active { background: var(--accent-soft); }
+.tree-empty { padding: 0.4rem 0.2rem; }
+
+/* ---------- badges & tags --------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 99px;
+  padding: 0.12rem 0.55rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.badge.sm { font-size: 0.62rem; padding: 0.06rem 0.42rem; }
+.badge-draft { color: var(--muted); border: 1px solid var(--border-strong); background: transparent; }
+.badge-in_review { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
+.badge-canonical { color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); }
+/* Needs Update: the Canonical badge's shape, in the caution colour. A page past
+   its review date is still the official record — it has not been demoted, it
+   has been flagged — so it must not read like a draft. */
+.badge-needs_update { color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber); }
+.badge-archived { color: var(--muted); background: var(--surface-2); border: 1px solid var(--surface-2); }
+/* Federated values: stale is a caution, not an alarm — the same amber the
+   record already uses for "waiting on someone". */
+.badge-stale { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
+.badge-last-known { color: var(--muted); border: 1px dashed var(--border-strong); background: transparent; }
+.badge-unresolved { color: var(--danger); border: 1px solid var(--danger); background: var(--danger-soft); }
+
+.kind-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.04rem 0.45rem;
+  vertical-align: middle;
+}
+.kind-tag.agent { color: var(--accent); border-color: var(--accent); }
+/* Canon acting on its own clock (src/system.ts). Deliberately not the person
+   style and deliberately not the agent style: an agent is somebody's agent and
+   this is the machine itself, so it reads as a mechanism rather than a party. */
+.kind-tag.system {
+  color: var(--muted);
+  border-color: var(--border-strong);
+  border-style: dashed;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.restricted-tag {
+  font-size: 0.68rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+  border: 1px dashed var(--amber);
+  border-radius: 99px;
+  padding: 0.06rem 0.5rem;
+  vertical-align: middle;
+}
+
+.role-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 0.1rem 0.45rem;
+  color: var(--muted);
+}
+
+/* ---------- buttons ---------------------------------------------------- */
+
+.btn {
+  display: inline-block;
+  font: inherit;
+  font-weight: 550;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0.42rem 0.9rem;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.btn:hover { background: var(--surface-2); text-decoration: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.danger-subtle { color: var(--danger); border-color: var(--border); background: transparent; }
+.btn.danger-subtle:hover { background: var(--danger-soft); }
+.btn.subtle { border-color: transparent; background: transparent; color: var(--accent); padding: 0.28rem 0.55rem; }
+.btn.subtle:hover { background: var(--surface-2); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------- cards & panels --------------------------------------------- */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.1rem 1.25rem;
+  color: var(--text);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.card:hover { text-decoration: none; border-color: var(--accent); box-shadow: 0 3px 14px rgba(30,32,36,0.07); }
+.card h3 { margin: 0 0 0.35rem; font-size: 1.05rem; }
+.card p { margin: 0.2rem 0; }
+.card-foot { font-size: 0.8rem; margin-top: 0.7rem; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.1rem 1.25rem;
+  margin: 1.25rem 0;
+}
+
+/* ---------- forms ------------------------------------------------------ */
+
+label { display: block; font-weight: 550; font-size: 0.9rem; margin: 0.7rem 0 0; }
+label input, label textarea, label select {
+  display: block;
+  width: 100%;
+  margin-top: 0.3rem;
+  font: inherit;
+  font-weight: 400;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+}
+label input:focus, label textarea:focus, label select:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+label.check { display: flex; align-items: baseline; gap: 0.5rem; font-weight: 500; }
+label.check input { width: auto; display: inline; margin: 0; }
+
+.stack > * + * { margin-top: 0.5rem; }
+.inline-form {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
+}
+.inline-form label { margin: 0; }
+.inline-form select { width: auto; min-width: 160px; }
+.form-error { color: var(--danger); }
+
+/* ---------- empty states, notices -------------------------------------- */
+
+.empty-state {
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  padding: 2.25rem 2rem;
+  text-align: center;
+  margin: 1.5rem 0;
+}
+.empty-state h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+.empty-state p { max-width: 46rem; margin: 0.4rem auto; color: var(--muted); }
+
+.notice {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0.65rem 0.9rem;
+  margin: 0.75rem 0;
+  font-size: 0.92rem;
+}
+.notice-mine { border-left-color: var(--accent); background: var(--accent-soft); }
+.notice-locked { border-left-color: var(--amber); background: var(--amber-soft); }
+.notice-version { border-left-color: var(--amber); background: var(--amber-soft); }
+/* Past its review date. Amber, like every other "this is waiting on somebody"
+   state in the record: a stale page is not an error, it is an unkept promise. */
+.notice-stale { border-left-color: var(--amber); background: var(--amber-soft); }
+/* "past review" beside the date itself, so the field block carries the fact
+   even when the notice above has been scrolled past. */
+.past-review { color: var(--amber); font-weight: 600; }
+.notice .btn { margin-left: 0.5rem; }
+.notice del { color: var(--del-ink); background: var(--del-bg); text-decoration: line-through; padding: 0 0.2em; border-radius: 3px; }
+.notice ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; padding: 0 0.2em; border-radius: 3px; }
+/* A failed save. Danger, not amber: nothing is waiting on anybody — work the
+   editor believes is stored does not exist, which is the sharpest thing this
+   screen can have to say. */
+.editor-alert { border-left-color: var(--danger); background: var(--danger-soft); }
+/* The alias field talking back mid-keystroke: a counter is calm, a named
+   refusal-to-come is not. */
+.alias-problem { color: var(--danger); }
+
+/* ---------- structured field block ------------------------------------- */
+
+.field-block {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, max-content));
+  gap: 0.4rem 2.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.9rem 1.25rem;
+  margin: 1rem 0 1.5rem;
+}
+.field-block > div { min-width: 0; }
+.field-block dt {
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+.field-block dd { margin: 0; font-size: 0.94rem; }
+
+/* ---------- federated values (references) ------------------------------- */
+
+/* A federated field carries its own provenance, so it takes a full row of the
+   block rather than a compact cell. Label and value are drawn from the page
+   payload at first paint and only the value is a placeholder, and the
+   provenance line reserves its height — so the row is its final size before
+   anything is resolved and nothing below it ever moves. */
+.ref-field {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(8rem, 11rem) minmax(0, 1fr);
+  gap: 0 1.5rem;
+  padding-top: 0.6rem;
+  margin-top: 0.15rem;
+  border-top: 1px solid var(--border);
+}
+.ref-field + .ref-field { margin-top: 0; }
+.ref-field dt { min-width: 0; overflow-wrap: anywhere; }
+.ref-label { display: inline-block; }
+
+.ref-mark-dt {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.02rem 0.4rem;
+  margin-top: 0.15rem;
+}
+
+/* One line, and never two: the badges that arrive with a value (stale,
+   unresolved, last known good) must not be able to wrap the row taller than
+   the placeholder reserved. The value yields space to them and ellipsizes. */
+.ref-value-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.45rem;
+  height: 1.6rem; /* fixed, not minimum: text and placeholder measure alike */
+}
+.ref-value-row > .badge, .ref-value-row > .kind-tag { flex: 0 0 auto; }
+/* One line, always: the row's height is reserved before the value exists, so
+   no value a source returns may change it. The whole value is in the tooltip. */
+.ref-value {
+  font-weight: 600;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-value.is-unresolved { font-weight: 550; color: var(--muted); font-style: italic; }
+.ref-field.is-stale .ref-value { color: var(--amber); }
+
+/* Exactly three lines: reserved before resolution, and clamped after, so the
+   row a placeholder claimed is the row the value gets — whatever a source
+   returns. The full text of any clamped line is on the field's tooltip. */
+.ref-prov {
+  margin: 0.15rem 0 0;
+  min-height: 4.35em;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.kind-tag.ref-service { color: var(--amber); border-color: var(--amber); }
+
+/* Centred rather than baseline-aligned: an empty box has no baseline, and
+   letting it set one would make the placeholder row a different height from
+   the resolved row — the exact shift this whole arrangement exists to avoid. */
+.ref-skel-value {
+  display: block;
+  align-self: center;
+  width: 6.5rem;
+  height: 0.85rem;
+  margin: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- document body ---------------------------------------------- */
+
+.doc-title { font-family: var(--serif); font-weight: 600; }
+
+.doc-body {
+  font-family: var(--serif);
+  font-size: 1.08rem;
+  line-height: 1.72;
+  max-width: 46rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem 2.5rem;
+  overflow-wrap: break-word;
+}
+.doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 {
+  font-family: var(--serif);
+  line-height: 1.3;
+  margin: 1.4em 0 0.5em;
+}
+.doc-body h1:first-child, .doc-body h2:first-child, .doc-body p:first-child { margin-top: 0; }
+.doc-body h1 { font-size: 1.6rem; }
+.doc-body h2 { font-size: 1.35rem; }
+.doc-body h3 { font-size: 1.15rem; }
+.doc-body blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1.1em;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+.doc-body pre.codeblock {
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  line-height: 1.5;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+}
+.doc-body pre.codeblock code { background: none; padding: 0; }
+.doc-body ul, .doc-body ol { padding-left: 1.5em; }
+.doc-body li { margin: 0.25em 0; }
+.doc-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+
+/* Tables inside a rendered body. Written once and used by the page view, the
+   version view, the editor's preview and the Ask answer, because a retention
+   schedule has to look like a retention schedule in all four. The scroll box
+   is the container that takes the overflow: a six-column plan comparison is
+   wider than the 46rem measure of a document body, and the alternative to
+   scrolling inside the box is the whole page scrolling sideways. */
+.table-scroll { overflow-x: auto; margin: 1.4em 0; }
+.md-table {
+  border-collapse: collapse;
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  min-width: 100%;
+}
+.md-table th, .md-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--border);
+}
+.md-table th { background: var(--surface-2); font-weight: 650; }
+.md-table th.md-right, .md-table td.md-right { text-align: right; }
+.md-table th.md-center, .md-table td.md-center { text-align: center; }
+.md-table th.md-left, .md-table td.md-left { text-align: left; }
+
+/* ---------- tables ------------------------------------------------------ */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 0.92rem;
+}
+.table th {
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: var(--surface-2);
+  padding: 0.55rem 0.85rem;
+}
+.table td { padding: 0.55rem 0.85rem; border-top: 1px solid var(--border); vertical-align: top; }
+.table tbody tr:hover { background: var(--surface-2); }
+
+/* ---------- a collection's contents ------------------------------------- */
+
+/* The record's own order and the record's own shape: depth is an indent on the
+   title, not a separate column, so the table reads as the tree it is. */
+.docs-tally { margin: -0.35rem 0 0.7rem; font-size: 0.86rem; }
+.docs-table { min-width: 40rem; }
+.docs-table .doc-title { overflow-wrap: anywhere; }
+.doc-d2 .doc-title { padding-left: 1.7rem; }
+.doc-d3 .doc-title { padding-left: 2.9rem; }
+.doc-d4 .doc-title { padding-left: 4.1rem; }
+.doc-d2 .doc-title, .doc-d3 .doc-title, .doc-d4 .doc-title { color: var(--muted); }
+.doc-d2 .doc-title a, .doc-d3 .doc-title a, .doc-d4 .doc-title a { color: var(--text); }
+
+/* ---------- the status key ---------------------------------------------- */
+
+.status-key { margin: 0; display: grid; gap: 0.5rem; }
+.status-key-row {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+.status-key dt { margin: 0; }
+.status-key dd { margin: 0; font-size: 0.92rem; }
+@media (max-width: 640px) {
+  .status-key-row { grid-template-columns: 1fr; gap: 0.2rem; }
+}
+
+.audit-details { font-size: 0.84rem; }
+/* The audit table carries five columns and free-form details; below about
+   56rem it must scroll inside its own container rather than pushing the page
+   sideways and taking the filters and the "200 of 1,170" count with it. */
+.audit { min-width: 56rem; }
+.detail-kv { margin-right: 0.8rem; display: inline-block; }
+.action-code { font-size: 0.78rem; }
+
+/* ---------- diff -------------------------------------------------------- */
+
+.diff-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.diff-table th {
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  text-align: left;
+  color: var(--muted);
+  background: var(--surface-2);
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  width: 50%;
+}
+.diff-cell {
+  padding: 0.06rem 0.8rem;
+  border-right: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  vertical-align: top;
+}
+.diff-cell:last-child { border-right: none; }
+.diff-cell.del { background: var(--del-bg); color: var(--del-ink); }
+.diff-cell.add { background: var(--add-bg); color: var(--add-ink); }
+.diff-cell.void { background: var(--surface-2); }
+
+/* ---------- editor ------------------------------------------------------ */
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 1.5rem;
+  align-items: start;
+}
+/* The body field sits outside its <label> so the toolbar can sit between the
+   two, which means it carries the field styling itself rather than inheriting
+   it from `label textarea`. */
+.editor-bodyLabel { margin-bottom: 0.3rem; }
+.editor-body {
+  display: block;
+  width: 100%;
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  line-height: 1.65;
+  min-height: 440px;
+  resize: vertical;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  padding: 0.7rem 0.85rem;
+}
+.editor-body:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+/* `display: block` above outranks the browser's own rule for the hidden
+   attribute, so switching to the preview has to say so here or the writing
+   surface stays on screen underneath it. */
+.editor-body[hidden], .editor-preview[hidden] { display: none; }
+
+/* ---------- the editor's formatting toolbar ----------------------------- */
+
+.md-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.4rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.md-toolbar-gap { flex: 1 1 auto; }
+.md-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 550;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+}
+.md-btn:hover { border-color: var(--border-strong); background: var(--bg); }
+.md-btn:disabled { opacity: 0.45; cursor: default; }
+.md-btn-mode { border-color: var(--border-strong); }
+.md-btn-mode[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+/* The preview is the published page's own .doc-body, squared off under the
+   toolbar so it occupies exactly the space the writing surface did. */
+.editor-preview {
+  min-height: 440px;
+  max-width: none;
+  border-radius: 0 0 8px 8px;
+  padding: 1.4rem 1.6rem;
+}
+
+.md-hint { font-size: 0.8rem; margin-top: 0.5rem; }
+.editor-sideCol .panel { margin: 0 0 1rem; }
+.editor-actions { display: flex; flex-direction: column; gap: 0.55rem; }
+.editor-actions .btn { text-align: center; }
+
+/* ---------- identity ---------------------------------------------------- */
+
+.identity-wrap { display: flex; justify-content: center; padding-top: 2.5rem; }
+.identity-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  max-width: 520px;
+  width: 100%;
+  padding: 2rem 2.25rem;
+}
+.identity-card h1 { margin: 0 0 0.5rem; font-size: 1.45rem; }
+.identity-list { margin: 1.1rem 0; display: flex; flex-direction: column; gap: 0.45rem; max-height: 300px; overflow: auto; }
+.identity-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+}
+.identity-row:hover { border-color: var(--accent); background: var(--accent-soft); }
+.identity-name { font-weight: 600; }
+.identity-none { text-align: center; }
+
+/* ---------- comments ---------------------------------------------------- */
+
+.comment-list { list-style: none; margin: 0 0 1rem; padding: 0; }
+.comment { border-top: 1px solid var(--border); padding: 0.7rem 0; }
+.comment:first-child { border-top: none; padding-top: 0; }
+.comment-meta { font-size: 0.84rem; margin-bottom: 0.2rem; font-weight: 600; }
+.comment-meta .muted { font-weight: 400; margin-left: 0.4rem; }
+.comment-body { white-space: pre-wrap; }
+.comment.resolved { opacity: 0.6; }
+
+/* ---------- grounded answers -------------------------------------------- */
+
+.ask-wrap { max-width: 760px; margin: 0 auto; }
+.ask-head h1 { margin: 0 0 0.4rem; font-size: 1.55rem; line-height: 1.25; font-weight: 650; }
+.ask-lede { margin: 0 0 1.25rem; color: var(--muted); max-width: 44rem; }
+
+.ask-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.9rem 1.1rem 0.8rem;
+  transition: border-color 0.12s ease;
+}
+.ask-form:focus-within { border-color: var(--accent); }
+
+.ask-question {
+  display: block;
+  width: 100%;
+  font-family: var(--serif);
+  font-size: 1.12rem;
+  line-height: 1.55;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  padding: 0.1rem 0;
+  resize: vertical;
+  min-height: 3.4rem;
+}
+.ask-question:focus { outline: none; }
+.ask-question::placeholder { color: var(--muted); opacity: 0.75; }
+
+.ask-form-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
+}
+.ask-grounding { margin: 0; font-size: 0.82rem; color: var(--muted); max-width: 34rem; }
+.ask-grounding .badge { margin: 0 0.1rem; }
+/* The privacy line under the grounding sentence: same voice, own breath. */
+.ask-kept { margin-top: 0.35rem; }
+
+.ask-scope {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin: 0.8rem 0.2rem 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.ask-scope-label { margin: 0; font-weight: 550; font-size: 0.84rem; color: var(--muted); }
+.ask-scope select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.18rem 0.4rem;
+}
+
+/* One reserved region for every result state, so nothing jumps when an
+   answer, a refusal, or the loading skeleton lands in it. */
+.ask-result { margin-top: 1.5rem; min-height: 260px; }
+
+.ask-idle {
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  padding: 1.4rem 1.6rem;
+}
+.ask-examples { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.ask-example {
+  font: inherit;
+  font-family: var(--serif);
+  font-size: 1rem;
+  text-align: left;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+}
+.ask-example:hover { background: var(--surface-2); }
+.ask-idle-foot { margin: 0.9rem 0 0; font-size: 0.86rem; }
+
+.ask-skeleton {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 1.4rem 1.6rem;
+}
+.ask-skeleton .h-small { margin-bottom: 1rem; }
+.skel-line {
+  height: 0.8rem;
+  border-radius: 5px;
+  background: var(--surface-2);
+  margin-top: 0.7rem;
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+.skel-cites { margin-top: 1.6rem; }
+.skel-cite { height: 3.1rem; border-radius: 10px; }
+@keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .skel-line { animation: none; } }
+
+.answer {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 1.3rem 1.6rem 1.5rem;
+}
+.answer-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.answer-head .h-small { margin-bottom: 0.5rem; }
+.answer-grounding { font-size: 0.8rem; color: var(--muted); }
+.answer-body { font-family: var(--serif); font-size: 1.08rem; line-height: 1.72; overflow-wrap: break-word; }
+.answer-body > :first-child { margin-top: 0; }
+.answer-body > :last-child { margin-bottom: 0; }
+.answer-body ul, .answer-body ol { padding-left: 1.4em; }
+.answer-body li { margin: 0.25em 0; }
+.answer-body blockquote {
+  margin: 1em 0;
+  padding: 0.2em 1.1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+/* An answer quotes the record verbatim, so a quoted passage can be a table. */
+.answer-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }
+
+.cite-ref {
+  font-family: var(--sans);
+  font-size: 0.66em;
+  font-weight: 650;
+  line-height: 1;
+  vertical-align: super;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.12em 0.3em;
+  margin: 0 0.03em;
+  cursor: pointer;
+}
+.cite-ref:hover { border-color: var(--accent); }
+
+.citations { margin-top: 1.6rem; }
+.citations .h-small { margin-bottom: 0.3rem; }
+.citations-note { margin: 0 0 0.85rem; font-size: 0.86rem; color: var(--muted); max-width: 42rem; }
+.citation-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+
+.citation {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.3s ease;
+}
+.citation:hover, .citation:focus-within { border-color: var(--accent); box-shadow: 0 3px 14px rgba(30, 32, 36, 0.07); }
+.citation.flash { border-color: var(--accent); background: var(--accent-soft); }
+
+.citation-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  padding: 0.85rem 1.1rem;
+  color: var(--text);
+}
+.citation-link:hover { text-decoration: none; }
+.citation-link.is-plain { cursor: default; }
+.citation-num {
+  flex: 0 0 auto;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.citation-main { flex: 1 1 auto; min-width: 0; }
+.citation-title-row { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.citation-title { font-weight: 600; }
+.citation-version {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.02rem 0.42rem;
+  white-space: nowrap;
+}
+.citation-snippet {
+  display: block;
+  margin-top: 0.35rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--border);
+  font-family: var(--serif);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--muted);
+  overflow-wrap: break-word;
+  /* A quotation that spans a heading boundary carries the newline the page
+     renders there (plaintext.ts no longer fabricates a period at it), so the
+     shown quote breaks where the page breaks rather than collapsing two blocks
+     into one run-on line. Spaces still collapse; only the block boundary shows. */
+  white-space: pre-line;
+}
+.citation-go { flex: 0 0 auto; color: var(--muted); }
+.citation:hover .citation-go { color: var(--accent); }
+.citation-foot { margin: 0; padding: 0 1.1rem 0.75rem 3.55rem; font-size: 0.8rem; }
+
+.refusal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 1.4rem 1.6rem 1.5rem;
+}
+.refusal h2 { margin: 0 0 0.55rem; font-family: var(--serif); font-size: 1.25rem; font-weight: 600; }
+.refusal p { margin: 0 0 0.75rem; max-width: 42rem; }
+.refusal-why {
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.9rem;
+}
+.refusal-why .badge { margin: 0 0.1rem; }
+.refusal-next { margin: 1.1rem 0 0.6rem; }
+.refusal-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+
+.ask-problem {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 12px;
+  padding: 1.2rem 1.5rem;
+}
+.ask-problem p { margin: 0 0 0.75rem; }
+.ask-problem p:last-child { margin-bottom: 0; }
+
+.ask-btn { white-space: nowrap; }
+
+.related-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.related-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  padding: 0.25rem 0.45rem;
+  border-radius: 6px;
+  color: var(--text);
+}
+.related-link:hover { background: var(--surface-2); text-decoration: none; }
+.related-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- when the record disagrees with itself (DATA-BACKBONE.md §7) ---
+   One visual family for all three surfaces — the divergence on a page, the
+   relations between pages, and the answer that found two of them. It borrows
+   the vocabulary already here (panel, badge, notice) and adds no new one: a
+   left rule in --danger, which is the colour the map already gives a conflict
+   edge, so the picture and the page agree about what a disagreement looks
+   like. It is deliberately NOT an error style — nothing is broken, and the
+   record saying two things is a fact it is being honest about. */
+
+.badge-divergence { color: var(--danger); border: 1px solid var(--danger); background: var(--danger-soft); }
+.badge-divergence-closed { color: var(--muted); border: 1px dashed var(--border-strong); background: transparent; }
+.ref-field.has-divergence .ref-prov { color: var(--danger); }
+.badge-divergence[role="button"] { cursor: pointer; }
+.badge-divergence[role="button"]:hover { filter: brightness(1.06); }
+
+.divergences { border-left: 3px solid var(--border-strong); }
+.divergences.has-open { border-left-color: var(--danger); }
+.divergences.flash { background: var(--danger-soft); }
+.dv-lede { margin: 0 0 0.9rem; color: var(--muted); font-size: 0.9rem; max-width: 46rem; }
+.dv-subhead { margin: 1.2rem 0 0.2rem; font-size: 0.86rem; font-weight: 650; }
+.dv-subnote { margin: 0 0 0.6rem; font-size: 0.82rem; max-width: 46rem; }
+.dv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.divergence {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface);
+}
+.divergence.is-open { border-color: var(--danger); }
+.divergence.is-closed { opacity: 0.85; }
+.divergence.flash { background: var(--danger-soft); }
+.dv-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.dv-label { font-weight: 600; overflow-wrap: anywhere; }
+.dv-seen { font-size: 0.82rem; }
+.dv-bare { margin: 0; font-size: 0.88rem; }
+.dv-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.6rem; }
+.dv-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+.dv-role { font-size: 0.72rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+.dv-authority .dv-role { color: var(--accent); }
+.dv-other .dv-role { color: var(--danger); }
+.dv-value { font-family: var(--mono); font-size: 0.95rem; font-weight: 600; overflow-wrap: anywhere; }
+.dv-value.is-empty { font-family: var(--sans); font-style: italic; font-weight: 550; color: var(--muted); }
+.dv-note { font-size: 0.78rem; line-height: 1.45; }
+.dv-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.6rem; }
+.dv-hint { font-size: 0.78rem; }
+.dv-settled { margin: 0.6rem 0 0; font-size: 0.84rem; color: var(--muted); }
+.dv-reason {
+  display: block;
+  margin-top: 0.25rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* ---- relations between pages -------------------------------------------- */
+
+.relations { border-left: 3px solid var(--border-strong); }
+.relations.has-conflict { border-left-color: var(--danger); }
+.rel-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
+.rel-panel-head .h-small { margin-bottom: 0; }
+.rel-lede { margin: 0.3rem 0 0.9rem; color: var(--muted); font-size: 0.9rem; max-width: 46rem; }
+.rel-empty { margin: 0; font-size: 0.9rem; }
+.rel-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+.relation {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 0.6rem 0.85rem;
+  background: var(--surface);
+}
+.relation.rel-conflicts_with { border-left-color: var(--danger); }
+.rel-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.rel-kind {
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.relation.rel-conflicts_with .rel-kind { color: var(--danger); }
+.rel-target { font-weight: 600; overflow-wrap: anywhere; }
+.rel-note { margin: 0.35rem 0 0; font-size: 0.9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rel-meta { margin: 0.35rem 0 0; font-size: 0.8rem; }
+.rel-withdraw { font-size: 0.8rem; padding: 0 0.35rem; }
+.rel-picks { display: flex; flex-direction: column; gap: 0.2rem; margin: 0.25rem 0; max-height: 12rem; overflow: auto; }
+.rel-pick {
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+}
+.rel-pick:hover { border-color: var(--accent); background: var(--surface-2); }
+/* A page the caller could not assert against is still listed — it is in the
+   record — but it is marked, and it does not pretend to be pickable. */
+.rel-pick.is-refused:hover { border-color: var(--border); background: transparent; }
+.rel-pick-where { font-size: 0.8rem; margin-left: 0.35rem; }
+.rel-pick-empty { margin: 0.2rem 0; font-size: 0.86rem; }
+.rel-chosen { margin: 0.1rem 0 0.5rem; font-size: 0.84rem; }
+.rel-chosen.is-chosen { color: var(--accent); font-weight: 600; }
+.rel-note-hint { margin: 0.1rem 0 0; font-size: 0.8rem; }
+
+/* ---- the answer that found two of them ---------------------------------- */
+/* Above the answer, and the loudest thing on the screen — because at this
+   moment it is the most valuable thing on it. Not an error state: no warning
+   icon, no apology, and the answer below it renders normally. */
+
+.disagreement {
+  background: var(--surface);
+  border: 1px solid var(--danger);
+  border-left: 4px solid var(--danger);
+  border-radius: 12px;
+  padding: 1.15rem 1.4rem;
+  margin-bottom: 1.1rem;
+}
+.dg-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.dg-mark {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  border-radius: 99px;
+  padding: 0.1rem 0.55rem;
+  white-space: nowrap;
+}
+.dg-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 1.22rem;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.dg-note {
+  margin: 0.7rem 0 0;
+  font-family: var(--serif);
+  font-size: 1.02rem;
+  line-height: 1.65;
+  overflow-wrap: break-word;
+}
+.dg-lede { margin: 0.9rem 0 0.5rem; font-size: 0.84rem; color: var(--muted); }
+.dg-pages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.dg-page-link {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.dg-page-link:hover { text-decoration: none; border-color: var(--danger); }
+.dg-page-main { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; min-width: 0; }
+.dg-page-title { font-weight: 600; overflow-wrap: anywhere; }
+.dg-page-snippet {
+  flex: 1 1 14rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dg-page-go { margin-left: auto; color: var(--muted); flex: 0 0 auto; }
+.dg-page-link:hover .dg-page-go { color: var(--danger); }
+.dg-unknown { font-size: 0.82rem; }
+.dg-foot { margin: 0.9rem 0 0; font-size: 0.84rem; color: var(--muted); max-width: 44rem; }
+
+.answer.is-contested { border-left: 3px solid var(--danger); }
+.citation.is-disputed { border-color: var(--danger); }
+.citation-disputed {
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  border-radius: 99px;
+  padding: 0.04rem 0.45rem;
+  white-space: nowrap;
+}
+
+/* ---------- sources ------------------------------------------------------ */
+
+.sources-lede { margin: 0.35rem 0 0; max-width: 46rem; }
+.table-scroll { overflow-x: auto; }
+.sources-table { table-layout: fixed; min-width: 44rem; }
+.sources-table td { vertical-align: top; }
+.sources-table th:nth-child(1), .sources-table td:nth-child(1) { width: 24%; }
+.sources-table th:nth-child(2), .sources-table td:nth-child(2) { width: 9%; }
+.sources-table th:nth-child(3), .sources-table td:nth-child(3) { width: 22%; }
+.sources-table th:nth-child(4), .sources-table td:nth-child(4) { width: 19%; }
+.sources-table th:nth-child(5), .sources-table td:nth-child(5) { width: 13%; }
+.sources-table th:nth-child(6), .sources-table td:nth-child(6) { width: 13%; }
+.source-name { font-weight: 600; display: block; overflow-wrap: anywhere; }
+.source-url { display: block; font-size: 0.8rem; overflow-wrap: anywhere; }
+.source-mode-note { display: block; font-size: 0.8rem; margin-top: 0.2rem; }
+.source-scope-list .role-tag { display: inline-block; margin: 0.1rem 0.15rem 0 0; }
+
+.editor-ref-note { font-size: 0.82rem; margin: 0 0 0.6rem; }
+.editor-ref-list { list-style: none; margin: 0 0 0.75rem; padding: 0; }
+.editor-ref {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--border);
+}
+.editor-ref:first-child { border-top: none; padding-top: 0; }
+.editor-ref-main { min-width: 0; }
+.editor-ref-label { display: block; font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; }
+.editor-ref-src { display: block; font-size: 0.78rem; overflow-wrap: anywhere; }
+
+/* authMode is a governance decision, not a toggle: each mode states its
+   consequence where it is chosen, so the two are never read as equivalent. */
+.choice-set {
+  margin: 1rem 0 0;
+  padding: 0.85rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.choice-set legend {
+  font-size: 0.8rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  padding: 0 0.35rem;
+}
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 0.5rem 0 0;
+  padding: 0.7rem 0.8rem;
+  font-weight: 400;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.choice:hover { border-color: var(--border-strong); }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.choice input { width: auto; display: block; margin: 0.28rem 0 0; flex: 0 0 auto; }
+.choice-main { display: block; min-width: 0; }
+.choice-title { display: block; font-weight: 600; margin-bottom: 0.2rem; }
+.choice-title .kind-tag { margin-left: 0.3rem; font-weight: 600; }
+.choice-note { display: block; font-size: 0.84rem; line-height: 1.5; color: var(--muted); }
+.choice-note strong { color: var(--text); font-weight: 600; }
+
+.field-pair { display: flex; gap: 0.75rem; align-items: flex-end; }
+.field-pair label:first-child { flex: 1 1 auto; }
+.field-pair label:last-child { flex: 0 0 9rem; }
+
+.modal [data-service-warn] { margin-top: 0.9rem; font-size: 0.86rem; }
+
+/* ---------- knowledge map ------------------------------------------------ */
+
+/* The map borrows the whole visual language rather than inventing one: the
+   surface, border and radius of a panel, the status badge colours for standing,
+   and the accent for the one thing the accent already means — Canon's own mark.
+
+   Colour carries three things at once, on three channels that never collide:
+
+     HUE           which community. One hue per collection (or per tree root,
+                   when there is only one collection on the map), drawn from an
+                   arc either side of Canon's own 163° green at the low
+                   saturation the rest of the product keeps to. No primaries,
+                   no rainbow — forty clusters still look like this product.
+     LIGHTNESS     which tree root inside that collection, in three steps.
+     RING / STROKE provenance and standing, which are never hues, so they stay
+                   readable whatever community a node is in.
+
+   The saturations and lightnesses are variables, so the entire palette
+   re-renders for dark mode without a line of JavaScript: each gradient carries
+   a --h custom property from the markup, and its stops resolve it against the
+   theme-aware values below. */
+
+.map-lede { margin: 0.35rem 0 0; max-width: 52rem; }
+.map-summary { margin: 0.15rem 0 0.7rem; font-size: 0.84rem; }
+
+.map-modes { display: inline-flex; gap: 0.15rem; border: 1px solid var(--border); border-radius: 8px; padding: 0.12rem; }
+.map-modes .btn { border-radius: 6px; }
+.map-modes .btn.is-on { background: var(--accent-soft); color: var(--accent); }
+
+.map-scope select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+}
+
+.map-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0.9rem 0 0.4rem; }
+.map-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+  padding: 0.35rem 0.85rem 0.55rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.map-filter-collections { max-width: min(100%, 34rem); }
+.map-filter legend {
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+.map-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.map-check input { width: auto; display: inline; margin: 0; }
+.map-check:hover { color: var(--accent); }
+
+/* The stage. A considered ground rather than a blank one: two very soft washes
+   in the accent and the amber the product already uses, over a faint plotted
+   grid. It does not move when the map pans, so it reads as the paper the record
+   is drawn on rather than as part of the drawing. */
+.map-stage {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin: 0 0 1.25rem;
+}
+.map-stage.is-graph {
+  position: relative;
+  height: min(72vh, 700px);
+  overflow: hidden;
+  background:
+    radial-gradient(88% 74% at 46% 4%, var(--accent-soft) 0%, transparent 58%),
+    radial-gradient(64% 58% at 92% 100%, var(--amber-soft) 0%, transparent 56%),
+    var(--surface);
+}
+.map-stage.is-graph::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(var(--border-strong) 0.75px, transparent 0.75px);
+  background-size: 26px 26px;
+  opacity: 0.36;
+}
+.map-stage.is-graph::after {
+  /* An inner shadow at the rim, so the picture sits inside the panel rather
+     than on top of it. */
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 12px;
+  box-shadow: inset 0 0 44px -14px rgba(20, 24, 28, 0.24);
+}
+@media (prefers-color-scheme: dark) {
+  /* The same two washes, pulled in and softened: on a dark ground a tint that
+     reads as "barely there" in light reads as a coloured spotlight. */
+  .map-stage.is-graph {
+    background:
+      radial-gradient(72% 58% at 44% 0%, var(--accent-soft) 0%, transparent 52%),
+      radial-gradient(52% 46% at 96% 104%, var(--amber-soft) 0%, transparent 50%),
+      var(--surface);
+  }
+  .map-stage.is-graph::after { box-shadow: inset 0 0 54px -12px rgba(0, 0, 0, 0.6); }
+  .map-stage.is-graph::before { opacity: 0.22; }
+}
+.map-stage.is-list { padding: 1.1rem 1.25rem; }
+.map-stage.is-empty { border-style: dashed; border-color: var(--border-strong); padding: 0.5rem; }
+.map-stage.is-empty .empty-state { border: none; background: none; margin: 0; }
+
+.map-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; position: relative; }
+.map-svg.is-panning { cursor: grabbing; }
+.map-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.map-controls {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.15rem;
+  box-shadow: var(--shadow);
+}
+
+/* The short key, drawn on the picture. The long one is still below the stage;
+   this is what stops a reader meeting 244 coloured dots with nothing on screen
+   to say what a colour is. */
+.map-key {
+  position: absolute;
+  top: 0.6rem;
+  left: 0.6rem;
+  z-index: 2;
+  width: min(19rem, calc(100% - 1.2rem));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 0.55rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+/* Chip in its own column, so a line that wraps wraps under its own text and
+   not under the chip. */
+.map-key-row {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.3rem;
+  margin: 0.24rem 0;
+  line-height: 1.35;
+}
+.map-key-hues { display: inline-flex; gap: 0.1rem; }
+@media (max-width: 720px) {
+  /* On a narrow screen the key would cover the picture it explains; the full
+     legend under the stage still says all of it. */
+  .map-key { display: none; }
+}
+
+/* Inside the legend the key stacks: its column is narrower than the page. */
+.map-legend .status-key-row { grid-template-columns: 1fr; gap: 0.15rem; }
+.map-legend .status-key { gap: 0.6rem; }
+
+.map-detail {
+  position: absolute;
+  left: 0.6rem;
+  bottom: 0.6rem;
+  z-index: 2;
+  max-width: min(23rem, calc(100% - 1.2rem));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.84rem;
+}
+.map-detail-title { margin: 0 0 0.25rem; font-size: 0.95rem; font-weight: 650; overflow-wrap: anywhere; }
+.map-detail-line { margin: 0.2rem 0; display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.map-detail p:last-child { margin-bottom: 0; }
+
+/* ---- the palette, as variables ---------------------------------------- */
+
+.map-svg, .map-legend {
+  --map-s: 30%;
+  --map-s-hi: 38%;
+  --map-edge-s: 32%;
+  --map-edge-l: 44%;
+  --map-halo: rgba(46, 110, 92, 0.5);
+}
+.mg-s0 { --l: 36%; --l-hi: 52%; }
+.mg-s1 { --l: 44%; --l-hi: 60%; }
+.mg-s2 { --l: 53%; --l-hi: 68%; }
+@media (prefers-color-scheme: dark) {
+  .map-svg, .map-legend {
+    --map-s: 34%;
+    --map-s-hi: 42%;
+    --map-edge-s: 34%;
+    --map-edge-l: 52%;
+    --map-halo: rgba(79, 154, 132, 0.55);
+  }
+  .mg-s0 { --l: 40%; --l-hi: 55%; }
+  .mg-s1 { --l: 48%; --l-hi: 63%; }
+  .mg-s2 { --l: 56%; --l-hi: 71%; }
+}
+.map-grad-hi { stop-color: hsl(var(--h, 163) var(--map-s-hi) var(--l-hi, 60%)); }
+.map-grad-lo { stop-color: hsl(var(--h, 163) var(--map-s) var(--l, 44%)); }
+/* A source is not a page and is not coloured like one: cool steel, and drawn
+   square with a dashed accent edge. */
+.map-grad-source-hi { stop-color: hsl(210 12% 88%); }
+.map-grad-source-lo { stop-color: hsl(210 11% 74%); }
+.map-grad-mute-hi { stop-color: hsl(210 6% 82%); }
+.map-grad-mute-lo { stop-color: hsl(210 5% 70%); }
+@media (prefers-color-scheme: dark) {
+  .map-grad-source-hi { stop-color: hsl(210 12% 44%); }
+  .map-grad-source-lo { stop-color: hsl(210 12% 31%); }
+  .map-grad-mute-hi { stop-color: hsl(210 5% 40%); }
+  .map-grad-mute-lo { stop-color: hsl(210 5% 29%); }
+}
+
+/* ---- constellation nodes ----------------------------------------------- */
+
+.map-node { cursor: pointer; }
+.map-node:focus { outline: none; }
+
+.map-svg-force .mn-body {
+  stroke: rgba(24, 28, 32, 0.32);
+  stroke-width: 1;
+  transition: stroke-width 120ms ease;
+}
+@media (prefers-color-scheme: dark) {
+  .map-svg-force .mn-body { stroke: rgba(0, 0, 0, 0.42); }
+}
+
+/* Provenance, on the node's own edge — never a hue, so it survives whatever
+   community the node is in. Authored is the plain node: nothing added, because
+   nothing came from anywhere else. */
+.map-svg-force .pv-imported .mn-body {
+  stroke: var(--surface);
+  stroke-width: 1.7;
+  stroke-dasharray: 2.5 2.5;
+}
+.map-svg-force .pv-federated .mn-body { stroke: var(--accent); stroke-width: 1.9; }
+.map-svg-force .mn-halo { fill: var(--map-halo); opacity: 0.17; }
+
+/* Standing. Canonical carries a lit core; Needs Update wears the only amber
+   ring on the map; In Review wears a dotted one; a draft and an archived page
+   are drawn faint, because they are not the record yet, or not any more. */
+.map-svg-force .mn-core { fill: rgba(255, 255, 255, 0.82); pointer-events: none; }
+.map-svg-force .mn-ring { fill: none; stroke: var(--border-strong); stroke-width: 1.4; stroke-dasharray: 2 2.5; }
+.map-svg-force .st-needs_update .mn-ring { stroke: var(--amber); stroke-width: 2.4; stroke-dasharray: none; }
+.map-svg-force .st-draft .mn-body { opacity: 0.62; }
+.map-svg-force .st-archived .mn-body { opacity: 0.42; }
+.map-svg-force .st-archived .mn-label { opacity: 0.5; }
+
+.map-svg-force .map-node-source .mn-body { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 4 3; }
+.map-svg-force .is-external .mn-body { stroke-dasharray: 5 3; }
+
+/* Labels. The hubs are named at every zoom; each step in brings another band
+   with it, and hovering or focusing always names the one node in question.
+   A stroke of the stage colour under the glyphs keeps them off the edges. */
+.mn-label {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--text);
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+  transition: opacity 140ms ease;
+}
+/* A hub is named at every zoom, so its name is set a step larger and a shade
+   heavier: at a whole-record fit it is the one thing that must still read. */
+.map-svg-force .lt-0 > .mn-in > .mn-label { font-size: 13.5px; font-weight: 700; stroke-width: 4px; }
+.map-svg[data-labels="0"] .lt-1 .mn-label,
+.map-svg[data-labels="0"] .lt-2 .mn-label,
+.map-svg[data-labels="0"] .lt-3 .mn-label,
+.map-svg[data-labels="1"] .lt-2 .mn-label,
+.map-svg[data-labels="1"] .lt-3 .mn-label,
+.map-svg[data-labels="2"] .lt-3 .mn-label { opacity: 0; }
+/* While the wheel is actually turning. See the comment on the wheel handler:
+   labels are the whole cost of a continuous zoom, and they are back before the
+   reader has stopped moving. */
+.map-svg.is-scaling .mn-label { visibility: hidden; }
+/* …except the one being read. */
+.map-svg .map-node:hover .mn-label,
+.map-svg .map-node.is-active .mn-label,
+.map-svg .map-node:focus-visible .mn-label { opacity: 1; }
+
+/* Hover feels alive: the neighbourhood lifts, the rest of the record recedes.
+   The dimming is one class on the <svg>; only the neighbourhood's own elements
+   are touched, so this is a handful of DOM writes at any size. */
+.map-svg.is-focusing .map-node { opacity: 0.16; transition: opacity 130ms ease; }
+.map-svg.is-focusing .map-edge { opacity: 0.07; transition: opacity 130ms ease; }
+.map-svg.is-focusing .map-node.is-near { opacity: 1; }
+.map-svg.is-focusing .map-edge.is-near { opacity: 1; stroke-opacity: 0.95; stroke-width: 2; }
+.map-svg-force .map-node.is-active .mn-body { stroke: var(--accent); stroke-width: 2.6; stroke-dasharray: none; }
+.map-svg-force .map-node.is-active .mn-in { filter: drop-shadow(0 3px 7px rgba(20, 24, 28, 0.4)); }
+.map-svg-force .map-node:focus-visible .mn-body { stroke: var(--accent); stroke-width: 3; }
+.map-svg-force .map-node:hover .mn-in { filter: drop-shadow(0 3px 7px rgba(20, 24, 28, 0.35)); }
+
+/* ---- tree nodes (the layered layout) ----------------------------------- */
+
+.map-node-box {
+  fill: var(--surface-2);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.map-svg-tree .map-node-box { filter: drop-shadow(0 1px 2px rgba(20, 24, 28, 0.16)); }
+.map-node-title { font-family: var(--sans); font-size: 12.5px; font-weight: 600; fill: var(--text); }
+.map-node-meta { font-family: var(--sans); font-size: 10.5px; fill: var(--muted); }
+.map-svg-tree .map-node:hover .map-node-box,
+.map-svg-tree .map-node.is-active .map-node-box { stroke: var(--accent); stroke-width: 1.6; }
+.map-svg-tree .map-node:focus-visible .map-node-box { stroke: var(--accent); stroke-width: 2.4; }
+
+/* Provenance is a fill tint; the community's hue tints it further, so the tree
+   and the constellation are recognisably the same map. */
+.map-svg-tree .map-node.pv-authored .map-node-box { fill: var(--surface-2); }
+.map-svg-tree .map-node.pv-imported .map-node-box { fill: var(--amber-soft); }
+.map-svg-tree .map-node.pv-federated .map-node-box { fill: var(--accent-soft); }
+.map-svg-tree .map-node.is-external .map-node-box { stroke-dasharray: 5 3; }
+.map-svg-tree .map-node-source .map-node-box { stroke: var(--accent); stroke-dasharray: 4 3; }
+.map-svg-tree .map-node-source .map-node-stripe { display: none; }
+
+/* Standing is the bar down a node's left edge, in the badge colours. */
+.map-node-stripe { fill: var(--border-strong); }
+.map-node.st-draft .map-node-stripe { fill: var(--border-strong); }
+.map-node.st-in_review .map-node-stripe { fill: var(--amber); }
+.map-node.st-canonical .map-node-stripe { fill: var(--accent); }
+.map-node.st-needs_update .map-node-stripe { fill: var(--amber); }
+.map-node.st-archived .map-node-stripe { fill: var(--muted); }
+
+/* ---- edges -------------------------------------------------------------- */
+
+.map-edge { fill: none; stroke-width: 1.4; }
+.map-edge-child { stroke: var(--border-strong); }
+.map-edge-link { stroke: var(--accent); stroke-dasharray: 6 4; opacity: 0.85; }
+.map-edge-reference { stroke: var(--amber); stroke-dasharray: 2 3; }
+.map-edge.is-active { stroke-width: 2.4; opacity: 1; }
+/* In the constellation a tree edge takes the hue of the community it runs
+   inside, which is what makes the picture read as communities rather than as a
+   grey mesh. Thin and low-opacity, so five hundred of them stay a web. */
+.map-svg-force .map-edge-child {
+  stroke: hsl(var(--h, 210) var(--map-edge-s) var(--map-edge-l));
+  stroke-width: 1.15;
+  stroke-opacity: 0.62;
+}
+/* A link across the record is the long stroke in the picture; it is drawn
+   quieter than a tree edge so it reads as a thread between communities rather
+   than as the structure. */
+.map-svg-force .map-edge-link { stroke-width: 1.1; stroke-opacity: 0.4; stroke-dasharray: 5 5; opacity: 1; }
+/* Where the record disagrees with itself (DATA-BACKBONE.md §7). Both relations
+   share one colour, because they are one family — the record saying something
+   about itself rather than about the world — and it is the only place --danger
+   appears on the map, so a contradiction is findable at a glance among several
+   hundred nodes. They are told apart by weight and by direction: a conflict is
+   the heavy dashed stroke with NO arrowhead, because it is symmetric; a
+   supersession is thinner, solid, and points from the page that replaced to
+   the page it replaced. Neither is an error state, and neither says anything
+   about which page is right. */
+.map-edge-conflicts_with { stroke: var(--danger); stroke-width: 2.3; stroke-dasharray: 9 4; opacity: 0.92; }
+.map-edge-supersedes { stroke: var(--danger); stroke-width: 1.6; opacity: 0.8; }
+.map-svg-force .map-edge-conflicts_with { stroke-width: 2.1; stroke-opacity: 0.9; }
+.map-svg-force .map-edge-supersedes { stroke-width: 1.5; stroke-opacity: 0.8; }
+.map-arrow path { stroke: none; }
+.map-arrow-child path { fill: var(--border-strong); }
+.map-arrow-link path { fill: var(--accent); }
+.map-arrow-reference path { fill: var(--amber); }
+.map-arrow-supersedes path { fill: var(--danger); }
+
+/* ---- the settle-in reveal ---------------------------------------------- */
+
+/* The layout is final before the first frame; what this animates is arrival.
+   A stagger from the middle of the picture outwards, capped so the whole
+   thing is over inside about half a second however many nodes there are. */
+@keyframes map-node-in {
+  from { opacity: 0; transform: scale(0.35); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes map-edge-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.map-nodes.is-revealing .mn-in {
+  animation: map-node-in 340ms cubic-bezier(0.2, 0.85, 0.3, 1) both;
+  animation-delay: var(--d, 0ms);
+}
+.map-edges.is-revealing {
+  animation: map-edge-in 420ms ease 160ms both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .map-nodes.is-revealing .mn-in,
+  .map-edges.is-revealing { animation: none; }
+  .map-svg .map-node, .map-svg .map-edge, .mn-label { transition: none; }
+}
+
+/* ---- legend -------------------------------------------------------------- */
+
+.map-legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.9rem 1.5rem;
+}
+.map-legend-wide { grid-column: 1 / -1; }
+.map-legend-h {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+/* Prose, not a flex row: a badge or a swatch sits in the line of the sentence
+   that explains it, and the sentence wraps like a sentence. Laying these out as
+   flex items made every word its own line in the narrowest column. */
+.map-legend-item {
+  margin: 0.25rem 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.map-legend-item .badge { vertical-align: 1px; }
+.map-legend-item strong { color: var(--text); font-weight: 600; }
+.map-legend-note { font-size: 0.8rem; margin: 0.5rem 0 0; }
+.map-legend-edge { width: 42px; height: 10px; vertical-align: -1px; margin-right: 0.35rem; }
+.map-chip {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  vertical-align: -3px;
+  margin-right: 0.15rem;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+}
+.map-chip.pv-authored { background: var(--surface-2); }
+.map-chip.pv-imported { background: var(--amber-soft); border-style: dotted; border-color: var(--muted); }
+.map-chip.pv-federated { background: var(--accent-soft); border-color: var(--accent); border-width: 2px; }
+.map-chip-page { background: var(--surface-2); border-radius: 99px; }
+.map-chip-source { background: hsl(210 11% 78%); border: 1px dashed var(--accent); border-radius: 4px; }
+.map-chip-external { background: var(--surface-2); border-style: dashed; border-radius: 99px; }
+.map-chip-canonical {
+  border-radius: 99px;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.95) 0 30%, var(--accent) 32%);
+  border-color: var(--accent);
+}
+.map-chip-needs { border-radius: 99px; border: 2.5px solid var(--amber); background: var(--surface-2); }
+.map-chip-review { border-radius: 99px; border: 1.5px dotted var(--border-strong); background: var(--surface-2); }
+.map-chip-draft { border-radius: 99px; background: var(--surface-2); opacity: 0.5; }
+.map-chip-cluster {
+  border-radius: 99px;
+  border-color: rgba(24, 28, 32, 0.28);
+  background: radial-gradient(circle at 34% 28%,
+    hsl(var(--h, 163) var(--map-s-hi) var(--l-hi, 60%)) 0%,
+    hsl(var(--h, 163) var(--map-s) var(--l, 44%)) 100%);
+}
+@media (prefers-color-scheme: dark) {
+  .map-chip-source { background: hsl(210 12% 38%); }
+}
+.map-communities { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; margin-top: 0.4rem; }
+.map-community {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+/* ---- the list, which is the same data ----------------------------------- */
+
+.map-list, .map-list ul { list-style: none; margin: 0; padding: 0; }
+.map-list ul { padding-left: 1rem; border-left: 1px solid var(--border); margin-left: 0.5rem; }
+.map-list li { margin: 0.1rem 0; }
+.map-list-wrap .h-small { margin: 1.1rem 0 0.5rem; }
+.map-list-wrap .h-small:first-child { margin-top: 0; }
+.map-list-collection {
+  margin: 0.9rem 0 0.3rem;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--text);
+}
+.map-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 0.5rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+}
+.map-row:hover { background: var(--surface-2); }
+.map-row-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.map-row-type { font-size: 0.82rem; }
+.map-row-degree { font-size: 0.78rem; }
+.map-row-edges { font-size: 0.8rem; color: var(--muted); }
+.map-row-edges a { color: var(--accent); }
+/* §7's relations read in the list exactly as they are drawn: the same colour
+   the map gives them, so the picture and the list are obviously the same fact. */
+.map-row-edges.is-conflict, .map-row-edges.is-supersedes { color: var(--danger); }
+.map-row-edges.is-conflict a, .map-row-edges.is-supersedes a { color: var(--danger); }
+.map-source-name { font-weight: 600; overflow-wrap: anywhere; }
+.map-origin { font-size: 0.78rem; }
+
+.map-prov {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 99px;
+  padding: 0.04rem 0.45rem;
+  white-space: nowrap;
+}
+.map-prov-imported { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+.map-prov-federated { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.map-external-tag {
+  font-size: 0.72rem;
+  color: var(--muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: 99px;
+  padding: 0.04rem 0.45rem;
+  white-space: nowrap;
+}
+
+/* ---------- toasts ------------------------------------------------------ */
+
+.toasts {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 100;
+  max-width: 380px;
+}
+.toast {
+  background: var(--text);
+  color: var(--bg);
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  font-size: 0.92rem;
+  box-shadow: var(--shadow);
+  animation: toast-in 0.18s ease;
+}
+/* A refusal waits to be read. It used to leave after about three seconds,
+   which is how a contributor came to believe she had asserted a conflict she
+   had not (USER-TESTING.md T4.4, second round). */
+.toast-error {
+  background: var(--danger);
+  color: #fff;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+.toast-close {
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.toast-close:hover { opacity: 1; }
+.toast-ok { background: var(--accent); color: var(--accent-ink); }
+.toast-info { background: var(--text); color: var(--bg); }
+/* "It worked, and here is what you should know about it" — the withdrawal that
+   leaves a directory group still granting access (SECURITY.md R10). */
+.toast-warn { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber); }
+.toast.leaving { opacity: 0; transition: opacity 0.3s ease; }
+@keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---------- modal ------------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 22, 26, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh 1rem 2rem;
+  overflow: auto; /* a tall dialog must still reach its own buttons */
+  z-index: 90;
+}
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 480px;
+  padding: 1.5rem 1.75rem;
+  animation: toast-in 0.15s ease;
+}
+.modal h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+/* A refusal raised inside a dialog is drawn inside the dialog. It used to go to
+   a toast in the far corner, behind this dialog's own backdrop. */
+.modal-refusal {
+  margin: 1rem 0 0;
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--danger);
+  background: var(--surface-2, rgba(0, 0, 0, 0.03));
+  font-size: 0.9rem;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.25rem; }
+.type-help { font-size: 0.84rem; margin: 0.4rem 0 0; }
+
+/* ---------- the queue (USER-TESTING.md T2.1) ----------------------------- */
+
+/* The count beside the nav entry. It is the whole reason the entry exists —
+   nobody was told that 25 drafts were waiting — so it reads as a number, not
+   as decoration, and it disappears entirely at zero rather than showing a
+   confident 0 somebody has to parse. */
+.nav-count {
+  display: inline-block;
+  margin-left: 0.4rem;
+  min-width: 1.35em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 99px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.queue-lede { max-width: 62ch; margin: 0 0 1.5rem; }
+
+.queue-strand { margin: 0 0 1.9rem; }
+.queue-strand-head {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.queue-strand-count {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 99px;
+  padding: 0.05rem 0.5rem;
+}
+.queue-strand-blurb { margin: 0.25rem 0 0.7rem; font-size: 0.87rem; max-width: 70ch; }
+/* An empty strand is an answer — "nothing is waiting on your approval" — so it
+   is kept and made small, rather than hidden and mistaken for a strand nobody
+   asked about. */
+.queue-strand-empty { margin-bottom: 1rem; }
+.queue-strand-empty .queue-strand-head { font-size: 0.92rem; font-weight: 600; color: var(--muted); }
+.queue-empty { font-size: 0.87rem; margin: 0.1rem 0 0; font-style: italic; }
+.queue-table td:first-child { width: 100%; }
+.queue-meta { font-size: 0.8rem; margin-top: 0.15rem; }
+.queue-note {
+  font-size: 0.84rem;
+  margin-top: 0.3rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border-strong);
+}
+.queue-when { color: var(--muted); font-size: 0.82rem; }
+
+.queue-notices { list-style: none; margin: 0; padding: 0; }
+.queue-notice {
+  border-top: 1px solid var(--border);
+  padding: 0.6rem 0;
+}
+.queue-notice:first-child { border-top: none; }
+.queue-notice-kind {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-right: 0.5rem;
+}
+/* Undelivered is a fact about the mail relay, not about the record: it is said
+   plainly and quietly, because the notice itself has arrived — it is on this
+   screen. */
+.queue-unsent { color: var(--amber); }
+.queue-truncated { font-size: 0.87rem; }
+
+/* ---------- the review decision ----------------------------------------- */
+/* What is being approved (USER-TESTING.md T4.2) and what came back and why
+   (T4.3). Both sit above the published body, because the published body is the
+   one thing on a page in review that is not what is being decided. */
+
+.review-change { border-left: 3px solid var(--amber); }
+.review-change .diff-scroll { margin-top: 0.75rem; }
+.review-change-title { margin: 0.4rem 0; }
+.review-change-title del, .review-change-fields del {
+  color: var(--del-ink); background: var(--del-bg); text-decoration: line-through;
+  padding: 0 0.2em; border-radius: 3px;
+}
+.review-change-title ins, .review-change-fields ins {
+  color: var(--add-ink); background: var(--add-bg); text-decoration: none;
+  padding: 0 0.2em; border-radius: 3px;
+}
+.review-change-fields { list-style: none; margin: 0.4rem 0 0; padding: 0; font-size: 0.92rem; }
+.review-change-fields li { padding: 0.15rem 0; }
+.review-change-field { font-weight: 600; margin-right: 0.4rem; }
+
+/* What an approval does NOT cover: the page's live federated values. Boxed
+   rather than coloured — this is not an alarm, it is the boundary of what
+   somebody is about to put their name to. */
+.review-fed {
+  margin: 0.75rem 0;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 0.92rem;
+}
+.review-fed p { margin: 0.35rem 0; }
+.review-fed-head {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.review-fed-list { list-style: none; margin: 0.4rem 0; padding: 0; }
+.review-fed-list li { padding: 0.12rem 0; overflow-wrap: anywhere; }
+.review-fed-label { font-weight: 600; margin-right: 0.4rem; }
+.approve-fed { margin-top: 0.4rem; }
+
+/* Amber, like every other "this is waiting on somebody" state. A send-back is
+   not an error; it is an unkept promise pointed the other way. */
+.notice-sentback { border-left-color: var(--amber); background: var(--amber-soft); }
+.sentback-reason {
+  margin: 0.5rem 0;
+  padding: 0.15rem 0 0.15rem 0.8rem;
+  border-left: 2px solid var(--amber);
+  white-space: pre-wrap;
+  font-style: normal;
+}
+/* A page's standing, stated where the reader meets the page (see
+   pageStandingNotes in app.js). Contested and superseded take the DANGER
+   colour rather than the amber the stale notices use, and they take it because
+   the Ask view already does: a citation drawn from a page a person has recorded
+   a conflict against reads "contested" in exactly this red. One fact, one
+   colour, wherever a reader meets it. */
+.notice-contested { border-left-color: var(--danger); background: var(--danger-soft); }
+.standing-reason {
+  margin: 0.5rem 0;
+  padding: 0.15rem 0 0.15rem 0.8rem;
+  border-left: 2px solid var(--danger);
+  white-space: pre-wrap;
+  font-style: normal;
+}
+.standing-reason-none { margin: 0.5rem 0; }
+.standing-meta { margin-top: 0.35rem; font-size: 0.87rem; }
+
+/* The refusals under the action row. The greyed buttons carry the same
+   sentences in a `title`, which a keyboard and a phone never see. */
+.action-refusals { font-size: 0.87rem; margin: 0.3rem 0 0; padding: 0; list-style: none; }
+.action-refusals li { margin: 0.15rem 0; }
+/* ---------- refusals: one vocabulary, everywhere ------------------------ */
+/* A control the server would refuse. It is NOT `disabled`: a disabled button
+   cannot be focused, cannot be tapped, and announces nothing, so its `title`
+   is invisible to exactly the two readers who most need it. `aria-disabled`
+   says the same thing to assistive technology and leaves it reachable, which
+   is how somebody finds out why. */
+.is-refused {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.is-refused:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; opacity: 0.7; }
+
+/* One refusal is one line. Two or more collapse to a line and a "Why?", because
+   three or four grey sentences under a title are a paragraph of apology above
+   the thing somebody opened the page to read. */
+.refusal-note { font-size: 0.87rem; margin: 0.35rem 0 0; }
+.refusal-summary { margin: 0; }
+.refusal-list { font-size: 0.87rem; margin: 0.3rem 0 0; padding: 0 0 0 0.1rem; list-style: none; }
+.refusal-list li { margin: 0.2rem 0; padding-left: 0.7rem; border-left: 2px solid var(--border); }
+.refusal-list li.is-lit, .refusal-note.is-lit { border-left-color: var(--amber); color: var(--text); }
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.actions .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+.comment-sentback { border-left: 2px solid var(--amber); padding-left: 0.7rem; }
+.comment-flash { animation: comment-flash 2s ease; }
+@keyframes comment-flash {
+  0%, 60% { background: var(--amber-soft); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .comment-flash { animation: none; } }
+
+/* ---------- responsive --------------------------------------------------- */
+
+@media (max-width: 900px) {
+  /* minmax(0, 1fr), not 1fr: a grid item's automatic minimum size is its
+     content, so a one-column layout let the tree's longest title set the
+     page's width and pushed everything else sideways. */
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  /* One column means the sidebar is ON TOP of the page rather than beside it,
+     so it is collapsed to its name and a count here (wireSidebar) and it never
+     scrolls inside itself: what is on screen is either the whole tree or none
+     of it, never a window onto the middle of one. */
+  .sidebar { position: static; max-height: none; overflow: visible; }
+  .editor-grid { grid-template-columns: 1fr; }
+  .search-slot { flex: 1 1 auto; }
+  .topbar { flex-wrap: wrap; height: auto; padding: 0.5rem 1rem; }
+  /* The nav wraps rather than pushing the page sideways. It gained an entry
+     (My queue, with its count) and on a narrow screen the row no longer fits;
+     nothing in this product may scroll horizontally. */
+  .topnav { margin-left: 0; flex-wrap: wrap; }
+  .doc-body { padding: 1.25rem 1.25rem; }
+  .answer, .refusal, .ask-skeleton { padding-left: 1.1rem; padding-right: 1.1rem; }
+  .citation-foot { padding-left: 1.1rem; }
+  .ask-form-foot { align-items: flex-start; }
+  .ref-field { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .ref-prov { min-height: 7.25em; -webkit-line-clamp: 5; line-clamp: 5; }
+  .modal-backdrop { padding-top: 4vh; }
+  .field-pair { flex-direction: column; align-items: stretch; }
+  .field-pair label:last-child { flex: 1 1 auto; }
+  .source-mode { max-width: none; }
+  /* On a narrow screen the drawing gets shorter and the detail card gets out of
+     its own way: the map stays usable rather than becoming a peephole. The
+     three layout buttons and the scope picker drop onto their own lines rather
+     than pushing the page sideways — nothing here may scroll horizontally. */
+  .map-stage.is-graph { height: min(60vh, 460px); }
+  .map-detail { left: 0.5rem; right: 0.5rem; bottom: 0.5rem; max-width: none; font-size: 0.8rem; }
+  .map-filters { gap: 0.5rem; }
+  .map-filter { padding: 0.3rem 0.6rem 0.45rem; }
+  .map-page .page-head { flex-wrap: wrap; }
+  .map-page .actions { justify-content: flex-start; max-width: 100%; }
+  .map-modes { flex-wrap: wrap; }
+  .map-scope { min-width: 0; max-width: 100%; }
+  .map-scope select { max-width: 100%; }
+  .map-legend-grid { gap: 0.7rem 1rem; }
+}
+
+/* The stated basis for a backdated effective date, shown wherever the date is
+   (USER-TESTING.md, second round). Quiet, because it is provenance rather than
+   the value — but present, because collecting it and hiding it is worse than
+   not collecting it. */
+.field-basis { margin-top: 0.2rem; font-size: 0.86rem; line-height: 1.45; }
+
+/* A refusal's pointers: places to look, styled as a list of links rather than
+   as results — a refusal must not dress up as an answer. */
+.refusal-nearest { margin: 0.85rem 0 0.35rem; padding: 0.7rem 0.9rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.refusal-nearest h3 { margin: 0 0 0.25rem; }
+.nearest-list { margin: 0.4rem 0 0.1rem; padding-left: 1.1rem; }
+.nearest-list li { margin: 0.25rem 0; }
+
+/* Gaps: one card per refused question, with the triage actions inline. */
+.gap-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1rem; margin: 0.7rem 0; background: var(--surface); }
+.gap-question { margin: 0; font-family: var(--serif); font-size: 1.05rem; }
+.gap-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
+.gap-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+.gap-actions .gap-note { flex: 1 1 16rem; }
+/* A gap the record has since learned to answer. Amber like every other
+   "waiting on somebody" state: the news is good, but the row still wants an
+   act — re-check, then resolve with the sentence that says so. */
+.gap-nowanswers {
+  display: inline-block;
+  margin: 0.5rem 0 0;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.gap-guard { margin-top: 0.35rem; }
+
+/* Federated fields under a citation: the live figure beside the quoted prose. */
+.citation-fields { margin: 0.35rem 0 0.2rem 2.4rem; padding: 0; list-style: none; font-size: 0.85rem; }
+.citation-fields li { margin: 0.15rem 0; }
+.citation-fields .cf-label { font-weight: 600; margin-right: 0.4rem; }
+.citation-fields .cf-value { font-variant-numeric: tabular-nums; margin-right: 0.4rem; }

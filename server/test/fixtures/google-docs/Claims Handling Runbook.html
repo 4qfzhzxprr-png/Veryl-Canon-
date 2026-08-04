@@ -1,0 +1,51 @@
+<html>
+<head>
+<meta content="text/html; charset=UTF-8" http-equiv="content-type">
+<title>Claims Handling Runbook</title>
+<style type="text/css">
+.c0 { color: #000000; font-size: 11pt; font-family: "Arial"; font-style: normal; font-weight: 400 }
+.c1 { font-weight: 700; color: #000000; font-family: "Arial" }
+.c2 { font-style: italic; color: #000000; font-family: "Arial" }
+.c3 { font-family: "Consolas"; font-size: 10pt; background-color: #f3f3f3 }
+.c4 { border: 1px solid #000000; border-collapse: collapse }
+.title { font-size: 26pt; font-weight: 700 }
+table td, table th { padding: 5pt }
+</style>
+</head>
+<body class="c9 doc-content">
+<p class="title"><span class="c0">Claims Handling Runbook</span></p>
+<p class="c5"><span class="c0">The nightly batch runs at 02:00 UTC. This document is the </span><span class="c1">operational</span><span class="c0"> record; the policy it implements lives in the benefits handbook.</span></p>
+<h1 class="c6"><span class="c0">Escalation table</span></h1>
+<table class="c4">
+<tr class="c7">
+<td class="c8"><p class="c5"><span class="c1">Severity</span></p></td>
+<td class="c8"><p class="c5"><span class="c1">Who to call</span></p></td>
+<td class="c8"><p class="c5"><span class="c1">Within</span></p></td>
+</tr>
+<tr class="c7">
+<td class="c8"><p class="c5"><span class="c0">Batch failed twice</span></p></td>
+<td class="c8"><p class="c5"><span class="c0">Claims platform on-call</span></p></td>
+<td class="c8"><p class="c5"><span class="c0">15 minutes</span></p></td>
+</tr>
+<tr class="c7">
+<td class="c8"><p class="c5"><span class="c0">Payment file rejected</span></p></td>
+<td class="c8"><p class="c5"><span class="c0">Treasury, then claims platform</span></p></td>
+<td class="c8"><p class="c5"><span class="c0">1 hour</span></p></td>
+</tr>
+<tr class="c7">
+<td class="c8"><p class="c5"><span class="c0">Member data exposed</span></p></td>
+<td class="c8"><p class="c5"><span class="c0">Security duty officer, always</span></p></td>
+<td class="c8"><p class="c5"><span class="c0">Immediately</span></p></td>
+</tr>
+</table>
+<h1 class="c6"><span class="c0">Re-running the batch</span></h1>
+<p class="c5"><span class="c0">Re-runs are idempotent per claim id, so a partial night is safe to repeat:</span></p>
+<p class="c5"><span class="c3">claims-batch --date 2026-03-14 --resume --dry-run</span></p>
+<p class="c5"><span class="c0">Check the output, then run it again without </span><span class="c3">--dry-run</span><span class="c0">.</span></p>
+<h1 class="c6"><span class="c0">What not to do</span></h1>
+<ul class="c10 lst-kix_list_3-0 start">
+<li class="c5 c11 li-bullet-0"><span class="c0">Never edit claim rows by hand; the batch keeps its own audit trail</span></li>
+<li class="c5 c11 li-bullet-0"><span class="c2">Never</span><span class="c0"> re-point the batch at production from a laptop</span></li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veryl Canon</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232e6e5c'/%3E%3Ctext x='16' y='22' font-family='Georgia,serif' font-size='18' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">Veryl Canon<span class="stage">alpha</span></a>
+    <div class="search-slot" id="search-slot" hidden>
+      <input id="search-input" type="search" placeholder="Search the record&hellip;" autocomplete="off" aria-label="Search the record">
+      <div id="search-results" class="search-results" hidden></div>
+    </div>
+    <nav class="topnav" id="topnav" hidden>
+      <a href="#/" data-nav="home">Collections</a>
+      <!-- The count is the point, not the link: nothing told a Director of
+           Compliance that 25 drafts were waiting on him (USER-TESTING.md T2.1). -->
+      <a href="#/queue" data-nav="queue" id="nav-queue">My queue<span
+        class="nav-count" id="nav-queue-count" hidden>0</span></a>
+      <a href="#/ask" data-nav="ask" id="nav-ask" hidden>Ask</a>
+      <a href="#/sources" data-nav="sources" id="nav-sources" hidden>Sources</a>
+      <a href="#/map" data-nav="map" id="nav-map" hidden>Map</a>
+      <a href="#/gaps" data-nav="gaps" id="nav-gaps" hidden>Gaps</a>
+      <a href="#/audit" data-nav="audit">Audit</a>
+    </nav>
+    <div class="actor-chip" id="actor-chip"></div>
+  </header>
+  <main id="app" class="app"></main>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="modal-root"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "@veryl/source-stub",
+  "version": "0.1.0",
+  "description": "Benefits administration stub: the external record system Canon's federation (DATA-BACKBONE.md §6) is built and demonstrated against.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test \"dist/source-stub/test/**/*.test.js\"",
+    "start": "npm run build && node dist/source-stub/src/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "5.6"
+  },
+  "private": true,
+  "type": "module"
+}

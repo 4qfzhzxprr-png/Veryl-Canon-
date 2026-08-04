@@ -1,0 +1,4 @@
+/* Confluence ships its stylesheet alongside the export. The importer ignores
+   this directory; it is here so the fixture matches a real export layout. */
+body { font-family: Arial, sans-serif; }
+.wiki-content table.confluenceTable { border-collapse: collapse; }

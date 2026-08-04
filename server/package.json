@@ -1,0 +1,29 @@
+{
+  "name": "@veryl/canon-server",
+  "version": "0.1.0",
+  "description": "Veryl Canon server: the data storage and organization backbone of the Veryl suite.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && CANON_DEV_AUTH=true node --test \"dist/server/test/**/*.test.js\"",
+    "start": "npm run build && node dist/server/src/index.js",
+    "seed:demo": "npm run build && node dist/server/scripts/seed-demo.js",
+    "backup": "npm run build && node dist/server/scripts/backup.js",
+    "restore": "npm run build && node dist/server/scripts/restore.js",
+    "verify:audit": "npm run build && node dist/server/scripts/verify-audit.js",
+    "anchor:head": "npm run build && node dist/server/scripts/anchor-head.js",
+    "compare:attestations": "npm run build && node dist/server/scripts/compare-attestations.js",
+    "eval:retrieval": "npm run build && node dist/server/scripts/eval-retrieval.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "5.6"
+  },
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0"
+  }
+}

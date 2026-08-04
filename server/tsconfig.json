@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    // Rooted a level up so the agent-authentication tests can boot the real
+    // registry-stub in-process, exactly as registry-stub's own tests compile
+    // Canon's RegistryClient. Output therefore lands in dist/server/…
+    "rootDir": "..",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    // Development tooling that ships in the repo but never in a deployment:
+    // scripts/seed-demo.ts (npm run seed:demo). Compiled with everything else
+    // so it cannot rot against the store's signatures.
+    "scripts/**/*.ts",
+    "../registry-stub/src/**/*.ts",
+    "../source-stub/src/**/*.ts",
+    "../idp-stub/src/**/*.ts"
+  ]
+}
