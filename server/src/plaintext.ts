@@ -39,11 +39,29 @@
 //     text, and a table is not. The page itself renders it as a table, and the
 //     citation points there.
 //
-// Block boundaries become sentence boundaries, because that is what they are
-// when the structure is taken away — otherwise a heading runs into the
-// paragraph under it and produces a sentence nobody wrote.
+// A BLOCK BOUNDARY IS A NEWLINE, NOT A FABRICATED PERIOD. This module used to
+// end every block that lacked sentence punctuation with a period it added
+// itself — so a heading would not run into the paragraph under it and read as a
+// sentence nobody wrote. That solved a real problem and created a subtler one a
+// compliance director found in the sixth persona round: a shown quotation
+// crossing a heading boundary printed "…file happened to be created. How long
+// we keep each class of record. Claims and…" — every WORD the page's own, and a
+// period after "record" that the page does not have. A quotation is verbatim
+// against what the page DISPLAYS or it is not verbatim, and an invented full
+// stop is exactly the punctuation-for-machines this module exists to strip.
+//
+// So the boundary between two blocks is the newline the page renders there,
+// kept as a newline and never collapsed into the run-together space that first
+// made "## Scope" land mid-sentence. It invents nothing: the page breaks there,
+// this breaks there. The splitters that used to lean on the fabricated period —
+// which window to quote (retrieval.ts `bestWindow`), which part of a page is
+// about a question (answers.ts `topicalCoverageBest`), where one claim ends and
+// the next begins (answers.ts `sentences`) — each read the newline as the block
+// boundary it always was, so the sentence-splitting that period stood in for is
+// unchanged. What changed is that the boundary is now a mark the page actually
+// carries.
 export function quotableText(markdown: string): string {
-  return collapse(quotableLines(markdown).join(' '));
+  return quotableLines(markdown).join('\n');
 }
 
 /**
@@ -89,7 +107,12 @@ export function quotableLines(markdown: string): string[] {
       .replace(/^>\s?/, '') // blockquote
       .replace(/^([-*+]|\d+[.)])\s+/, ''); // list item
     text = inlineWords(text);
-    if (text) out.push(endsSentence(text) ? text : `${text}.`);
+    // The words of the block, collapsed to single spaces and kept exactly — no
+    // period appended. A block boundary is expressed by the caller as the
+    // newline the page renders there (`quotableText` joins with '\n',
+    // `indexableText` with '\n\n'), never by punctuation this module made up.
+    text = collapse(text);
+    if (text) out.push(text);
   }
   return out;
 }
@@ -129,10 +152,6 @@ function inlineWords(text: string): string {
     .replace(/`([^`]+)`/g, '$1')
     .replace(/(\*\*|__)(.+?)\1/g, '$2')
     .replace(/(?<![\w*])(\*|_)(?!\s)([^*_]+?)(?<!\s)\1(?![\w*])/g, '$2');
-}
-
-function endsSentence(text: string): boolean {
-  return /[.!?:;,—-]$/.test(text);
 }
 
 function collapse(text: string): string {

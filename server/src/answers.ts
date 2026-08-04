@@ -779,16 +779,18 @@ export function topicalCoverageBest(
   text: string,
   stats: TermStats | null = null,
 ): number {
-  // Sentence starts by regex rather than a literal '. ', because the indexed
-  // text separates blocks with newlines — a splitter blind to '.\n' never saw
-  // a bullet list's boundaries, every window anchored in the page's opening,
-  // and a page whose answering sentence sat in its final section scored ZERO
-  // while its whole-page bag scored 0.88. The tail window is always included
-  // for the same reason: a guard that stopped short of the last
-  // GATE_WINDOW characters threw away exactly the sentences most policy pages
-  // end with — the operative ones.
+  // Window starts by regex rather than a literal '. ', because the indexed text
+  // separates blocks with newlines — a splitter blind to the block boundary
+  // never saw a bullet list's boundaries, every window anchored in the page's
+  // opening, and a page whose answering sentence sat in its final section
+  // scored ZERO while its whole-page bag scored 0.88. Two kinds of start: the
+  // end of a real sentence, and a block boundary — which is now the newline the
+  // indexed text carries between blocks, no longer a fabricated period standing
+  // in for it (plaintext.ts). The tail window is always included for the same
+  // reason: a guard that stopped short of the last GATE_WINDOW characters threw
+  // away exactly the sentences most policy pages end with — the operative ones.
   const starts = new Set<number>([0, Math.max(0, text.length - GATE_WINDOW)]);
-  for (const match of text.matchAll(/[.!?]["')\]]?\s+/g)) {
+  for (const match of text.matchAll(/(?:[.!?]["')\]]?\s+)|\n+/g)) {
     const at = match.index! + match[0].length;
     if (at < text.length) starts.add(at);
   }
@@ -1104,8 +1106,14 @@ interface PassageClaims {
 }
 
 function sentences(text: string): string[] {
+  // A sentence ends at sentence punctuation, or at a block boundary — the
+  // newline `quotableText` now renders between blocks, which used to be a
+  // fabricated period this splitter relied on (plaintext.ts). Keying on the
+  // newline keeps a heading and the paragraph under it as two claims rather
+  // than one run-together sentence, exactly as the period did, without the
+  // quotation carrying a full stop the page never wrote.
   return text
-    .split(/(?<=[.;:!?])\s+/)
+    .split(/(?<=[.;:!?])\s+|\n+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }

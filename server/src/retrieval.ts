@@ -688,13 +688,20 @@ function bestWindow(text: string, terms: string[]): { text: string; score: numbe
   const haystack = text.toLowerCase();
   const needles = terms.map((t) => t.toLowerCase()).filter((t) => t.length > 0);
 
-  // Sentence starts, which `quotableText` has already made regular: every block
-  // it emits ends in sentence punctuation, so ". " is a real boundary and a
-  // quotation beginning at one reads as a sentence rather than as a fragment.
-  const starts = [0];
+  // Where a quotation may begin: at a real sentence end (". ") and at a block
+  // boundary, which `quotableText` now renders as the newline the page carries
+  // there rather than as a fabricated full stop (plaintext.ts explains why the
+  // period is gone). Both are collected, deduplicated, and taken in order, so a
+  // window opens at the start of a sentence or a block and reads as one rather
+  // than as a fragment.
+  const boundaries = new Set<number>([0]);
   for (let at = haystack.indexOf('. '); at !== -1; at = haystack.indexOf('. ', at + 1)) {
-    starts.push(at + 2);
+    boundaries.add(at + 2);
   }
+  for (let at = haystack.indexOf('\n'); at !== -1; at = haystack.indexOf('\n', at + 1)) {
+    boundaries.add(at + 1);
+  }
+  const starts = [...boundaries].sort((a, b) => a - b);
 
   let bestAt = 0;
   let bestScore = -1;

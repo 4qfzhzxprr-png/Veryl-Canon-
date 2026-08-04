@@ -466,6 +466,43 @@ test('quotableText: the marks go, the words stay exactly', () => {
   assert.ok(!/Schedule Claims records/.test(text), `heading ran into the body: ${text}`);
 });
 
+// The sixth persona round, Marcus, reading a quotation as a citation he was
+// about to sign: the notice quoted "…the date a file happened to be created.
+// How long we keep each class of record. Claims and…" — every word the page's,
+// and a period after "record" that the page does not have, because the heading
+// had no sentence punctuation and this module used to add one so its splitters
+// would see a boundary. A quotation is verbatim against what the page DISPLAYS
+// or it is not verbatim: the boundary is now the newline the page renders, and
+// no full stop is invented at a heading that never carried one.
+test('quotableText: a heading boundary is a newline, never a fabricated period', () => {
+  const body = [
+    'Records are kept from the date a file happened to be created.',
+    '',
+    '## How long we keep each class of record',
+    '',
+    'Claims and appeals records are kept for seven years.',
+  ].join('\n');
+
+  const text = quotableText(body);
+
+  // The heading and the paragraph under it are separated by the break the page
+  // renders, not by a sentence-ending period this module made up.
+  assert.ok(
+    text.includes('How long we keep each class of record\nClaims and appeals records'),
+    `the heading boundary should be the page's own newline: ${JSON.stringify(text)}`,
+  );
+  // The specific fabrication Marcus caught: a period directly after a heading
+  // that has none on the page.
+  assert.ok(
+    !/record\. Claims and appeals/.test(text),
+    `a period was fabricated at the heading boundary: ${JSON.stringify(text)}`,
+  );
+  // Every character between the last real word and the next is whitespace the
+  // page carries — remove the newlines and no punctuation was added.
+  assert.ok(text.includes('each class of record'), text);
+  assert.ok(!/each class of record\./.test(text), `heading ended in an invented full stop: ${text}`);
+});
+
 test('quotableText: a table quotes as its cells, not as its pipes', () => {
   const text = quotableText(
     ['| Record type | Retention |', '| --- | ---: |', '| Claims records | 7 years |', '| Access logs | 90 days |'].join('\n'),

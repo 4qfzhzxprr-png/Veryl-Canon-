@@ -1219,6 +1219,22 @@ He scoped it tightly, and the scope is the finding:
    against the punctuation-for-machines. Load-bearing (the whole
    quotation/search/gate stack reads `quotableText`), so it is named here for a
    measured, tested fix rather than a rushed one.
+
+   **Fixed.** `quotableText` no longer ends a periodless block with a period it
+   invents; a block boundary is now the newline the page renders there, kept as
+   a newline and never collapsed into a run-together space. The three splitters
+   that used to lean on the fabricated period — `bestWindow` (which window to
+   quote), `topicalCoverageBest` (which part of a page is on-topic), and
+   `sentences` (where one claim ends) — each read that newline as the block
+   boundary it always was, so the sentence-splitting the period stood in for is
+   unchanged and every extractive floor held exactly (answered 88.4%, direct
+   100%, quoted-answer 68.2%, refused 100%, pointed-right 80.0% — identical to
+   the round-six baseline). Both shown channels are now verbatim against what
+   the page displays: the citation snippet and the notice's inline quote carry
+   the page's own break, not a full stop it never wrote, and the rendered
+   snippet shows that break (`white-space: pre-line`) rather than flattening two
+   blocks into one line. Locked in by a regression test asserting a heading
+   boundary is a newline, never a fabricated period.
 2. **The live PLAN-7 field still does not travel through Ask — MAJOR, known.**
    The federated value is $1,500/$3,000; Ask surfaces only the stale
    $1,200/$2,400, correctly labelled stale. Ask cannot quote a federated field,

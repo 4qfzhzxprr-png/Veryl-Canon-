@@ -1103,6 +1103,11 @@ label.check input { width: auto; display: inline; margin: 0; }
   line-height: 1.55;
   color: var(--muted);
   overflow-wrap: break-word;
+  /* A quotation that spans a heading boundary carries the newline the page
+     renders there (plaintext.ts no longer fabricates a period at it), so the
+     shown quote breaks where the page breaks rather than collapsing two blocks
+     into one run-on line. Spaces still collapse; only the block boundary shows. */
+  white-space: pre-line;
 }
 .citation-go { flex: 0 0 auto; color: var(--muted); }
 .citation:hover .citation-go { color: var(--accent); }
