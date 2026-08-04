@@ -292,6 +292,20 @@ recovery, so the interval you choose is what you have agreed to lose.
 | `CANON_BACKUP_DIR` | required if `CANON_BACKUP_INTERVAL_MS` is set | unset | The directory each timestamped artefact is written to. Setting an interval without this is refused at start-up. | Put it on a volume that is **not** the record's own disk. Canon warns at start-up that scheduled backups are local-only; a copy that shares a failure domain with the record is not a backup. Ship each artefact off the box, and file the audit-chain anchor beside it. |
 | `CANON_BACKUP_KEEP` | optional | `0` (keep all) | After a verified backup, delete all but the newest N artefacts **in `CANON_BACKUP_DIR`**. | Local pruning only — it never touches the off-box copies, and it never prunes on a failed run. Keep artefacts at least as long as your audit-log retention obligation, which for a regulated partner is usually seven years. |
 
+## Metrics
+
+**Canon can expose operational metrics in the Prometheus text format at
+`/metrics`.** Off by default: `/health` and `/ready` say whether Canon is up,
+but nothing else said how much traffic it serves, how fast, or how big the
+record has grown, and running a system of record in production without those
+signals is its own kind of blind. What is exposed is aggregate operational data
+only — request counts and latency by method and *route shape*, uptime, schema
+version, whether the record reads, the audit-event count, and process memory.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_METRICS` | optional | unset (off) | `on` (or `true`/`1`) serves `GET /metrics` and starts recording. | No PII, no query strings, and **no page ids**: a request route is normalised to its shape (`/pages/:id`, never `/pages/<uuid>`), so a label never carries the identifier the request log works to keep out. It is served **without authentication**, like `/health` and `/ready` — so it is off by default, and a deployment that turns it on should let only its own scraper reach `/metrics` (allow it at the reverse proxy, or scrape over the internal network). It reveals traffic *shape*, which is why exposing it is the operator's deliberate choice. |
+
 ## Not Canon's: the stubs
 
 These configure the **test doubles** in `idp-stub/`, `registry-stub/`,
