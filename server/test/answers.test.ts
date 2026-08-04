@@ -1957,6 +1957,11 @@ test('ask: a cited page’s federated fields travel with the citation, live valu
   assert.equal(field.stale, false);
   assert.equal(field.sourceName, 'Benefits Admin');
 
+  // Finding 6: the live value now reaches the answer's own PROSE, not only the
+  // citation metadata a reader who takes the prose never sees.
+  assert.match(answer.answer!, /read live from the record’s own sources/);
+  assert.match(answer.answer!, /Deductible \(individual\): 1500, from Benefits Admin/);
+
   // A page with no references pays nothing and carries nothing.
   const bare = await store.ask(marc.id, { question: 'How quickly is an expedited claim decided?' });
   void bare; // any cited page without references simply has no fields key

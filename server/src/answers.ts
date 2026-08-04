@@ -1584,6 +1584,56 @@ function disagreementNotice(disagreement: Disagreement, passages: readonly Answe
   return `${disagreement.note}\n\n${quoted.join('\n\n')}`;
 }
 
+/** The lead for the live-values footer: current figures read from sources, not prose. */
+export const LIVE_FIELD_LEAD =
+  'Some figures on the pages cited here are read live from the record’s own sources rather than written into the ' +
+  'prose above. As resolved for this answer:';
+
+/**
+ * A footer stating the LIVE value of every federated field on the cited pages,
+ * with its source and its freshness.
+ *
+ * The gap this closes (round three and again round six, Marcus): asked for the
+ * PLAN-7 deductible, the only figure a reader saw in the answer was the STALE
+ * prose one the policy was written with, while the service-resolved value —
+ * $1,500 against the prose's $1,200 — reached them only by opening the cited
+ * page. The value already travelled as citation METADATA (`Citation.fields`);
+ * what it never did was reach the answer's own words, and a reader who takes the
+ * prose and leaves the cards behind is the reader a compliance product is for.
+ *
+ * Built HERE, outside the generator seam, from the citations' already-resolved
+ * fields — references.ts owns the resolution and its guarantees: the value is
+ * last-known or stale-marked, never invented, never substituted for the prose.
+ * A model composes the prose above; it never composes this line and cannot
+ * smooth the live number away, exactly as it cannot smooth away a disagreement.
+ * Nothing here asserts a number of Canon's own: every value, source and
+ * freshness mark is what the record resolved, restated in the answer's words.
+ */
+export function liveFieldNotice(citations: readonly Citation[]): string | null {
+  const lines: string[] = [];
+  for (const c of citations) {
+    for (const f of c.fields ?? []) {
+      const from = `${f.sourceName}${f.role === 'corroboration' ? ' (corroborating)' : ''}`;
+      if (f.value === null || f.value === undefined) {
+        // Never a guess and never a zero: references.ts returns no value at all
+        // when a source could not be read and nothing was ever cached.
+        lines.push(
+          `- ${f.label}: could not be read from ${from}${f.error ? ` (${f.error})` : ''}, and no earlier value is held.`,
+        );
+      } else if (f.stale) {
+        lines.push(
+          `- ${f.label}: ${String(f.value)}, from ${from}, last read ${f.resolvedAt ?? 'at an unrecorded time'} and ` +
+            `not refreshed since${f.error ? ` (${f.error})` : ''} — treat it as possibly out of date.`,
+        );
+      } else {
+        lines.push(`- ${f.label}: ${String(f.value)}, from ${from}, current as of ${f.resolvedAt ?? 'this answer'}.`);
+      }
+    }
+  }
+  if (lines.length === 0) return null;
+  return `${LIVE_FIELD_LEAD}\n\n${lines.join('\n')}`;
+}
+
 // ---------------------------------------------------------------------------
 // The record lookup seam
 //
@@ -2438,6 +2488,18 @@ export class AnswerService {
     // one says the record gives two answers and Canon will not choose.
     if (disagreement && !answer.includes(disagreement.note)) {
       answer = `${disagreementNotice(disagreement, passages)}\n\n${answer}`;
+    }
+
+    // The live values, stated in the answer and not only carried as citation
+    // metadata (Finding 6). Appended as a footer, because it is current data a
+    // reader needs beside the prose, not a warning that must lead; and only when
+    // a cited page actually carries a federated field, so an ordinary answer
+    // gains nothing. `citation.fields` was resolved above; this restates it in
+    // the answer's own words, so the true number reaches a reader who never
+    // opens the page.
+    const liveNotice = liveFieldNotice(citations);
+    if (liveNotice && !answer.includes(liveNotice)) {
+      answer = `${answer}\n\n${liveNotice}`;
     }
 
     if (!opts.probe) {

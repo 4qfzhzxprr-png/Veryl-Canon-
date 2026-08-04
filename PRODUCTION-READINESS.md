@@ -70,41 +70,33 @@ partner, not code · **[GA]** deferrable past the pilot with eyes open.
 | --- | --- | --- |
 | `node:sqlite`, single-node, no HA/replication/PITR | **open · [GA]** | Fine for one pilot box with a documented RPO and a drilled restore. A real ceiling before multi-tenant/GA — decide **now** whether GA means Postgres, so it isn't discovered late. `node:sqlite` is also a Stability-1 experimental module. |
 | Per-process rate limiter & sessions | **open · [GA]** | A second instance multiplies the effective rate limit and cannot share session/data state; single-writer by design (`config.ts`, `ratelimit.ts`). |
-| **Finding 6 — the live federated field through Ask** | **open** | Ask's quoted sentence carries the **stale prose** figure; the live field ($1,500 vs prose $1,200) reaches a reader only by opening the page. Ask and page-open share `resolveReferences`, so this is not a divergent code path — closing it means letting Ask's **prose assert a federated value**, which touches the "everything quoted is verbatim / no claim without a citation" invariants. Needs a design decision before code (see below). |
+| **Finding 6 — the live federated field through Ask** | **done** | Closed with option (3): a live-values footer Canon composes outside the generator seam from `references.ts`'s already-resolved fields (`liveFieldNotice`, answers.ts; `livefields.test.ts`). The live value now reaches the answer's own prose — stated with source and freshness, stale-marked when stale, never invented — not only the citation metadata a reader who takes the prose never sees. Non-breaking: `AnswerResponse`'s shape is unchanged; only the `answer` string gains the footer, and only when a cited page carries a federated field. |
 | Generator quotation lift, established | **open · [human]** | +18.2 points measured on 22 cases at p=0.22 — large, one-directional, not yet significant. Needs a bigger labelled set on the partner's real corpus, with partner "overclaim" labels. |
 | Finding 7 (won't count / false silence), pointer quality on unanswerable | **open** | Lower severity; documented known limits (USER-TESTING.md). |
 | Embeddings egress per-collection | **open** | `CANON_EMBEDDINGS=http` sends every published page at index time, all-or-nothing. Until a per-collection lever exists, a deployment that cannot send some collections runs `transformers` (on-box) or the default (no call). |
 
 ---
 
-## The Finding 6 design question (open for a decision)
+## The Finding 6 fix (done — how it was closed)
 
 The live number is data the record holds — `references.ts` guarantees it is
-last-known or stale-marked, never invented — but Ask only ever surfaces it as
+last-known or stale-marked, never invented — but Ask used to surface it only as
 **structured citation metadata** (`Citation.fields`), while the answer's quoted
-sentence shows whatever figure the prose was written with. A reader who reads
-the quote reads the stale number.
+sentence showed whatever figure the prose was written with. A reader who read
+the quote read the stale number.
 
-Three ways to close it, in rising order of how much they touch the answer
-contract:
+Three options were weighed: (1) UI-only, which leaves the prose showing the
+stale figure; (2) a structured echo on `AnswerResponse`, which the prose still
+doesn't say; and **(3)** letting Ask *state* the field with attribution.
 
-1. **UI-only** — render `citation.fields` more prominently beside the quote and
-   flag when a live field's value differs from a figure in the quoted sentence.
-   No contract change; the answer prose still shows the stale number, so it does
-   not fully close the finding.
-2. **A structured `liveFields` echo on the answer** (not the prose) — surface
-   the resolved fields at the top level of `AnswerResponse`, so a caller sees
-   "the live value is X" without the generator asserting it. Keeps the verbatim
-   invariant intact; the prose still doesn't say it.
-3. **Let Ask state the field, with attribution** — Canon (not the generator,
-   outside the seam, like the disagreement notice) appends "the page also
-   carries a live field: PLAN-7 deductible = $1,500 (from <source>, as of
-   <time>)" to the answer. This makes the live number part of what Ask *says*.
-   It is defensible because the value is the record's own data with a source and
-   a freshness mark — but it is a real change to the answer contract and belongs
-   in a design discussion, not an overnight guess.
-
-Recommendation: **(3)**, built the way the disagreement/supersession notice is —
-detected and asserted by Canon outside the generator seam, re-asserted whatever
-the model writes, never removable by it — so a fluent model cannot smooth the
-live value away any more than it can smooth a conflict. Confirm before building.
+**Built as (3)**, the way the disagreement/supersession notice is: a
+`liveFieldNotice` footer Canon composes **outside the generator seam** from the
+citations' already-resolved fields, appended to the answer only when a cited
+page carries a federated field. A model writes the prose above; it never writes
+or removes this line, so it cannot smooth the live value away any more than it
+can smooth a conflict. Nothing here asserts a number of Canon's own — every
+value, source and freshness mark is what the record resolved, restated in the
+answer's words. Two deliberate no-invention choices: the value is shown **raw**
+(the record holds `1500`, not `$1,500` — a currency symbol would be Canon
+guessing units it wasn't given), and a value that could not be read is stated as
+unavailable, never defaulted to zero.
