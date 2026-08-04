@@ -175,7 +175,10 @@ disagreement is re-asserted over whatever it writes, and any failure — network
 timeout, a refusal, prose that does not parse — falls back to the extractive
 generator rather than to an error or an invention. What a model buys is better
 prose and better-chosen quotations; what it costs is that each answered
-question's passages are sent to the Anthropic API.
+question's passages are sent to the Anthropic API — except those drawn from a
+`restricted` collection, which stay on the box and are composed locally unless a
+deployment with a data-processing agreement sets `CANON_GENERATOR_ALLOW_RESTRICTED`
+(see below).
 
 | Variable | Required? | Default | Meaning | Safety |
 | --- | --- | --- | --- | --- |
@@ -185,6 +188,29 @@ question's passages are sent to the Anthropic API.
 | `CANON_GENERATOR_MAX_TOKENS` | optional | `4096` | Output ceiling per answer. | — |
 | `CANON_GENERATOR_URL` | optional | unset | Base URL override, for a proxy or a compatible endpoint. | Same standing as `CANON_EMBEDDINGS_URL`: it comes from your environment, not from a user. |
 | `ANTHROPIC_API_KEY` | required if `anthropic` | unset | **Secret** — read by the Anthropic SDK. | Never logged. A missing or invalid key degrades every answer to the extractive generator; it never takes Ask down. |
+| `CANON_GENERATOR_ALLOW_RESTRICTED` | optional | unset (off) | Whether a `restricted` collection's content may be sent to the model generator. Off means it may not: an answer drawing on a restricted collection is composed locally by the extractive generator, so nothing restricted — and not the question either — leaves the process. | The safe default, and it is a **data-governance** control, not a tuning knob. Turn it on only with a data-processing agreement (a DPA/BAA) covering the model provider for the material in those collections. When on, Canon warns at start-up that restricted content will egress; when a restricted answer IS kept local, the audit event records `restrictedEgressWithheld`, so a compliance owner can prove it stayed on the box. |
+
+### Sending the record to a third party — the governance note
+
+Two settings send record content out of this process to an external service,
+and both are off by default: `CANON_GENERATOR=anthropic` sends each *answered*
+question's gate-admitted passages (never a refusal's), and `CANON_EMBEDDINGS=http`
+sends every *published* page to the embedding endpoint at index time. That is a
+decision for whoever owns the data, not a default to drift into:
+
+- **Have a data-processing agreement in place** (a DPA, and a BAA where the
+  material is PHI) with the provider before turning either on. Canon states the
+  egress plainly here and at start-up; it cannot sign your contracts.
+- **Scope it.** `CANON_GENERATOR_ALLOW_RESTRICTED` keeps `restricted`
+  collections off the model by default — mark the collections whose content
+  must not leave, and they are composed locally. For embeddings the equivalent
+  lever does not yet exist (it is index-time and all-or-nothing); until it does,
+  a deployment that cannot send *some* collections to a hosted embedder should
+  run `CANON_EMBEDDINGS=transformers`, which keeps the model on the box, or the
+  built-in default, which makes no call at all.
+- **Point it at your own endpoint if you must.** `CANON_GENERATOR_URL` and
+  `CANON_EMBEDDINGS_URL` accept a self-hosted or in-VPC compatible endpoint, so
+  "use a model" need not mean "use someone else's network".
 
 ## Import
 

@@ -450,6 +450,16 @@ export interface GeneratedAnswer {
 // generator's to revise.
 export interface AnswerGenerator {
   readonly name: string;
+  /**
+   * True when `generate` may send the passages it is handed — and the question
+   * — out of this process to an external service. The extractive generator
+   * leaves it falsy because it makes no call and quotes only what it was given;
+   * a model generator that reaches a hosted API sets it, so the answer path can
+   * refuse to let a `restricted` collection's content leave (see `ask`, and
+   * CANON_GENERATOR_ALLOW_RESTRICTED). It is a property of the generator, read
+   * before it runs; a generator cannot both egress and hide that it does.
+   */
+  readonly egresses?: boolean;
   generate(input: {
     question: string;
     passages: AnswerPassage[];
@@ -1876,7 +1886,34 @@ export class AnswerService {
     // state what the record says without writing it, exactly as the generator
     // is injectable so a test can state what a model returns.
     private readonly record: AnswerRecord = new StoredAnswerRecord(db),
+    // Whether a `restricted` collection's content may be sent to a generator
+    // that egresses. Default OFF, the safe direction: a collection marked
+    // restricted — the flag that already means "watch every read of this" — has
+    // its answers composed locally by the extractive generator rather than sent
+    // to a hosted model, unless a deployment with a data-processing agreement in
+    // place sets CANON_GENERATOR_ALLOW_RESTRICTED=true (store.ts reads it). With
+    // the default extractive generator this changes nothing, because nothing
+    // egresses either way.
+    private readonly allowRestrictedEgress: boolean = false,
   ) {}
+
+  /**
+   * Does any of these pages sit in a `restricted` collection? Asked of the
+   * pages an answer is about to send to a generator, so that content from a
+   * collection marked for extra scrutiny is never handed to a model that would
+   * carry it off the box. One indexed lookup; `restricted` is a column on
+   * `collections` (model.ts).
+   */
+  private anyRestricted(pageIds: string[]): boolean {
+    if (pageIds.length === 0) return false;
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM pages p JOIN collections c ON c.id = p.collection_id
+          WHERE p.id IN (${pageIds.map(() => '?').join(', ')}) AND c.restricted = 1 LIMIT 1`,
+      )
+      .get(...pageIds);
+    return row !== undefined;
+  }
 
   /**
    * Document frequencies for this question's content terms, or null where the
@@ -2120,9 +2157,25 @@ export class AnswerService {
     // `generated` stays null, and the refusal block below does what a hedge
     // pretended to: it names the near pages as places to look, without
     // quoting them as an answer.
+    // Model egress control. When the configured generator would send content to
+    // an external service (`egresses`) and any offered passage comes from a
+    // `restricted` collection, this answer is composed by the extractive
+    // generator instead — which makes no call — so nothing restricted, and not
+    // the question either, leaves the process. A deployment that has a
+    // data-processing agreement and wants model answers on restricted material
+    // opts back in with CANON_GENERATOR_ALLOW_RESTRICTED=true. The choice is
+    // recorded in the audit event (the generator actually used, and the
+    // withholding), because "did this restricted answer stay on the box" is a
+    // question a compliance owner will ask.
+    const egressWithheld =
+      this.generator.egresses === true &&
+      !this.allowRestrictedEgress &&
+      passages.length > 0 &&
+      this.anyRestricted(passages.map((p) => p.pageId));
+    const generator = egressWithheld ? extractiveGenerator : this.generator;
     const generated =
       passages.length > 0 && grounding === 'direct'
-        ? await this.generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
+        ? await generator.generate({ question, passages, disagreement, supersession, sourceDisagreement })
         : null;
 
     // Citations are built from the passages the generator was given, matched
@@ -2397,6 +2450,9 @@ export class AnswerService {
         disagreement,
         citedSupersession,
         citedSourceDisagreement,
+        undefined,
+        generator.name,
+        egressWithheld,
       );
     }
     // Which of the cited pages are past review, named so a caller does not have
@@ -2438,6 +2494,12 @@ export class AnswerService {
     supersession?: Supersession | null,
     sourceDisagreement?: SourceDisagreement | null,
     nearestPageIds?: string[],
+    // The generator that ACTUALLY composed this answer, and whether an egressing
+    // generator was withheld because the answer drew on a restricted collection.
+    // Defaulted so the refusal path — where nothing was generated — keeps naming
+    // the configured generator, exactly as it always did.
+    generatorName: string = this.generator.name,
+    egressWithheld = false,
   ): void {
     this.db
       .prepare(
@@ -2454,7 +2516,10 @@ export class AnswerService {
           refused,
           citedPageIds,
           ...(nearestPageIds?.length ? { nearestPageIds } : {}),
-          generator: this.generator.name,
+          generator: generatorName,
+          // Present only when it happened: a restricted answer kept on the box
+          // that an egressing generator would otherwise have been sent.
+          ...(egressWithheld ? { restrictedEgressWithheld: true } : {}),
           ...(disagreement ? { disagreement: disagreement.pageIds } : {}),
           // Whether a person asserted it, or Canon read it off the passages.
           // Six months later, "was this flagged because somebody said so?" is

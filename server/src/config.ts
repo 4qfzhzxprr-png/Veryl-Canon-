@@ -328,6 +328,25 @@ export async function validateConfig(
     );
   }
 
+  // --- model egress ------------------------------------------------------
+
+  const allowRestricted = (env.CANON_GENERATOR_ALLOW_RESTRICTED ?? '').trim().toLowerCase() === 'true';
+  const modelGenerator = (env.CANON_GENERATOR ?? '').trim() === 'anthropic';
+  if (allowRestricted && !modelGenerator) {
+    warn(
+      'CANON_GENERATOR_ALLOW_RESTRICTED',
+      'CANON_GENERATOR_ALLOW_RESTRICTED=true does nothing here: no model generator is configured ' +
+        '(CANON_GENERATOR is not "anthropic"), so no answer egresses and there is nothing to allow.',
+    );
+  }
+  if (allowRestricted && modelGenerator) {
+    warn(
+      'CANON_GENERATOR_ALLOW_RESTRICTED',
+      'restricted collections WILL be sent to the external answer model. This is the opt-in for a deployment ' +
+        'with a data-processing agreement in place; without one, unset it and restricted answers stay on the box.',
+    );
+  }
+
   // --- federation --------------------------------------------------------
 
   const allowed = trimmed(env, 'CANON_SOURCE_ALLOWED_HOSTS');

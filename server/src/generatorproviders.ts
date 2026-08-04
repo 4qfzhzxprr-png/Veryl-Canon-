@@ -130,6 +130,10 @@ export function anthropicGenerator(config: AnthropicGeneratorConfig = {}): Answe
 
   return {
     name: `anthropic:${model}`,
+    // This generator sends the passages and the question to a hosted API, so it
+    // declares it: the answer path refuses to let a `restricted` collection's
+    // content reach it unless the deployment has said so (answers.ts, `ask`).
+    egresses: true,
     async generate(input): Promise<GeneratedAnswer | null> {
       try {
         const passageBlocks = input.passages

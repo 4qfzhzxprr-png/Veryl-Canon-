@@ -227,8 +227,12 @@ export class CanonStore {
     this.commentService = new CommentService(db, this, this.notifier);
     this.retrieval = new RetrievalService(db, this, this.searchIndex, this.embeddings);
     // The generator is an environment decision, like the embedding provider:
-    // extractive unless a deployment selected a model (CANON_GENERATOR).
-    this.answers = new AnswerService(db, this, this.retrieval, generatorFromEnv());
+    // extractive unless a deployment selected a model (CANON_GENERATOR). Whether
+    // a restricted collection's content may reach an egressing generator is a
+    // second environment decision, defaulting to no: a deployment allows it only
+    // with a data-processing agreement in place (CANON_GENERATOR_ALLOW_RESTRICTED).
+    const allowRestrictedEgress = process.env.CANON_GENERATOR_ALLOW_RESTRICTED === 'true';
+    this.answers = new AnswerService(db, this, this.retrieval, generatorFromEnv(), undefined, allowRestrictedEgress);
     this.connectors = connectors;
     this.sources = new SourceService(db, this);
     this.divergences = new DivergenceService(db, this, this.notifier);
