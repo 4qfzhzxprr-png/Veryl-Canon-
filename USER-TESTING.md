@@ -1174,6 +1174,63 @@ finding, not a shipped default. What it settles is the bet the negative results
 were placed against: the lever on quotation was the channel, and the channel
 moved it.
 
+## The sixth round — Marcus, and the bar he set
+
+The number is not a decision file. Marcus set the bar last round in his own
+words — *"answers may not be quoted in a decision file until the quotation
+engine can finish a sentence"* — and named two specimens that failed it: the
+appeal-deadline answer that never quoted "the member has 180 days", and the
+expedited-claim answer truncated one clause before "seventy-two hours". So the
+sixth round put him back in a real browser against a generator-backed server
+(`claude-opus-5`, medium effort) for one thing: a **quotation audit**, reading
+the quoted sentence under every answer as a citation he is about to sign under,
+and checking each one character-for-character against the page it cites.
+
+**The verdict moved: "research clerk" → "may be countersigned."** Both named
+specimens now carry their figures verbatim — the appeal snippet reads "The
+member has 180 days from the date of the decision to appeal", the expedited
+snippet finishes at "seventy-two hours" rather than truncating. He
+exact-substring-checked eight shown citation-snippets across six pages: all
+eight verbatim. The conflict was shown two-sided and unsmoothed by the fluent
+model; the traps (canteen, submarine, parking) all refused; zero console
+errors. His blocker condition — a shown citation quote absent from its page —
+never triggered on the verified channel. **The citation-snippet under an answer
+may now be countersigned into a decision file.** That is the promotion the bet
+was placed to earn.
+
+He scoped it tightly, and the scope is the finding:
+
+1. **The model's PROSE carries a second, unverified quote channel — MAJOR, and
+   real.** The disagreement/supersession notice quotes the retrieval *window*
+   through `attribute()`, and that window is `quotableText`, which appends a
+   sentence-ending period to any block that has none — a heading included
+   (`quotableLines`, deliberately, so sentence-splitting works). So a shown,
+   attributed excerpt that crosses a heading boundary prints "…never the date a
+   file happened to be created. How long we keep each class of record. Claims
+   and…" — every word the page's own, but a period the page does not have,
+   flattening a heading into a sentence nobody wrote. Root-caused to the
+   fabricated block-boundary period. It surfaces today only in the notice
+   channel, but the same fabrication is latent in the citation snippet: the
+   model's verbatim check runs against that period-appended text, so a snippet
+   the model one day picks across a heading would show the same fabricated
+   period and fail Marcus's page-check. Only the numbered citation-snippet may
+   be countersigned; the prose and its inline quotes may not — and the fix is a
+   shown quotation that is verbatim against what the page *displays*, not
+   against the punctuation-for-machines. Load-bearing (the whole
+   quotation/search/gate stack reads `quotableText`), so it is named here for a
+   measured, tested fix rather than a rushed one.
+2. **The live PLAN-7 field still does not travel through Ask — MAJOR, known.**
+   The federated value is $1,500/$3,000; Ask surfaces only the stale
+   $1,200/$2,400, correctly labelled stale. Ask cannot quote a federated field,
+   so the true number reaches a reader only by opening the page.
+3. **False silence on counting — minor, known.** "How many levels of appeal are
+   there?" returns "the record does not answer this yet" though the cited page
+   enumerates them; asked for the three deadlines it stitches all three with a
+   verbatim snippet. It will stitch grounded facts but will not count.
+
+The promotion is real and narrow, in his words: **quote the numbered source,
+never the paragraph above it.**
+
 ## What we are deliberately not doing
 
 The subject / entity-join work — a primary key that links facts about the same
