@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createApi } from '../src/api.js';
-import { ConfigError, assertConfigValid, validateConfig } from '../src/config.js';
+import { ConfigError, assertConfigValid, resolveBindHost, validateConfig } from '../src/config.js';
 import { MIGRATIONS, openDb } from '../src/db.js';
 import { Logger, attachRequestLog, redact, redactUrl, requestPath } from '../src/log.js';
 import { latestVersion, type Migration } from '../src/migrate.js';
@@ -480,6 +480,45 @@ test('startup: dev authentication beside a real identity provider is refused', a
   // Alone, it is the development setting it has always been — a warning at most.
   const devOnly = await validateConfig({ CANON_DEV_AUTH: 'true' }, { resolve: resolves });
   assert.equal(devOnly.ok, true);
+});
+
+test('startup: dev authentication on a public bind is refused, and loopback is fine', async () => {
+  // The exact posture a privacy review demonstrated against: the unverified
+  // header exposed to a network. Forcing it public is a refusal.
+  const exposed = await validateConfig(
+    { CANON_DEV_AUTH: 'true', CANON_BIND: '0.0.0.0' },
+    { resolve: resolves },
+  );
+  assert.equal(exposed.ok, false);
+  const problem = exposed.problems.find((p) => p.variable === 'CANON_BIND');
+  assert.ok(problem, 'the refusal names CANON_BIND');
+  assert.match(problem!.message, /reachable from the network/);
+
+  // A specific external address is refused for the same reason.
+  const specific = await validateConfig(
+    { CANON_DEV_AUTH: 'true', CANON_BIND: '10.0.0.7' },
+    { resolve: resolves },
+  );
+  assert.equal(specific.ok, false);
+
+  // Loopback, explicit or resolved, is exactly the safe default: no refusal.
+  for (const host of ['127.0.0.1', '::1', 'localhost', '127.0.0.5']) {
+    const loop = await validateConfig({ CANON_DEV_AUTH: 'true', CANON_BIND: host }, { resolve: resolves });
+    assert.equal(loop.ok, true, `${host} is loopback and must be allowed`);
+  }
+});
+
+test('startup: the bind host is loopback exactly when the dev header is the only door', () => {
+  // Dev auth alone → loopback, so the demo stack is never reachable off-box.
+  assert.equal(resolveBindHost({ CANON_DEV_AUTH: 'true' }), '127.0.0.1');
+  // A real door alongside it means the deployment is meant to be reachable.
+  assert.equal(resolveBindHost({ CANON_DEV_AUTH: 'true', CANON_OIDC_ISSUER: 'https://idp' }), '0.0.0.0');
+  assert.equal(resolveBindHost({ CANON_DEV_AUTH: 'true', CANON_REGISTRY_URL: 'https://reg' }), '0.0.0.0');
+  // No dev auth: all interfaces, the behaviour before this guard existed.
+  assert.equal(resolveBindHost({ CANON_OIDC_ISSUER: 'https://idp' }), '0.0.0.0');
+  assert.equal(resolveBindHost({}), '0.0.0.0');
+  // An explicit CANON_BIND always wins — the operator said what they meant.
+  assert.equal(resolveBindHost({ CANON_DEV_AUTH: 'true', CANON_BIND: '192.168.1.4' }), '192.168.1.4');
 });
 
 test('startup: a federation allowlist naming a host that does not resolve is refused', async () => {

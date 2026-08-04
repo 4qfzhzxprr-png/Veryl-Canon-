@@ -1,7 +1,7 @@
 import { agentAuthFromEnv } from './agentauth.js';
 import { createApi } from './api.js';
 import { personAuthFromEnv } from './auth.js';
-import { assertConfigValid, ConfigError } from './config.js';
+import { assertConfigValid, ConfigError, resolveBindHost } from './config.js';
 import { defaultConnectorRegistry } from './connectors.js';
 import { MIGRATIONS, openDb } from './db.js';
 import { DEFAULT_SWEEP_INTERVAL_MS, startFreshnessSweeps } from './freshness.js';
@@ -162,9 +162,14 @@ const sweeps = startFreshnessSweeps(store, {
 });
 if (sweeps.timer) timers.push(sweeps.timer);
 
-server.listen(port, () => {
+// The interface to bind. Loopback when the unverified dev header is the only
+// door, so the demo stack is never reachable off-box; the operator's
+// CANON_BIND, or all interfaces, once a real door is configured (config.ts).
+const bindHost = resolveBindHost();
+server.listen(port, bindHost, () => {
   log.info('Veryl Canon listening', {
     port,
+    host: bindHost,
     db: dbPath,
     stage: 'alpha',
     schemaVersion: currentSchemaVersion(db),

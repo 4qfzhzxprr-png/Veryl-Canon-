@@ -49,6 +49,35 @@ function trimmed(env: NodeJS.ProcessEnv, name: string): string | undefined {
   return value ? value : undefined;
 }
 
+/**
+ * The interface the server binds to, resolved from CANON_BIND and the auth
+ * posture. The default is the safe one and depends on which door is open:
+ *
+ *   - Dev auth is the open door (CANON_DEV_AUTH=true) and CANON_BIND is unset:
+ *     127.0.0.1. The unverified header never reaches the network, so the
+ *     demo stack is safe to run anywhere without a second thought. Forcing it
+ *     public with an explicit CANON_BIND is refused by validateConfig.
+ *   - Otherwise (a real door, or CANON_BIND set explicitly): the operator's
+ *     CANON_BIND, or all interfaces when unset, exactly as before — a
+ *     deployment behind SSO or the passport is meant to be reachable.
+ *
+ * Exported so index.ts binds to the same host the validation reasoned about,
+ * and so the reasoning is testable without opening a socket.
+ */
+export function resolveBindHost(env: NodeJS.ProcessEnv = process.env): string {
+  const bind = trimmed(env, 'CANON_BIND');
+  if (bind) return bind;
+  const devAuth = (env.CANON_DEV_AUTH ?? '').trim().toLowerCase() === 'true';
+  const issuer = trimmed(env, 'CANON_OIDC_ISSUER');
+  const registry = trimmed(env, 'CANON_REGISTRY_URL');
+  // Dev auth as the ONLY door: loopback. A real door alongside it means the
+  // deployment is meant to be reachable (and dev-auth-beside-SSO is already a
+  // refusal, so this branch is dev-auth-beside-registry — the demo stack,
+  // which an operator runs deliberately and locally).
+  if (devAuth && !issuer && !registry) return '127.0.0.1';
+  return '0.0.0.0';
+}
+
 const NUMERIC_VARS: { name: string; min: number }[] = [
   { name: 'PORT', min: 0 },
   { name: 'CANON_FLUSH_INTERVAL_MS', min: 0 },
@@ -140,6 +169,28 @@ export async function validateConfig(
       'CANON_DEV_AUTH',
       'CANON_DEV_AUTH=true together with CANON_REGISTRY_URL: a real Agent Registry is configured, and ' +
         'X-Actor-Id is still believed without verification. This is the demo stack’s shape; it is not a deployment’s.',
+    );
+  }
+
+  // The dev door on a public interface. The refusal above catches dev-auth
+  // *beside* SSO, but not dev-auth *alone on a public bind* — which is the
+  // demo stack's own shape (dev-auth on, no identity provider) exposed to the
+  // network. That is the exact posture a privacy review demonstrated against:
+  // the unverified X-Actor-Id header, reachable from another machine, is
+  // every actor anyone names. So the header is loopback-only by default (see
+  // resolveBindHost), and forcing it onto a public interface with an explicit
+  // CANON_BIND is a refusal, not a warning — there is no coherent reason to
+  // serve an unauthenticated header to a network. An operator who truly means
+  // to (behind their own authenticating proxy) turns dev-auth off and runs SSO
+  // or the passport, which is the thing the proxy is standing in for.
+  const bind = trimmed(env, 'CANON_BIND');
+  if (devAuth && bind && !isLoopbackHost(bind)) {
+    refuse(
+      'CANON_BIND',
+      `CANON_DEV_AUTH=true together with CANON_BIND=${bind}: the unverified X-Actor-Id header would be ` +
+        'reachable from the network, where anyone who can open the port is any actor they name. Dev ' +
+        'authentication is loopback-only; leave CANON_BIND unset (it binds to 127.0.0.1 while dev auth is ' +
+        'on) or turn CANON_DEV_AUTH off and configure SSO (CANON_OIDC_ISSUER) for a real door.',
     );
   }
   if (issuer) {
@@ -334,9 +385,13 @@ export async function validateConfig(
   return { problems, warnings, ok: problems.length === 0 };
 }
 
+// Loopback — the machine talking to itself, unreachable from any network.
+// IPv4 loopback is the whole 127/8 block, not only 127.0.0.1; IPv6 loopback is
+// ::1. `localhost` counts because that is what it resolves to on any sane
+// host, and the point of the check is intent, not DNS.
 function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  const host = hostname.trim().replace(/^\[|\]$/g, '').toLowerCase();
+  return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
 /** Thrown when a deployment's configuration cannot mean what it says. */

@@ -41,6 +41,7 @@ the variable to change. See "Start-up validation" at the end.
 | --- | --- | --- | --- | --- |
 | `CANON_DB` | required | `canon.db` | Path to the SQLite file that **is** Canon: the record, the version history and the audit log. In a container this must point inside the mounted volume (`/data/canon.db`), or the record dies with the container. | The audit log has no second copy. Back it up — OPERATIONS.md, "Back up". |
 | `PORT` | optional | `3000` | TCP port to listen on. | Bind behind a reverse proxy that terminates TLS; Canon speaks plain HTTP. |
+| `CANON_BIND` | optional | loopback while dev auth is the only door, otherwise all interfaces | The network interface to bind. Unset, Canon binds to `127.0.0.1` when `CANON_DEV_AUTH=true` is the only door open, and to `0.0.0.0` once a real door (SSO or the Registry) is configured. Set it to `0.0.0.0` or a specific address to override. | The unverified `X-Actor-Id` header must never reach a network: Canon **refuses to start** if `CANON_DEV_AUTH=true` is set alongside a non-loopback `CANON_BIND`. Turn dev auth off and configure SSO for a door you can safely expose. |
 | `CANON_BASE_URL` | required | `http://localhost:3000` | Where Canon is reachable from a browser. Deep links in notification emails are built from it, and the OIDC redirect URI defaults to `<base>/auth/callback`. Also decides whether the session cookie gets `Secure` (on unless the base URL is plain `http`). | An `http://` base URL with SSO live means session cookies cross the network in clear. |
 | `CANON_PRODUCT_NAME` | optional | `Veryl Canon` | The name in the footer of notification emails. | — |
 | `CANON_SHUTDOWN_TIMEOUT_MS` | optional | `10000` | How long in-flight requests get to finish after SIGTERM before the process stops waiting. Keep it below your orchestrator's kill delay (`docker stop` allows 10s by default; the demo compose file raises the grace period to 20s). | — |
@@ -270,6 +271,7 @@ Canon checks the environment before it binds a port (`src/config.ts`) and
 | --- | --- |
 | `CANON_OIDC_ISSUER` set, `CANON_SESSION_SECRET` unset | Sessions signed with a key invented at start-up: every restart signs everybody out, and no second instance can read the first's cookies. |
 | `CANON_DEV_AUTH=true` **and** `CANON_OIDC_ISSUER` set | An identity provider is configured and the unverified header is accepted beside it. Every authorization control is downstream of that. |
+| `CANON_DEV_AUTH=true` **and** a non-loopback `CANON_BIND` | The unverified `X-Actor-Id` header would be reachable from the network, where anyone who can open the port is any actor they name. Dev auth is loopback-only. |
 | `CANON_SOURCE_ALLOWED_HOSTS` names a host that does not resolve | Federation is allowlisted to somewhere Canon cannot reach; every reference through it would fail at read time. (`*.domain` entries and literal addresses are skipped — there is nothing to look up.) |
 | `CANON_SMTP_URL` set, `CANON_MAIL_FROM` unset | An email needs a sender. |
 | `CANON_OIDC_ISSUER` set without a client id or secret | The code exchange cannot be made. |
