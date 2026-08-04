@@ -158,6 +158,7 @@ weights. Neither should happen because a config file was copied.
 | `CANON_EMBEDDINGS_TEXT_PREFIX` | optional | unset | The passage-side counterpart (E5 wants `passage: `; BGE v1.5 wants none). | Baked into every stored vector, so it is part of the provider's identity: changing it re-derives the whole index rather than leaving rows embedded one way and questions asked another. |
 | `CANON_EMBEDDINGS_BATCH` | optional | `32` | Texts per request. | — |
 | `CANON_EMBEDDINGS_TIMEOUT_MS` | optional | `30000` | Bounds the whole exchange. | A provider that fails leaves pages out of the vector channel and retrieval degrades to lexical plus graph. It never substitutes a vector. |
+| `CANON_EMBEDDINGS_ALLOW_RESTRICTED` | optional | unset (off) | Whether a `restricted` collection's pages may be sent to an **`http`** embedder at index time. Off means they may not: they are left out of the semantic channel and found lexically (on-box FTS) plus by the explicit graph. | The safe default, and a **data-governance** control like `CANON_GENERATOR_ALLOW_RESTRICTED` — turn it on only with a data-processing agreement covering the embedding provider. Does nothing with `local`/`transformers`, which never leave the box. Retrieval on restricted collections is lexical-only when off, which is the trade for not sending them. |
 
 ## The answer generator
 
@@ -201,13 +202,14 @@ decision for whoever owns the data, not a default to drift into:
 - **Have a data-processing agreement in place** (a DPA, and a BAA where the
   material is PHI) with the provider before turning either on. Canon states the
   egress plainly here and at start-up; it cannot sign your contracts.
-- **Scope it.** `CANON_GENERATOR_ALLOW_RESTRICTED` keeps `restricted`
-  collections off the model by default — mark the collections whose content
-  must not leave, and they are composed locally. For embeddings the equivalent
-  lever does not yet exist (it is index-time and all-or-nothing); until it does,
-  a deployment that cannot send *some* collections to a hosted embedder should
-  run `CANON_EMBEDDINGS=transformers`, which keeps the model on the box, or the
-  built-in default, which makes no call at all.
+- **Scope it, per collection.** `CANON_GENERATOR_ALLOW_RESTRICTED` keeps
+  `restricted` collections off the answer model by default, and
+  `CANON_EMBEDDINGS_ALLOW_RESTRICTED` keeps them off a hosted embedder by
+  default — mark the collections whose content must not leave, and their answers
+  are composed locally and their pages are indexed lexically on the box. A
+  deployment that cannot send *any* collection to a hosted embedder can still
+  run `CANON_EMBEDDINGS=transformers` (the model on the box) or the built-in
+  default (no call at all).
 - **Point it at your own endpoint if you must.** `CANON_GENERATOR_URL` and
   `CANON_EMBEDDINGS_URL` accept a self-hosted or in-VPC compatible endpoint, so
   "use a model" need not mean "use someone else's network".

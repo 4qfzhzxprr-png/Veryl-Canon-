@@ -347,6 +347,24 @@ export async function validateConfig(
     );
   }
 
+  const allowRestrictedEmbed = (env.CANON_EMBEDDINGS_ALLOW_RESTRICTED ?? '').trim().toLowerCase() === 'true';
+  const httpEmbeddings = (env.CANON_EMBEDDINGS ?? '').trim() === 'http';
+  if (allowRestrictedEmbed && !httpEmbeddings) {
+    warn(
+      'CANON_EMBEDDINGS_ALLOW_RESTRICTED',
+      'CANON_EMBEDDINGS_ALLOW_RESTRICTED=true does nothing here: the embedder does not egress ' +
+        '(CANON_EMBEDDINGS is not "http"), so no page leaves to be indexed and there is nothing to allow.',
+    );
+  }
+  if (allowRestrictedEmbed && httpEmbeddings) {
+    warn(
+      'CANON_EMBEDDINGS_ALLOW_RESTRICTED',
+      'restricted collections WILL be sent to the external embedding endpoint at index time. This is the opt-in ' +
+        'for a deployment with a data-processing agreement; without one, unset it and restricted pages are indexed ' +
+        'lexically only (on-box), never sent.',
+    );
+  }
+
   // --- federation --------------------------------------------------------
 
   const allowed = trimmed(env, 'CANON_SOURCE_ALLOWED_HOSTS');
