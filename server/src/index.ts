@@ -85,7 +85,15 @@ const personAuth = personAuthFromEnv(db, store);
 // probe are logged exactly as an API call is. Turned off with
 // CANON_REQUEST_LOG=off, for a deployment whose front door already writes one.
 const api = createApi(store, agentAuth, undefined, personAuth, log);
-const served = attachStatic(attachReadiness(api, readinessChecksFromEnv(db, process.env, { path: dbPath })));
+// HSTS is pinned only when the operator's base URL says the edge is HTTPS —
+// see securityHeaders in static.ts for why sending it over plain HTTP is
+// pointless and sending it over a real TLS edge is the whole point.
+const secureEdge = (process.env.CANON_BASE_URL ?? '').trim().startsWith('https://');
+const served = attachStatic(
+  attachReadiness(api, readinessChecksFromEnv(db, process.env, { path: dbPath })),
+  undefined,
+  secureEdge,
+);
 const server = requestLogEnabled() ? attachRequestLog(served, log) : served;
 
 // The timers, held so shutdown can clear them. Both are created below.

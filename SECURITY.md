@@ -344,6 +344,14 @@ A group granting `administrator` is legal and is shouted about at start-up, beca
 
 Tested in [`server/test/groupmap.test.ts`](server/test/groupmap.test.ts) and [`idp-stub/test/idp.test.ts`](idp-stub/test/idp.test.ts): granting on first sign-in and on re-confirmation, a removed group removing exactly the mapped access with a hand grant surviving underneath, a hand grant surviving three confirmations and leaving no phantom, the withdrawal report, a mapped role that cannot approve or administer, both claim names, and a rule naming a collection or a role that does not exist refused when the door is built.
 
+### R11 — The web UI shipped without security headers · **fixed (hardening)**
+
+The review scoped deployment out (§1), and TLS termination and network policy stay a proxy's job. But the *response headers* that defend a browser are Canon's to send, and it sent none: the document arrived with no Content-Security-Policy, no clickjacking guard, and no content-type-sniffing guard, so a single stored-XSS foothold anywhere in the rendered record — a place the safe-subset renderer missed, a future feature that forgets it — would run with nothing standing in front of it, and the whole UI could be framed for a clickjacking overlay.
+
+**Fixed** in [`server/src/static.ts`](server/src/static.ts), `securityHeaders`. Canon's front end is deliberately self-contained — `index.html` loads one same-origin stylesheet and one same-origin ES module, and `app.js` carries no inline `<script>`, no inline event handler, and no `eval` — so the document now ships a real CSP with `script-src 'self'`: the injection vector that matters is shut without a single code change to the app. `style-src` keeps `'unsafe-inline'`, deliberately and narrowly, because the app sets `style=""` on skeleton widths and on the SVG map's CSS custom properties; an inline style cannot execute script, and the alternative was a large refactor that bought nothing. `frame-ancestors 'none'`, `object-src 'none'` and `base-uri 'self'` shut framing, plugins and a rewritten `<base>`; `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff` back them for older agents. The JSON API surface carries `nosniff` and `Referrer-Policy: no-referrer` too, so a URL that names a page never leaves in a referrer. HSTS is the one header that depends on the deployment: a browser ignores it over the plain HTTP Canon speaks behind its proxy, and its presence would imply a guarantee that transport does not make, so it is emitted only when `CANON_BASE_URL` says the edge is HTTPS — where it pins the upgrade for two years.
+
+Tested in [`server/test/securityheaders.test.ts`](server/test/securityheaders.test.ts): the document's CSP forbids inline script and permits inline style, HSTS appears only on a secure edge and never on plain HTTP, a sub-resource carries the transport headers but not the document policy, and the JSON API is `nosniff` and referrer-free.
+
 ---
 
 ## 4. Examined and found clean

@@ -730,7 +730,14 @@ async function readBody(req: IncomingMessage): Promise<any> {
 
 function send(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload);
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, {
+    'content-type': 'application/json',
+    // Defence in depth on the JSON surface: never let a browser sniff an API
+    // response into something executable, and never leak the URL (which can
+    // name a page) in a referrer. The document's full CSP lives in static.ts.
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+  });
   res.end(body);
 }
 
