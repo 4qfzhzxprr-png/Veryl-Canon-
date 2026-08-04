@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from './db.js';
 import { latestVersion, type Migration } from './migrate.js';
@@ -369,6 +369,79 @@ export async function backupTo(
     durationMs,
     verification,
   };
+}
+
+/** The artefact name for a snapshot taken at `now`: `canon-<ISO, no punctuation>.db`. */
+export function backupArtefactName(now: Date): string {
+  const stamp = now.toISOString().replace(/[:]/g, '').replace(/\.\d+Z$/, 'Z');
+  return `canon-${stamp}.db`;
+}
+
+/**
+ * Retention, applied only after a backup has verified. Never prunes on a failed
+ * run: the moment backups start failing is precisely the moment the old ones
+ * become the only copy there is. Returns the paths it removed.
+ *
+ * This is a LOCAL prune only. It says nothing about the off-box copies
+ * OPERATIONS.md insists on — a backup that shares a failure domain with the
+ * record is not a backup — and a deployment that keeps only what this leaves
+ * behind has kept its backups on the machine most likely to lose them.
+ */
+export function pruneArtefacts(directory: string, keep: number): string[] {
+  if (keep <= 0) return [];
+  const removed: string[] = [];
+  const artefacts = readdirSync(directory)
+    .filter((name) => /^canon-.*\.db$/.test(name))
+    .map((name) => ({ path: join(directory, name), mtime: statSync(join(directory, name)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const stale of artefacts.slice(keep)) {
+    unlinkSync(stale.path);
+    removed.push(stale.path);
+  }
+  return removed;
+}
+
+export interface ScheduledBackupOptions {
+  /** After a verified backup, keep only the newest `keep` artefacts locally. 0 keeps all. */
+  keep?: number;
+  auditChainVerifier?: AuditChainVerifier | null;
+  migrations?: readonly Migration[];
+  /** For tests: the moment to stamp the artefact with. Defaults to now. */
+  now?: Date;
+}
+
+export interface ScheduledBackupResult {
+  summary: BackupSummary;
+  pruned: string[];
+}
+
+/**
+ * Take one verified snapshot into `directory` under a timestamped name, then
+ * prune. This is the in-process counterpart to `npm run backup`: it exists so a
+ * deployment can have a backup on a schedule without wiring cron, which the
+ * production-readiness review found was the one thing standing between the
+ * excellent backup MACHINERY and an actually-durable record. It reuses the same
+ * `backupTo` — same `VACUUM INTO`, same verify-before-it-is-called-a-backup — so
+ * a scheduled artefact is exactly as trustworthy as a hand-run one.
+ *
+ * It runs on the server's own connection, so it holds a read lock for the
+ * snapshot's duration and no more; writers keep writing. It is NOT a substitute
+ * for the off-box copy OPERATIONS.md requires — it lands the artefact on local
+ * disk, and getting it somewhere the machine's loss cannot reach is still the
+ * operator's to arrange.
+ */
+export async function scheduledBackup(
+  db: DatabaseSync,
+  directory: string,
+  options: ScheduledBackupOptions = {},
+): Promise<ScheduledBackupResult> {
+  const artefact = join(resolve(directory), backupArtefactName(options.now ?? new Date()));
+  const summary = await backupTo(db, artefact, {
+    auditChainVerifier: options.auditChainVerifier,
+    migrations: options.migrations,
+  });
+  const pruned = pruneArtefacts(resolve(directory), options.keep ?? 0);
+  return { summary, pruned };
 }
 
 export interface RestoreOptions {

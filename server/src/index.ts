@@ -12,6 +12,7 @@ import { attachRequestLog, loggerFromEnv, redactUrl, requestLogEnabled } from '.
 import { currentSchemaVersion, latestVersion } from './migrate.js';
 import { notifierFor } from './notify.js';
 import { attachReadiness, readinessChecksFromEnv, recordChecks, startRecordWatch } from './ready.js';
+import { scheduledBackupOptionsFromEnv, startScheduledBackups } from './scheduledbackup.js';
 import { installGracefulShutdown } from './shutdown.js';
 import { attachStatic } from './static.js';
 import { CanonStore } from './store.js';
@@ -169,6 +170,25 @@ const sweeps = startFreshnessSweeps(store, {
   log,
 });
 if (sweeps.timer) timers.push(sweeps.timer);
+
+// The scheduled backup (scheduledbackup.ts). Off unless CANON_BACKUP_INTERVAL_MS
+// names a period and CANON_BACKUP_DIR names a destination — config.ts refuses
+// the first without the second. It reuses the same verified VACUUM INTO the CLI
+// does, on the record's own connection, and lands the artefact on local disk
+// only: shipping it off the box stays the operator's act (OPERATIONS.md). Held
+// so shutdown clears it.
+const backups = startScheduledBackups(scheduledBackupOptionsFromEnv(db, log));
+if (backups.timer) timers.push(backups.timer);
+if (backups.schedule.scheduled) {
+  log.info('scheduled backups running', {
+    everyMs: backups.schedule.intervalMs,
+    directory: backups.schedule.directory,
+    keep: backups.schedule.keep,
+    note: 'local disk only — ship each artefact off the box (OPERATIONS.md)',
+  });
+} else {
+  log.info('no scheduled backup', { reason: backups.schedule.reason });
+}
 
 // The interface to bind. Loopback when the unverified dev header is the only
 // door, so the demo stack is never reachable off-box; the operator's

@@ -248,6 +248,24 @@ the argument.
 | `CANON_ANCHOR_INTERVAL_MS` | optional | `3600000` (hourly) | How often Canon writes an `audit head anchor` line — `headEventId`, `headHash`, `events`, `takenAt` — in addition to one at start-up. `0` turns it off. | With it off, this deployment publishes nothing that would contradict a wholesale recomputation of the chain (USER-TESTING.md T3.2, where exactly that returned `ok: true` from `GET /audit/verify`). With it on and nobody shipping the line anywhere, the position is the same: **the schedule is not the control, the retention is.** |
 | `CANON_ANCHOR_FILE` | optional | unset | A file each anchor is also appended to, one JSON object per line. For a deployment whose log shipper is easier to point at a file than at stdout, or whose cron rsyncs the file to a store Canon has no credentials for. | Appended, never rewritten, because a file holding only the latest head is a file an attacker overwrites with the head they want. A path Canon can write is a path Canon can rewrite: put the file where a shipper *takes* it from, and treat the destination as the anchor. A write failure is a `warn` and does not stop the line reaching the log. |
 
+## Scheduled backup
+
+**Canon can take its own verified backup on a schedule** — the same
+`VACUUM INTO` snapshot `npm run backup` takes, verified end to end before it is
+called a backup, on the record's own connection. Off by default: durability of
+the audit log is a compliance obligation, so turning this on is a deliberate
+act with a stated recovery-point objective, not a silent convenience. Two
+things this is **not**, and OPERATIONS.md ("Back up") is the argument: it is not
+an off-box copy — the artefact lands on local disk and getting it somewhere the
+machine's loss cannot reach is still your act — and it is not point-in-time
+recovery, so the interval you choose is what you have agreed to lose.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_BACKUP_INTERVAL_MS` | optional | unset (off) | How often Canon takes a verified snapshot, in milliseconds. Unset or `0` means no scheduled backup. The first artefact lands one interval in, not at start-up. | The interval **is** your recovery-point objective: whatever was committed since the last snapshot is what a crash loses. A failed backup is logged at `error` with `msg: "scheduled backup failed"` and never takes the server down — **alert on that line**, because the moment backups start failing is the moment the old ones become the only copies there are. |
+| `CANON_BACKUP_DIR` | required if `CANON_BACKUP_INTERVAL_MS` is set | unset | The directory each timestamped artefact is written to. Setting an interval without this is refused at start-up. | Put it on a volume that is **not** the record's own disk. Canon warns at start-up that scheduled backups are local-only; a copy that shares a failure domain with the record is not a backup. Ship each artefact off the box, and file the audit-chain anchor beside it. |
+| `CANON_BACKUP_KEEP` | optional | `0` (keep all) | After a verified backup, delete all but the newest N artefacts **in `CANON_BACKUP_DIR`**. | Local pruning only — it never touches the off-box copies, and it never prunes on a failed run. Keep artefacts at least as long as your audit-log retention obligation, which for a regulated partner is usually seven years. |
+
 ## Not Canon's: the stubs
 
 These configure the **test doubles** in `idp-stub/`, `registry-stub/`,

@@ -90,6 +90,8 @@ const NUMERIC_VARS: { name: string; min: number }[] = [
   { name: 'CANON_OIDC_TIMEOUT_MS', min: 1 },
   { name: 'CANON_OIDC_CLOCK_TOLERANCE_SEC', min: 0 },
   { name: 'CANON_SHUTDOWN_TIMEOUT_MS', min: 0 },
+  { name: 'CANON_BACKUP_INTERVAL_MS', min: 0 },
+  { name: 'CANON_BACKUP_KEEP', min: 0 },
 ];
 
 /** Hosts in an allowlist entry that a DNS check can meaningfully be run on. */
@@ -301,6 +303,28 @@ export async function validateConfig(
       'the freshness timer is off: no review date flips anything until your scheduler calls ' +
         'POST /maintenance/freshness. That is a supported arrangement, and until that scheduler exists, ' +
         '"stale knowledge announces itself" is not true of this deployment.',
+    );
+  }
+
+  // --- backup ------------------------------------------------------------
+
+  // A scheduled backup that has nowhere to write is not a backup, so asking for
+  // the timer without a destination is refused rather than run to nowhere.
+  const backupInterval = Number(env.CANON_BACKUP_INTERVAL_MS ?? '');
+  if (env.CANON_BACKUP_INTERVAL_MS && Number.isFinite(backupInterval) && backupInterval > 0 && !trimmed(env, 'CANON_BACKUP_DIR')) {
+    refuse(
+      'CANON_BACKUP_DIR',
+      'CANON_BACKUP_INTERVAL_MS asks for a scheduled backup, but CANON_BACKUP_DIR names no directory to write it ' +
+        'to. Set the directory, and put it on a volume that is not the record’s own disk.',
+    );
+  }
+  // The artefact lands on local disk; that is not yet a backup. Say so, once,
+  // so a deployment that turns the timer on does not mistake it for durability.
+  if (env.CANON_BACKUP_INTERVAL_MS && Number.isFinite(backupInterval) && backupInterval > 0 && trimmed(env, 'CANON_BACKUP_DIR')) {
+    warn(
+      'CANON_BACKUP_DIR',
+      'scheduled backups write to local disk only. A copy that shares a failure domain with the record is not a ' +
+        'backup — ship each artefact off the box, and keep the audit-chain anchor beside it (OPERATIONS.md).',
     );
   }
 

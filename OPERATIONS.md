@@ -184,6 +184,23 @@ Safe to run against a server that is serving. Writers keep writing; the artefact
 holds every transaction committed before the snapshot began and none committed
 after.
 
+### Or let Canon take it on a schedule
+
+Canon can take the *same* verified snapshot on a timer, so a deployment has a
+backup without wiring cron for it. Set `CANON_BACKUP_INTERVAL_MS` and
+`CANON_BACKUP_DIR` (CONFIGURATION.md, "Scheduled backup"); the first artefact
+lands one interval in, each is verified before it is kept, and
+`CANON_BACKUP_KEEP` prunes the local directory to the newest N. The start-up log
+says whether it is running.
+
+This changes **nothing** about the two rules below, and turning it on is not the
+end of this section. The interval is your recovery-point objective — whatever
+was committed since the last snapshot is what a crash loses — and the artefact
+still lands on local disk, so the off-box copy in "Retention" is still your act,
+not Canon's. A failed scheduled backup is logged at `error` with `msg:
+"scheduled backup failed"`; **alert on it**, exactly as on `msg: "the record
+cannot be read"`.
+
 ### Never copy the file
 
 Canon runs in **WAL mode**. At any instant the committed record is spread across
