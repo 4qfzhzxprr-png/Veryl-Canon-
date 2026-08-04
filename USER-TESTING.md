@@ -1119,8 +1119,9 @@ now a content gap wearing a refusal, exactly where the record wants it.
 
 ### Still open, honestly
 
-The quotation class (three specimens, five recorded negative attempts —
-the standing bet is a real generation model). Pointer quality on questions
+The quotation class (three specimens, five recorded negative attempts — the
+standing bet was a real generation model; it was placed and measured, see
+"The quotation bet, measured" below: +18.2 points, off by default). Pointer quality on questions
 the record cannot answer: the pool is the top eight candidates, and the
 page a refused asker should see can rank twelfth — a deeper or semantic
 pointer pass is the noted shape of the fix, with two orderings already
@@ -1128,6 +1129,50 @@ recorded as negative results at the site. The refusal's "Search the record
 instead" button pre-fills the entire question into exact-match search, a
 guaranteed second dead end (Ada). And the two content gaps her manager's
 errands exposed are an editorial decision, not an engineering one.
+
+## The quotation bet, measured
+
+The fifth round left the quotation class "still open, the standing bet a real
+generation model." The bet was placed — a model behind the `AnswerGenerator`
+seam, reading whole pages and proposing the answering sentence, verified
+verbatim against the page before it is shown — and then measured against the
+extractive baseline on the labelled set, `claude-opus-5` at medium effort:
+
+| Metric | Extractive | Model | Δ |
+| --- | --- | --- | --- |
+| quoted answer | 68.2% | **86.4%** | **+18.2** |
+| answered | 88.4% | 86.0% | −2.3 |
+| cited relevant | 81.4% | 81.4% | 0.0 |
+| direct (no confident overreach) | 100% | 100% | 0.0 |
+| refused (nothing unanswerable answered) | 100% | 100% | 0.0 |
+
+Five "right page, wrong sentence" misquotes the five recorded window-arithmetic
+attempts could not touch are fixed — member-communications, employment-records,
+who-may-change-a-retention-period, why-clinical-criteria-are-kept-longer, and
+the purge-job time. Marcus's own specimens: the appeal deadline now quotes "the
+member has 180 days", and the expedited-claim answer finishes the sentence at
+"seventy-two hours" rather than truncating one clause short. One new miss —
+"what is the out-of-pocket maximum" quoted a sentence *about* the maximum over
+the one carrying the figure. Not statistically significant on 22 quotable cases
+(p = 0.22; six clean gains needed), but large and one-directional, and the
+invariants held: no confident overreach, nothing unanswerable answered.
+
+The one apparent regression is a quality gain in disguise. The single "answered"
+loss is *"what do the COB rules require when a member has two plans?"* — the
+round-three case a persona called "honest, cited, useless" because the
+extractive path assembled an answer from three unrelated pages. The model
+reads the admitted passages, judges that they do not answer, and refuses with
+pointers instead. The extractive generator faked it; the model declines to.
+That is the product working, counted as a loss only because the label expects
+an answer the record does not really hold.
+
+Cost: about six seconds per answered question, and the model's passages leave
+the machine for the Anthropic API — off by default, an explicit
+`CANON_GENERATOR=anthropic` decision (CONFIGURATION.md). The extractive
+generator remains the default and its floors are unchanged; this is a measured
+finding, not a shipped default. What it settles is the bet the negative results
+were placed against: the lever on quotation was the channel, and the channel
+moved it.
 
 ## What we are deliberately not doing
 

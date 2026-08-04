@@ -666,6 +666,22 @@ export function passageFor(body: string, terms: string[], preferred?: string): s
 //     and the conclusion above stands: the remaining misquotes want a better
 //     chunk, which is a model question, not a window-arithmetic one.
 //
+// AND THE MODEL QUESTION WAS ANSWERED. The generator seam
+// (generatorproviders.ts, CANON_GENERATOR=anthropic) lets a model read the
+// whole page and PROPOSE the sentence, verified verbatim against the page's
+// own text before it is shown. Measured against this extractive baseline on
+// the labelled set (claude-opus-5, medium effort): quoted-answer 68.2% →
+// 86.4%, +18.2 points — five "right page, wrong sentence" misquotes fixed
+// (member-communications, employment-records, who-may-change-a-period,
+// clinical-criteria-longer, purge-job-time), one new miss (out-of-pocket max:
+// the model quoted a sentence ABOUT the maximum over the one with the figure).
+// Not statistically significant on 22 quotable cases (p = 0.22; six clean
+// gains needed) but large and one-directional, and the exact thing window
+// arithmetic could not touch. This is what these five negative results were
+// for: they proved the lever was the channel, and the channel moved it. The
+// window below is still what runs when no model is configured — a verbatim
+// window of the record's own words, unchanged.
+//
 // It is still a verbatim window of the record's own words. What changed is
 // which words, not whose.
 function bestWindow(text: string, terms: string[]): { text: string; score: number } {
