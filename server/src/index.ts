@@ -9,6 +9,7 @@ import { headAnchorOptionsFromEnv, startHeadAnchors } from './headanchor.js';
 import { HttpConnector } from './httpconnector.js';
 import { smtpTransportFromEnv } from './email.js';
 import { attachRequestLog, loggerFromEnv, redactUrl, requestLogEnabled } from './log.js';
+import { attachMetrics, Metrics, metricsEnabled } from './metrics.js';
 import { currentSchemaVersion, latestVersion } from './migrate.js';
 import { notifierFor } from './notify.js';
 import { attachReadiness, readinessChecksFromEnv, recordChecks, startRecordWatch } from './ready.js';
@@ -95,7 +96,51 @@ const served = attachStatic(
   undefined,
   secureEdge,
 );
-const server = requestLogEnabled() ? attachRequestLog(served, log) : served;
+
+// Metrics (metrics.ts), off unless CANON_METRICS is on. It measures every
+// request — static, readiness and API alike — and serves the scrape at
+// /metrics. The gauges are read at scrape time so none is a cached lie; each
+// is aggregate operational data, never a page id or a secret.
+const metrics = new Metrics();
+const metricsOn = metricsEnabled();
+metrics.registerGauge('canon_build_info', 'Build and runtime identity; value is always 1.', () => [
+  {
+    labels: {
+      version: String(currentSchemaVersion(db)),
+      schema_expected: String(latestVersion(MIGRATIONS)),
+      node: process.version,
+      stage: 'alpha',
+    },
+    value: 1,
+  },
+]);
+metrics.registerGauge('canon_uptime_seconds', 'Seconds since this process started.', () => [
+  { value: Math.round(process.uptime()) },
+]);
+metrics.registerGauge('canon_schema_version', 'The schema version this record is at.', () => [
+  { value: currentSchemaVersion(db) },
+]);
+metrics.registerGauge('canon_record_readable', 'Whether a trivial read of the record succeeds right now (1) or not (0).', () => {
+  try {
+    db.prepare('SELECT 1').get();
+    return [{ value: 1 }];
+  } catch {
+    return [{ value: 0 }];
+  }
+});
+metrics.registerGauge('canon_audit_events_total', 'Events in the append-only audit log.', () => [
+  { value: (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n },
+]);
+metrics.registerGauge('process_resident_memory_bytes', 'Resident set size of this process.', () => [
+  { value: process.memoryUsage().rss },
+]);
+const measured = attachMetrics(served, metrics, metricsOn);
+
+// A metrics scrape is a probe, so it is logged like /health and /ready — at
+// debug, not as one more info line a second.
+const server = requestLogEnabled()
+  ? attachRequestLog(measured, log, { quiet: ['/health', '/ready', '/metrics'] })
+  : measured;
 
 // The timers, held so shutdown can clear them. Both are created below.
 const timers: NodeJS.Timeout[] = [];
@@ -179,6 +224,14 @@ if (sweeps.timer) timers.push(sweeps.timer);
 // so shutdown clears it.
 const backups = startScheduledBackups(scheduledBackupOptionsFromEnv(db, log));
 if (backups.timer) timers.push(backups.timer);
+if (metricsOn) {
+  log.info('metrics endpoint enabled', {
+    path: '/metrics',
+    note: 'aggregate operational data, no PII — let only your scraper reach it (CONFIGURATION.md)',
+  });
+} else {
+  log.info('no metrics endpoint', { reason: 'CANON_METRICS is unset; set it to on to expose /metrics' });
+}
 if (backups.schedule.scheduled) {
   log.info('scheduled backups running', {
     everyMs: backups.schedule.intervalMs,

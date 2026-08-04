@@ -158,6 +158,7 @@ weights. Neither should happen because a config file was copied.
 | `CANON_EMBEDDINGS_TEXT_PREFIX` | optional | unset | The passage-side counterpart (E5 wants `passage: `; BGE v1.5 wants none). | Baked into every stored vector, so it is part of the provider's identity: changing it re-derives the whole index rather than leaving rows embedded one way and questions asked another. |
 | `CANON_EMBEDDINGS_BATCH` | optional | `32` | Texts per request. | — |
 | `CANON_EMBEDDINGS_TIMEOUT_MS` | optional | `30000` | Bounds the whole exchange. | A provider that fails leaves pages out of the vector channel and retrieval degrades to lexical plus graph. It never substitutes a vector. |
+| `CANON_EMBEDDINGS_ALLOW_RESTRICTED` | optional | unset (off) | Whether a `restricted` collection's pages may be sent to an **`http`** embedder at index time. Off means they may not: they are left out of the semantic channel and found lexically (on-box FTS) plus by the explicit graph. | The safe default, and a **data-governance** control like `CANON_GENERATOR_ALLOW_RESTRICTED` — turn it on only with a data-processing agreement covering the embedding provider. Does nothing with `local`/`transformers`, which never leave the box. Retrieval on restricted collections is lexical-only when off, which is the trade for not sending them. |
 
 ## The answer generator
 
@@ -201,13 +202,14 @@ decision for whoever owns the data, not a default to drift into:
 - **Have a data-processing agreement in place** (a DPA, and a BAA where the
   material is PHI) with the provider before turning either on. Canon states the
   egress plainly here and at start-up; it cannot sign your contracts.
-- **Scope it.** `CANON_GENERATOR_ALLOW_RESTRICTED` keeps `restricted`
-  collections off the model by default — mark the collections whose content
-  must not leave, and they are composed locally. For embeddings the equivalent
-  lever does not yet exist (it is index-time and all-or-nothing); until it does,
-  a deployment that cannot send *some* collections to a hosted embedder should
-  run `CANON_EMBEDDINGS=transformers`, which keeps the model on the box, or the
-  built-in default, which makes no call at all.
+- **Scope it, per collection.** `CANON_GENERATOR_ALLOW_RESTRICTED` keeps
+  `restricted` collections off the answer model by default, and
+  `CANON_EMBEDDINGS_ALLOW_RESTRICTED` keeps them off a hosted embedder by
+  default — mark the collections whose content must not leave, and their answers
+  are composed locally and their pages are indexed lexically on the box. A
+  deployment that cannot send *any* collection to a hosted embedder can still
+  run `CANON_EMBEDDINGS=transformers` (the model on the box) or the built-in
+  default (no call at all).
 - **Point it at your own endpoint if you must.** `CANON_GENERATOR_URL` and
   `CANON_EMBEDDINGS_URL` accept a self-hosted or in-VPC compatible endpoint, so
   "use a model" need not mean "use someone else's network".
@@ -291,6 +293,20 @@ recovery, so the interval you choose is what you have agreed to lose.
 | `CANON_BACKUP_INTERVAL_MS` | optional | unset (off) | How often Canon takes a verified snapshot, in milliseconds. Unset or `0` means no scheduled backup. The first artefact lands one interval in, not at start-up. | The interval **is** your recovery-point objective: whatever was committed since the last snapshot is what a crash loses. A failed backup is logged at `error` with `msg: "scheduled backup failed"` and never takes the server down — **alert on that line**, because the moment backups start failing is the moment the old ones become the only copies there are. |
 | `CANON_BACKUP_DIR` | required if `CANON_BACKUP_INTERVAL_MS` is set | unset | The directory each timestamped artefact is written to. Setting an interval without this is refused at start-up. | Put it on a volume that is **not** the record's own disk. Canon warns at start-up that scheduled backups are local-only; a copy that shares a failure domain with the record is not a backup. Ship each artefact off the box, and file the audit-chain anchor beside it. |
 | `CANON_BACKUP_KEEP` | optional | `0` (keep all) | After a verified backup, delete all but the newest N artefacts **in `CANON_BACKUP_DIR`**. | Local pruning only — it never touches the off-box copies, and it never prunes on a failed run. Keep artefacts at least as long as your audit-log retention obligation, which for a regulated partner is usually seven years. |
+
+## Metrics
+
+**Canon can expose operational metrics in the Prometheus text format at
+`/metrics`.** Off by default: `/health` and `/ready` say whether Canon is up,
+but nothing else said how much traffic it serves, how fast, or how big the
+record has grown, and running a system of record in production without those
+signals is its own kind of blind. What is exposed is aggregate operational data
+only — request counts and latency by method and *route shape*, uptime, schema
+version, whether the record reads, the audit-event count, and process memory.
+
+| Variable | Required? | Default | Meaning | Safety |
+| --- | --- | --- | --- | --- |
+| `CANON_METRICS` | optional | unset (off) | `on` (or `true`/`1`) serves `GET /metrics` and starts recording. | No PII, no query strings, and **no page ids**: a request route is normalised to its shape (`/pages/:id`, never `/pages/<uuid>`), so a label never carries the identifier the request log works to keep out. It is served **without authentication**, like `/health` and `/ready` — so it is off by default, and a deployment that turns it on should let only its own scraper reach `/metrics` (allow it at the reverse proxy, or scrape over the internal network). It reveals traffic *shape*, which is why exposing it is the operator's deliberate choice. |
 
 ## Not Canon's: the stubs
 

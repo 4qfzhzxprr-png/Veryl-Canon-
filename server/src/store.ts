@@ -222,7 +222,12 @@ export class CanonStore {
   ) {
     this.searchIndex = new SearchIndex(db);
     this.gapService = new GapService(db);
-    this.embeddings = new EmbeddingStore(db, embeddingProvider);
+    // Whether a restricted collection's pages may be sent to an egressing
+    // embedder is a deployment decision, defaulting to no — the same posture as
+    // the answer generator (CANON_GENERATOR_ALLOW_RESTRICTED), for the other
+    // egress path. With the on-box default provider it changes nothing.
+    const allowRestrictedEmbedEgress = process.env.CANON_EMBEDDINGS_ALLOW_RESTRICTED === 'true';
+    this.embeddings = new EmbeddingStore(db, embeddingProvider, allowRestrictedEmbedEgress);
     this.notifier = new Notifier(db, this, transport);
     this.commentService = new CommentService(db, this, this.notifier);
     this.retrieval = new RetrievalService(db, this, this.searchIndex, this.embeddings);

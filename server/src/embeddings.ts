@@ -42,6 +42,17 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_provider ON embeddings(provider);
 export interface EmbeddingProvider {
   readonly name: string;
   readonly dimensions: number;
+  /**
+   * True when `embed` sends the text it is given out of this process to an
+   * external service. The local hashed-BoW provider and an on-box transformers
+   * model leave it falsy — they make no call — so a `restricted` collection's
+   * pages may be indexed by them freely. A hosted endpoint (`CANON_EMBEDDINGS=http`)
+   * sets it, and the store then refuses to send a restricted page's text to it
+   * unless the deployment allows it (EmbeddingStore, `derive`;
+   * CANON_EMBEDDINGS_ALLOW_RESTRICTED). It is read before the call — a provider
+   * cannot both egress and hide that it does.
+   */
+  readonly egresses?: boolean;
   embed(texts: string[]): Promise<number[][]>;
   /**
    * How to embed a QUESTION, where that differs from embedding the record.
@@ -253,6 +264,14 @@ export class EmbeddingStore {
   constructor(
     private readonly db: DatabaseSync,
     readonly provider: EmbeddingProvider = localEmbeddingProvider,
+    // Whether a `restricted` collection's pages may be sent to an egressing
+    // embedder. Default OFF, the safe direction: with a hosted embedder those
+    // pages are left out of the SEMANTIC channel and found lexically (FTS,
+    // which is on-box) plus by the explicit graph — retrieval degrades for
+    // them, it does not leak them. A deployment with a data-processing
+    // agreement opts in with CANON_EMBEDDINGS_ALLOW_RESTRICTED (store.ts). With
+    // the default on-box provider this changes nothing, because it never egresses.
+    private readonly allowRestrictedEgress: boolean = false,
   ) {
     // A provider change must not silently mix vector spaces. Rows from any
     // other provider are already ignored by every query; here they are also
@@ -404,13 +423,25 @@ export class EmbeddingStore {
     this.db.prepare('DELETE FROM embeddings WHERE page_id = ?').run(pageId);
     const row = this.db
       .prepare(
-        `SELECT p.current_version AS version, v.title, v.body
+        `SELECT p.current_version AS version, v.title, v.body, c.restricted
          FROM pages p
          JOIN page_versions v ON v.page_id = p.id AND v.number = p.current_version
+         JOIN collections c ON c.id = p.collection_id
          WHERE p.id = ? AND p.status != 'archived'`,
       )
-      .get(pageId) as { version: number; title: string; body: string } | undefined;
+      .get(pageId) as { version: number; title: string; body: string; restricted: number } | undefined;
     if (!row) return;
+
+    // Model egress control at INDEX time. If the embedder would send this text
+    // to an external service and the page sits in a `restricted` collection,
+    // leave the page out of the semantic channel rather than send it — the
+    // DELETE above has already cleared any vectors it had, so a collection
+    // flipped to restricted loses its embeddings on the next reindex. It stays
+    // findable lexically and through the graph; it just never leaves the box.
+    // A deployment with a data-processing agreement opts back in.
+    if (this.provider.egresses && row.restricted === 1 && !this.allowRestrictedEgress) {
+      return;
+    }
 
     // A page with a title but no body is still worth finding, so the title
     // stands in as its single chunk.

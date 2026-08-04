@@ -34,7 +34,7 @@ partner, not code · **[GA]** deferrable past the pilot with eyes open.
 | OIDC refresh tokens sealed at rest | **done** | Already AES-256-GCM under a key derived from `CANON_SESSION_SECRET` (`auth.ts` `sealSecret`/`openSecret`). A production-readiness survey mis-flagged these as plaintext; they are not. |
 | Model / embedding egress governance | **done (pilot)** | `restricted` collections are composed locally and never sent to the model unless a deployment with a DPA sets `CANON_GENERATOR_ALLOW_RESTRICTED` (answers.ts; `modelegress.test.ts`); the audit records `restrictedEgressWithheld`. CONFIGURATION.md carries the DPA/BAA note. Embeddings egress remains index-time and all-or-nothing — see §6. |
 | Automated, verified, off-box-able backup | **partial** | Canon now takes the same verified `VACUUM INTO` on a timer (`scheduledbackup.ts`; `CANON_BACKUP_INTERVAL_MS`/`_DIR`/`_KEEP`). It lands on **local disk** — the off-box copy is still the operator's act (OPERATIONS.md, "Retention"). Confirm the schedule and drill a restore during onboarding. |
-| At-rest encryption of `canon.db` | **open · [human]** | `node:sqlite` has no encryption; this is a volume/disk-layer decision (OPERATIONS.md, "Retention" directs it). The most sensitive credential — the refresh token — is already sealed independently of it. |
+| At-rest encryption of `canon.db` | **partial · [human]** | `node:sqlite` has no encryption, so this is a storage-layer job, not app code — now with a recipe: OPERATIONS.md, "Encrypt the record at rest" (encrypted volume for `/data`, key held off-box via KMS/TPM, backups encrypted separately, verify it). The operator still has to turn it on. The most sensitive credential — the refresh token — is already sealed independently of it. |
 | Practised disaster-recovery drill | **open · [human]** | `npm run restore -- --verify` and a real restore into a scratch instance, on a schedule. A backup nobody has restored is a belief. |
 
 ## 3. Web / transport hardening
@@ -62,18 +62,18 @@ partner, not code · **[GA]** deferrable past the pilot with eyes open.
 | Health / readiness split, graceful drain | **done** | `/health` vs `/ready`, SIGTERM drain, WAL checkpoint on close (`ready.ts`, `shutdown.ts`). |
 | Hash-chained audit log + off-box anchor | **done** | Append-only by trigger; head anchor on a timer; attestation bundles (OPERATIONS.md, "Anchor the chain head"). The anchor's value is entirely in the copy the operator ships off-box. |
 | CI pipeline | **done** | `.github/workflows/ci.yml` — build+test for the server and every stub on Node 22.x, plus a runtime `npm audit`. |
-| Metrics / tracing | **open** | No `/metrics`, no OpenTelemetry — logs only. Not buyer-facing, but running a compliance system in prod without SRE signals is a real gap. Needs a decision on format (Prometheus?) and what to expose. |
+| Metrics / observability | **done** | An opt-in Prometheus `/metrics` endpoint (`metrics.ts`; `CANON_METRICS=on`): request counts + latency histogram by method and normalised route, plus gauges (build info, uptime, schema version, record-readable, audit-event count, RSS). No PII — routes are reduced to their shape. `metrics.test.ts`. Distributed tracing (OpenTelemetry) is still open and lower priority. |
 
 ## 6. Scale & correctness — mostly [GA], one correctness hole
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| `node:sqlite`, single-node, no HA/replication/PITR | **open · [GA]** | Fine for one pilot box with a documented RPO and a drilled restore. A real ceiling before multi-tenant/GA — decide **now** whether GA means Postgres, so it isn't discovered late. `node:sqlite` is also a Stability-1 experimental module. |
+| `node:sqlite`, single-node, no HA/replication/PITR | **open · [GA]** | Fine for one pilot box with a documented RPO and a drilled restore. A real ceiling before multi-tenant/GA. The GA storage decision is now assessed: **`POSTGRES-ASSESSMENT.md`** — coupling is tight (~8–13 engineer-weeks, no abstraction layer today, sync→async is the dominant cost, FTS5 and the audit hash-chain the riskiest ports). The pilot does not need it; if GA is likely, Phase 0 (the abstraction seam) is the highest-leverage preparation. `node:sqlite` is also a Stability-1 experimental module. |
 | Per-process rate limiter & sessions | **open · [GA]** | A second instance multiplies the effective rate limit and cannot share session/data state; single-writer by design (`config.ts`, `ratelimit.ts`). |
 | **Finding 6 — the live federated field through Ask** | **done** | Closed with option (3): a live-values footer Canon composes outside the generator seam from `references.ts`'s already-resolved fields (`liveFieldNotice`, answers.ts; `livefields.test.ts`). The live value now reaches the answer's own prose — stated with source and freshness, stale-marked when stale, never invented — not only the citation metadata a reader who takes the prose never sees. Non-breaking: `AnswerResponse`'s shape is unchanged; only the `answer` string gains the footer, and only when a cited page carries a federated field. |
 | Generator quotation lift, established | **open · [human]** | +18.2 points measured on 22 cases at p=0.22 — large, one-directional, not yet significant. Needs a bigger labelled set on the partner's real corpus, with partner "overclaim" labels. |
 | Finding 7 (won't count / false silence), pointer quality on unanswerable | **open** | Lower severity; documented known limits (USER-TESTING.md). |
-| Embeddings egress per-collection | **open** | `CANON_EMBEDDINGS=http` sends every published page at index time, all-or-nothing. Until a per-collection lever exists, a deployment that cannot send some collections runs `transformers` (on-box) or the default (no call). |
+| Embeddings egress per-collection | **done** | `CANON_EMBEDDINGS_ALLOW_RESTRICTED` (off by default): a `restricted` collection's pages are left out of the semantic channel rather than sent to a hosted embedder — found lexically (on-box FTS) and by the graph instead. Symmetric with the model-egress control. `embeddingsegress.test.ts`. |
 
 ---
 

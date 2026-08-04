@@ -160,6 +160,10 @@ export function httpEmbeddingProvider(options: HttpEmbeddingOptions): EmbeddingP
     // nothing.
     name: textPrefix ? `http:${model}+text-prefix` : `http:${model}`,
     dimensions: options.dimensions,
+    // The record's text is sent over the network to this endpoint, so it says
+    // so: the store leaves a `restricted` collection's pages out of the
+    // semantic index rather than send them, unless the deployment allows it.
+    egresses: true,
     async embed(texts: string[]): Promise<number[][]> {
       return embedAll(texts, textPrefix);
     },
