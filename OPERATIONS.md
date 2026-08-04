@@ -248,6 +248,48 @@ What a partner is expected to do with the artefact:
 
 ---
 
+## Encrypt the record at rest
+
+**Canon does not encrypt its own database, and cannot: `node:sqlite` has no
+encryption, so the file on disk is plaintext.** For a regulated partner this is
+not optional to think about — `canon.db` holds the policies, every draft and
+comment, **every actor's name and email**, the entire **audit log**, and the
+session table. (One credential is protected regardless of the disk: OIDC refresh
+tokens are sealed with AES-256-GCM under `CANON_SESSION_SECRET`, `auth.ts`
+`sealSecret` — so a stolen file is not a set of live tokens without the
+deployment's environment. Everything else in the file is readable to anyone who
+can read the file.)
+
+So encryption at rest is the **storage layer's** job, and it is the operator's
+to arrange. The honest recipe is short:
+
+- **Encrypt the volume `/data` lives on.** On a cloud provider, turn on
+  encrypted block storage (EBS/PD/managed-disk encryption) for the volume backing
+  `CANON_DB` — it is a checkbox and it covers the whole file, the WAL, and the
+  `-shm`. Self-hosted, put `/data` on a LUKS/dm-crypt volume (or ZFS/eCryptfs).
+  The container's `-v canon-data:/data` then sits on encrypted storage and Canon
+  needs no change.
+- **Hold the key off the box.** Disk encryption is only worth its key management:
+  a key stored on the same host, unlocked at boot with no attestation, protects
+  against a stolen disk and nothing else. Use the platform KMS (AWS KMS, GCP KMS,
+  Azure Key Vault) or a TPM/network-bound unlock so the key is not sitting beside
+  the data it protects.
+- **Encrypt the backups too, wherever they land** — the artefact is the whole
+  record in one file (see "Retention" above). This is a *separate* key path from
+  the live volume, and it is the one people forget: a backup shipped to object
+  storage inherits none of the live disk's encryption.
+- **Verify it, don't assume it.** `lsblk -f` / `cryptsetup status`, or the cloud
+  console's "encrypted: true" on the volume and the snapshot. An unverified
+  encryption claim is exactly as good as an unverified backup.
+
+What this does and does not buy: volume encryption protects a **stolen disk, a
+decommissioned drive, a lost backup** — data at rest. It does **not** protect
+against a compromised running process (the file is mounted and readable there),
+which is what the permission model, the audit log, and the network policy are
+for. Do not let "the disk is encrypted" stand in for any of those.
+
+---
+
 ## Anchor the chain head
 
 **Read this before you configure it, because the honest version of this section
