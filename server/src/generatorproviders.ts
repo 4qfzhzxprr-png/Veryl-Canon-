@@ -115,9 +115,20 @@ export function anthropicGenerator(config: AnthropicGeneratorConfig = {}): Answe
   const model = config.model ?? 'claude-opus-5';
   // The SDK module and client, loaded once, lazily: a deployment that never
   // selects this generator never loads the dependency.
+  //
+  // The specifier is held in a `string`-typed variable rather than written as a
+  // literal in the `import()` so that TypeScript does not try to RESOLVE the
+  // module at compile time. `@anthropic-ai/sdk` is the one optional dependency
+  // (OPERATIONS.md, "no runtime dependencies… one optional dependency, off by
+  // default"), and a literal specifier made it a hard COMPILE-time dependency of
+  // every package that compiles server/src — studio-stub's build, which pulls in
+  // the whole store, went red in CI with TS2307 because its isolated install has
+  // no reason to carry the SDK. The runtime is unchanged: `import()` still tries
+  // to load it, and its absence still falls back to the extractive generator.
+  const sdkModule: string = '@anthropic-ai/sdk';
   let clientPromise: Promise<{ beta: { messages: { create(params: unknown): Promise<unknown> } } }> | null = null;
   const client = () => {
-    clientPromise ??= import('@anthropic-ai/sdk').then(({ default: Anthropic }) => {
+    clientPromise ??= import(sdkModule).then(({ default: Anthropic }) => {
       return new Anthropic({
         ...(config.apiKey ? { apiKey: config.apiKey } : {}),
         ...(config.baseURL ? { baseURL: config.baseURL } : {}),
