@@ -58,6 +58,16 @@ export interface RegistryClientOptions {
   cacheTtlMs?: number;
   /** How long to wait for the Registry before failing closed. Default 3s. */
   requestTimeoutMs?: number;
+  /**
+   * Credential for the Registry's verification face, sent as a bearer token.
+   * Without it the channel is an anonymous HTTP call — anyone who can reach
+   * the Registry can drive verification traffic, and the Registry cannot tell
+   * this Canon from anything else on the network. The Registry refusing an
+   * unauthenticated caller lands here as "no usable answer" (fail closed,
+   * never cached), so a missing or wrong key denies agents rather than
+   * admitting them.
+   */
+  apiKey?: string;
   /** Injectable for tests. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -76,6 +86,9 @@ export class RegistryClient {
   readonly baseUrl: string;
   readonly cacheTtlMs: number;
   readonly requestTimeoutMs: number;
+  /** Whether this client authenticates itself — surfaced so start-up can say so. */
+  readonly authenticated: boolean;
+  private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly cache = new Map<string, CacheEntry>();
 
@@ -83,6 +96,8 @@ export class RegistryClient {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.cacheTtlMs = Math.min(Math.max(options.cacheTtlMs ?? 30_000, 0), REVOCATION_GUARANTEE_MS);
     this.requestTimeoutMs = options.requestTimeoutMs ?? 3_000;
+    this.apiKey = options.apiKey?.trim() || undefined;
+    this.authenticated = this.apiKey !== undefined;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -106,7 +121,10 @@ export class RegistryClient {
     try {
       response = await this.fetchImpl(`${this.baseUrl}/verify`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+        },
         body: JSON.stringify({ passport }),
         signal: AbortSignal.timeout(this.requestTimeoutMs),
       });

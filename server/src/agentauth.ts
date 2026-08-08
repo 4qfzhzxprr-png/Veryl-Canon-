@@ -958,6 +958,10 @@ export function agentAuthFromEnv(
       baseUrl,
       cacheTtlMs: Number.isFinite(ttl) && env.CANON_REGISTRY_TTL_MS ? ttl : undefined,
       requestTimeoutMs: Number.isFinite(timeout) && env.CANON_REGISTRY_TIMEOUT_MS ? timeout : undefined,
+      // The channel credential (CANON_REGISTRY_API_KEY). Optional because the
+      // stub and a loopback demo run without one — but a real deployment that
+      // omits it has an unauthenticated trust boundary, and start-up says so.
+      apiKey: env.CANON_REGISTRY_API_KEY,
     }),
   });
 }

@@ -324,7 +324,17 @@ server.listen(port, bindHost, () => {
     log.info('agent passport authentication live', {
       registry: redactUrl(agentAuth.registry.baseUrl),
       reverifyWithinMs: agentAuth.registry.cacheTtlMs,
+      channelAuthenticated: agentAuth.registry.authenticated,
     });
+    if (!agentAuth.registry.authenticated) {
+      // Said at start-up, where the TLS warning for the bind lives, because it
+      // is the same class of fact: the trust boundary this deployment actually
+      // has, not the one the design assumes. Without a key, anything on the
+      // path to the Registry can drive and observe verification traffic.
+      log.warn(
+        'CANON_REGISTRY_URL is set without CANON_REGISTRY_API_KEY: the channel to the Registry is unauthenticated',
+      );
+    }
   } else {
     log.info('no Registry configured (CANON_REGISTRY_URL unset): Agent Passports refused');
   }

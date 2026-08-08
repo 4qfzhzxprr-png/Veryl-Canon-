@@ -71,7 +71,7 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
-export function createRegistryApi(store: RegistryStore): Server {
+export function createRegistryApi(store: RegistryStore, opts: { verifyApiKey?: string } = {}): Server {
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://registry');
@@ -79,6 +79,17 @@ export function createRegistryApi(store: RegistryStore): Server {
       if (!match) {
         send(res, 404, { error: 'not_found', message: `No route: ${req.method} ${url.pathname}` });
         return;
+      }
+      // The real Registry authenticates its verification face; when a test
+      // hands the stub a key, the stub does too — so the suite can prove both
+      // that Canon presents its credential and that a Canon without one is
+      // refused rather than served. No key configured = the old open stub.
+      if (opts.verifyApiKey && url.pathname === '/verify') {
+        const presented = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+        if (presented !== opts.verifyApiKey) {
+          send(res, 401, { error: 'unauthenticated', message: 'This Registry requires a caller credential' });
+          return;
+        }
       }
       const groups = url.pathname.match(match.pattern)!.slice(1);
       const params: Record<string, string> = {};
