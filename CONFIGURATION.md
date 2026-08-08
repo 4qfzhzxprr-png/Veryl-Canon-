@@ -113,6 +113,7 @@ somebody holds what.
 | Variable | Required? | Default | Meaning | Safety |
 | --- | --- | --- | --- | --- |
 | `CANON_REGISTRY_URL` | required for agents | unset | The Veryl Agent Registry. Setting it turns Agent Passport authentication on; unset, a passport is refused `503`. | §5 assumption 4: a compromised Registry is a compromised Canon for every agent. |
+| `CANON_REGISTRY_API_KEY` | recommended with `CANON_REGISTRY_URL` | unset | Credential Canon presents to the Registry's verification face, as a bearer token. Unset, the channel is an anonymous HTTP call and start-up warns about it. | A Registry that refuses the missing key reads as "no usable answer" — agents are denied, never admitted. This authenticates the caller; confidentiality on the path is still the TLS proxy's job. |
 | `CANON_REGISTRY_TTL_MS` | optional | `30000` (clamped to 60s) | How long a verified answer may be reused. `0` re-verifies every request. | This is the revocation guarantee: revoking an agent cuts its access within this. |
 | `CANON_REGISTRY_TIMEOUT_MS` | optional | `3000` | How long to wait for the Registry before failing closed. | An unreachable Registry is a `503`, never an allowance. |
 

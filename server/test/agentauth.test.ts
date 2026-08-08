@@ -43,9 +43,18 @@ interface Rig {
   close: () => void;
 }
 
-async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promise<Rig> {
+async function rig(
+  opts: {
+    ttlMs?: number;
+    withRegistry?: boolean;
+    /** The stub demands this credential on its verification face. */
+    registryRequiresKey?: string;
+    /** What Canon's client presents (CANON_REGISTRY_API_KEY). */
+    canonPresentsKey?: string;
+  } = {},
+): Promise<Rig> {
   const registry = new RegistryStore();
-  const registryServer = createRegistryApi(registry);
+  const registryServer = createRegistryApi(registry, { verifyApiKey: opts.registryRequiresKey });
   await new Promise<void>((resolve) => registryServer.listen(0, resolve));
   const registryUrl = `http://127.0.0.1:${(registryServer.address() as AddressInfo).port}`;
 
@@ -57,7 +66,12 @@ async function rig(opts: { ttlMs?: number; withRegistry?: boolean } = {}): Promi
       : new AgentAuth({
           db,
           store,
-          registry: new RegistryClient({ baseUrl: registryUrl, cacheTtlMs: opts.ttlMs ?? 0, requestTimeoutMs: 500 }),
+          registry: new RegistryClient({
+            baseUrl: registryUrl,
+            cacheTtlMs: opts.ttlMs ?? 0,
+            requestTimeoutMs: 500,
+            apiKey: opts.canonPresentsKey,
+          }),
         });
   const canon = createApi(store, auth);
   await new Promise<void>((resolve) => canon.listen(0, resolve));
@@ -375,6 +389,56 @@ test('revocation in the Registry cuts access well inside the one-minute guarante
     const narrowed = await r.call('GET', `/collections/${collection.id}`, { passport: other.passport });
     assert.equal(narrowed.status, 403);
     assert.equal(narrowed.json.reason, 'collection_not_permitted');
+  } finally {
+    r.close();
+  }
+});
+
+test('the channel carries a credential: an authenticated Canon is served', async () => {
+  // CANON_REGISTRY_API_KEY end to end: the stub demands the key on its
+  // verification face, Canon presents it, and passport auth works exactly as
+  // it does on the open stub — proof the credential rides every /verify call,
+  // not just the first.
+  const r = await rig({ registryRequiresKey: 'canon-channel-key', canonPresentsKey: 'canon-channel-key' });
+  try {
+    const { dana, collection } = await seed(r);
+    const bot = r.registry.register({ name: 'PolicyBot', permittedCollections: [collection.id] });
+    r.registry.certify(bot.agentId);
+    const first = await r.call('GET', '/collections', { passport: bot.passport });
+    assert.equal(first.status, 200);
+    const agent = ((await r.call('GET', '/actors', { actor: dana.id })).json as any[]).find((a) => a.kind === 'agent');
+    await r.call('PUT', `/collections/${collection.id}/members/${agent.id}`, { actor: dana.id }, { role: 'view' });
+    assert.equal((await r.call('GET', '/collections', { passport: bot.passport })).json.length, 1);
+  } finally {
+    r.close();
+  }
+});
+
+test('a Canon without the channel credential is refused, and it fails closed', async () => {
+  // The review's finding, pinned from the refusing side: a Registry that
+  // demands a caller credential answers an anonymous Canon 401 — which is not
+  // in the contract's definitive-refusal table, so it lands as "no usable
+  // answer": agents are denied, nothing is cached, and people are untouched.
+  const r = await rig({ registryRequiresKey: 'canon-channel-key' /* canon presents nothing */ });
+  try {
+    const { dana, collection } = await seed(r);
+    const bot = r.registry.register({ name: 'PolicyBot', permittedCollections: [collection.id] });
+    r.registry.certify(bot.agentId);
+    const refused = await r.call('GET', '/collections', { passport: bot.passport });
+    assert.equal(refused.status, 503);
+    assert.equal(refused.json.reason, 'registry_unreachable');
+    // A wrong key is the same refusal as no key.
+    const wrong = await rig({ registryRequiresKey: 'canon-channel-key', canonPresentsKey: 'not-the-key' });
+    try {
+      const { collection: c2 } = await seed(wrong);
+      const bot2 = wrong.registry.register({ name: 'OtherBot', permittedCollections: [c2.id] });
+      wrong.registry.certify(bot2.agentId);
+      assert.equal((await wrong.call('GET', '/collections', { passport: bot2.passport })).status, 503);
+    } finally {
+      wrong.close();
+    }
+    // People are unaffected: the channel credential gates agents only.
+    assert.equal((await r.call('GET', '/collections', { actor: dana.id })).status, 200);
   } finally {
     r.close();
   }
