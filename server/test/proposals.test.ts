@@ -543,6 +543,20 @@ test('API: an agent needs Registry write AND Canon edit to propose, and can neve
     const denials = (await r.call('GET', '/audit?action=agent.denied', { actor: dana.id })).json;
     assert.ok(denials.some((e: any) => e.details.reason === 'route'));
 
+    // Granting the Canonical mark is refused on the same terms. It used to sit
+    // under `write`, so a certified agent holding write could mark a person's
+    // policy as the official record — and with a fixed vocabulary of three
+    // there was no grant that allowed drafting without allowing that.
+    r.registry.setPermissions(bot.agentId, {
+      permittedCollections: [collection.id],
+      permittedActions: ['read', 'comment', 'write'],
+    });
+    await r.call('PUT', `/collections/${collection.id}/members/${agent.id}`, { actor: dana.id }, { role: 'approve' });
+    const mark = await r.call('POST', `/pages/${page.id}/approve`, { passport: bot.passport }, {});
+    assert.equal(mark.status, 403);
+    assert.equal(mark.json.reason, 'route_not_available_to_agents');
+
+
     // A person accepts, and the agent's words become the record.
     const accepted = await r.call('POST', `/proposals/${proposed.json.id}/accept`, { actor: dana.id }, {});
     assert.equal(accepted.status, 200, JSON.stringify(accepted.json));
