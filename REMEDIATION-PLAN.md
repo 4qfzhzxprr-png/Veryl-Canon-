@@ -338,15 +338,31 @@ person walking into that state, and any way back for someone who is only a colle
 admin. **2.5's second half does not reproduce**: the admin console's revoke button
 already carries `disabled={busy || !impact}`.
 
-**Next: Phase 3 (governance enforcement)** — 3.1 quarantine propagation, 3.2 the
-certification gate, 3.3 reviewer override of engine verdicts, 3.4 audit vocabulary,
-3.5 Canon's agent `write` folding in approve/publish, 3.6 ungoverned Text components,
-3.7 unapproved egress, 3.8 unaudited denials, 3.9 body-link leaks, 3.10 slug-walking,
-3.11 session management.
+---
 
-Note for 3.1–3.4: these are Registry enforcement claims, and Registry's web runs on
-mock fixtures. Stand the FastAPI backend up and re-run those personas before fixing —
-the parallel workstream this plan opened with.
+## Phase 3 — read the backend first, and most of it dissolved
+
+The plan said to check Registry's enforcement claims against the real service before
+fixing them from what the demo does. Doing that changed the phase. The FastAPI backend
+was read directly (it needs Python 3.12, pgvector and Redis to run; the source and its
+tests answer the question without it).
+
+| # | Claim | What the backend actually does |
+|---|---|---|
+| 3.1 | "The kill switch does not kill" — a quarantined agent kept answering in rooms while the catalog still showed Verified | **WITHDRAWN.** `agent_registry.py:181` raises `403 revoked — "This agent has been quarantined by its Registry"`, and rooms, MCP and Teams each return the canonical block notice for a quarantined agent (`rooms.py:10`, `mcp.py:189`, `teams_install.py:481`). The demo does not propagate. The product does. |
+| 3.2 | The certification gate is unenforced — a reviewer self-verified with solo mode off | **WITHDRAWN.** `review._assert_distinct_reviewer` raises 403 when the reviewer is the owner or the author, and only `allow_self=True` lifts it. `test_review_self_verify.py` pins both halves. |
+| 3.3 | A reviewer can mark a check Pass while the engine reports FAILED, and the UI says "all checks pass" | **Open, needs the running backend.** Whether the server validates the checklist against the engine verdict was not established by reading alone. |
+| 3.4 | The audit log records none of it | **Narrowed, and real.** The events are recorded — but the whole service has only ten action names (`create`, `data_access`, `export`, `invoke`, `login`, `logout`, `mail_connect`, `register`, `state_change`, `update`). A role change, a quarantine and a connector grant all land as `state_change` or `export` with the specifics in `detail`, so the filter can never offer "Connector · granted" and an examiner cannot select the events they came for. Not "unaudited" — **indistinguishable**, which is a contract-shaped fix, not a logging one. |
+
+**That is two more of the test's biggest findings withdrawn**, both from the same
+cause: the Registry personas were judging a demo. It is also the strongest argument in
+this document for finishing the demo-honesty work in Phase 1 — the fixture is what a
+buyer, an auditor and a new employee actually meet.
+
+**Still real, and still to do:** 3.5 Canon's agent `write` folding in
+`approve`/`publish` (verified in `agentauth.ts` against `REGISTRY-CONTRACT.md:52`),
+3.6 ungoverned Text components, 3.7 unapproved egress, 3.8 unaudited denials in Canon,
+3.9 body-link leaks, 3.10 slug-walking before authorization, 3.11 session management.
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
