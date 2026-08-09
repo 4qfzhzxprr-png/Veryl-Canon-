@@ -319,10 +319,34 @@ which `retrieval.ts:103-109` records as already tried and measured useless.
 Roughly two real defects per non-defect. Every fix was reproduced or proven before it
 was written, and three carry tests that fail without the change.
 
-**Next: Phase 2 (destructive and irreversible actions)** — 2.1 Canon sole-admin
-lockout, 2.2 Studio unconfirmed password reset, 2.3 the template-share 500, 2.4
-Registry unguarded admin grant and solo-mode toggle, 2.5 controls armed before their
-consequences load.
+---
+
+## Phase 2 — complete
+
+| # | Product | What changed |
+|---|---|---|
+| 2.1 | Canon | The last administrator of a collection cannot step down alone — hand the role on first. Test pins it. |
+| 2.2 | Studio | Resetting a password confirms, naming both consequences: every session ends, and no mail is sent so you hand the new one over yourself |
+| 2.3 | Studio | Studio home no longer 500s for anyone whose template was re-shared. Verified 500 → 200. |
+| 2.4 | Registry | Granting Admin and enabling solo mode both confirm. Only in the widening direction — narrowing needs no ceremony. |
+| 2.5 | Studio | Publish is disabled until the preflight lands, so the dialog can keep the rule it already states |
+
+**Narrowed:** 2.1 is not permanent — `requirePermissionAdmin` has a documented
+break-glass for "a collection whose last admin left" and the abilities mirror reports
+it, so an org administrator can recover one. What was missing is anything stopping a
+person walking into that state, and any way back for someone who is only a collection
+admin. **2.5's second half does not reproduce**: the admin console's revoke button
+already carries `disabled={busy || !impact}`.
+
+**Next: Phase 3 (governance enforcement)** — 3.1 quarantine propagation, 3.2 the
+certification gate, 3.3 reviewer override of engine verdicts, 3.4 audit vocabulary,
+3.5 Canon's agent `write` folding in approve/publish, 3.6 ungoverned Text components,
+3.7 unapproved egress, 3.8 unaudited denials, 3.9 body-link leaks, 3.10 slug-walking,
+3.11 session management.
+
+Note for 3.1–3.4: these are Registry enforcement claims, and Registry's web runs on
+mock fixtures. Stand the FastAPI backend up and re-run those personas before fixing —
+the parallel workstream this plan opened with.
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
