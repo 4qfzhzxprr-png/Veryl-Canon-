@@ -228,19 +228,36 @@ picks up the ticket.
 
 ## Status
 
-- **1.1 done** (Canon) — relations empty state no longer asserts a fact about the
-  record it cannot verify.
-- **1.3 done** (Canon) — approval records the drafter as author, not the approver.
-  Test pins it and fails without the change.
-- **1.4 withdrawn** — three non-defects, see the row above.
-- **1.8 done** (Studio) — approvals keyed by app+version; an approver can no longer
-  reject a version they never opened.
-- **1.9 done** (Studio) — a late load no longer adopts over unsaved work. The draft
-  store was never at fault; `adopt()` on the mount GET was. Reproduced both ways by
-  holding back a response carrying a pre-edit body.
-- **1.10 done** (Studio) — `View as` consults `deactivatedAt`, so a leaver is reported
-  as blocked. Verified against the running app.
-- Remaining in Phase 1: 1.2, 1.5, 1.6, 1.7, 1.11–1.20.
+**Fixed and pushed**
+
+| # | Product | What changed |
+|---|---|---|
+| 1.1 | Canon | Relations empty state describes the listing, not the record |
+| 1.2 | Canon | A quotation finishes its sentence instead of ellipsing the answer away — the clinician's "seventy-two hours" is now inside the citation |
+| 1.3 | Canon | Approval records the drafter as author, not the approver |
+| 1.8 | Studio | Approvals keyed by app+version — no more deciding a version you never opened |
+| 1.9 | Studio | A late load no longer adopts over unsaved work |
+| 1.10 | Studio | `View as` consults `deactivatedAt`, so a leaver reads as blocked |
+| 1.19 | Registry | Empty Canon-grant fields read "none granted" instead of sample ids |
+
+Each verified rather than assumed: 1.2, 1.3 and 1.9 have tests that fail without the
+change; 1.9 and 1.10 were reproduced against the running product and re-checked after.
+
+**Withdrawn on inspection — four findings that were not defects**
+
+| # | Why |
+|---|---|
+| 1.4 | "No reviewed baseline" means no version ever held the Canonical mark, which is not `#/compare`'s version diff; approving certifies the whole document, so the unmarked wall is deliberate (`app.js:2439-2443`). The diff button scrolls and preserves the note. The false version note was free text an approver typed. |
+| 1.14 | The funnel never claims a conversion. `gateway/index.ts:1547-1554` refuses that word explicitly and states the ratio "can exceed 100% here whenever a later stage is simply busier". The tester read a funnel shape and inferred progression. |
+| — | Registry's audit hash chain (real keyed HMAC in `services/api`; the fabricated one is the demo fixture) |
+| — | Canon's hidden relations (deliberate non-disclosure, pinned by a test) |
+
+A fifth was avoided mid-flight: the first attempt at 1.2 added answer-shape scoring to
+window selection, which `retrieval.ts:103-109` records as already tried and measured
+useless ("on a schedule every window holds a figure"). Reverted; the real fault was the
+window's END, not its start.
+
+**Remaining in Phase 1:** 1.5, 1.6, 1.7, 1.11, 1.12, 1.13, 1.15–1.18, 1.20.
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
