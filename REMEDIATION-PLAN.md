@@ -52,7 +52,7 @@ The highest-harm, mostly-smallest fixes. Ship as one release per product.
 | 1.1 | Page states "The record does not hold a conflict or a supersession for this page" when relations exist but are permission-filtered | **DONE** — copy now describes the listing, not the record. Non-disclosure preserved. |
 | 1.2 | Ask labels `ANSWER — drawn from N Canonical pages` on topical overlap alone; reproduced on an excerpt truncated one clause before the number asked for | Require a **responsive extracted span** before the ANSWER label; highlight it; otherwise refuse with *"these Canonical pages are about this subject; none of them states one"*. Widen the excerpt window to end on a sentence boundary. |
 | 1.3 | Version history, page header, compare header and attestation JSON all name the **approver** as author | One display bug in every provenance artifact. Source author from the `draft.start` actor, as the audit log already does. |
-| 1.4 | Approve pane says "there is no reviewed baseline to compare against" while `#/compare/1/2` renders "4 changed lines"; "Show me the changes" is dead and destroys the Note field | Compute the baseline the compare view already computes; make the button open compare without discarding the dialog. **Also: one page carries a permanent false version note from this — decide whether to correct it in place.** |
+| 1.4 | ~~Approve pane says "there is no reviewed baseline"; "Show me the changes" is dead; a version note states a false diff~~ | **WITHDRAWN — three non-defects.** (a) "No reviewed baseline" means no version ever held the *Canonical* mark, which is not the version-to-version diff `#/compare` shows; approving certifies the whole document including previously-unreviewed published text, so the unmarked wall is deliberate and argued at `app.js:2439-2443`. (b) The button is not dead — it closes the modal and scrolls to the panel, and the note is preserved by design (`app.js:3016`). (c) The false note is free text an approver typed into `input.note`, not generated. Possible additive improvement, not a fix: offer the published-version diff *alongside* the full text. |
 | 1.5 | `#/queue` tells the owner of a conflicted page "No conflict has been asserted against a page you own"; `#/map` reports `Conflicts with 0` | Same class as 1.1 — owner-scoped and permission-scoped filters rendered as facts. Reword to describe the view. |
 | 1.6 | Superseded page shows a plain `DRAFT` chip everywhere a reader arrives from, and its replacement is `IN REVIEW`, which Ask never uses — so the subject has no canonical answer while the banner implies one | Show supersession state in search, the collection table and Related panels; warn when a supersession points at a page Ask cannot use. |
 | 1.7 | A canonical page publishes different federated values to different readers with no marker | Mark per-asker resolution in place, as service-resolved refs already are. |
@@ -228,9 +228,19 @@ picks up the ticket.
 
 ## Status
 
-- **Phase 1.1 — done.** Canon's relations empty state no longer asserts a fact about
-  the record it cannot verify.
-- Everything else — not started.
+- **1.1 done** (Canon) — relations empty state no longer asserts a fact about the
+  record it cannot verify.
+- **1.3 done** (Canon) — approval records the drafter as author, not the approver.
+  Test pins it and fails without the change.
+- **1.4 withdrawn** — three non-defects, see the row above.
+- **1.8 done** (Studio) — approvals keyed by app+version; an approver can no longer
+  reject a version they never opened.
+- **1.9 done** (Studio) — a late load no longer adopts over unsaved work. The draft
+  store was never at fault; `adopt()` on the mount GET was. Reproduced both ways by
+  holding back a response carrying a pre-edit body.
+- **1.10 done** (Studio) — `View as` consults `deactivatedAt`, so a leaver is reported
+  as blocked. Verified against the running app.
+- Remaining in Phase 1: 1.2, 1.5, 1.6, 1.7, 1.11–1.20.
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
