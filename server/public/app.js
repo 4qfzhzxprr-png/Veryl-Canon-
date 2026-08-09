@@ -1736,7 +1736,11 @@ async function viewQueue() {
           <td class="nowrap">${badge(r.mine.status, 'sm')}</td>
           <td class="nowrap queue-when">${esc(fmtAgo(r.assertedAt) ?? '')}</td>
         </tr>`),
-      'No conflict has been asserted against a page you own.',
+      // Not "no conflict has been asserted": this list drops a conflict whose
+      // OTHER end the reader cannot see (relations.ts keeps that deliberate),
+      // so the owner of a contested page was being told nothing contested it.
+      // Say what is shown, not what the record holds.
+      'No conflict on a page you own is shown here.',
     ),
     queueSection(
       'Sources disagreeing',
@@ -6412,8 +6416,11 @@ const EDGE_HELP = {
   child: 'Parent to child: where the page sits in the tree.',
   link: 'A link one published page makes to another. Written by hand, never inferred.',
   reference: 'A reference field on a page, resolving against a registered external source.',
-  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner.',
-  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing.',
+  // Both say what the map DRAWS, not what the record holds: an edge whose far
+  // end sits in a collection you are not a member of is not drawn, so a count
+  // of nought here is not a claim that the record holds none.
+  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner. Only relations whose other page you can also read are drawn.',
+  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing. Only relations whose other page you can also read are drawn.',
 };
 // The order the legend and the edge filters use. The two relations come last
 // because they are the newest thing on the map, not because they matter least.
