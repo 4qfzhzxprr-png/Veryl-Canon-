@@ -276,7 +276,22 @@ that link must be handed over by hand.
 | 1.11 | "Published URLs don't resolve" | Split in two. The clipboard bug is fixed. The address itself — `<slug>.<domain>` — is a DNS and served-domains deployment gap (tester 36 proved host routing works when the Host header is set), not an application defect. Left open as a deployment item. |
 | 1.13 | "A builder cannot tell mock AI from real" | Mostly already built. `splitProviderNotice` lifts the mock's self-identification out of the answer and all three AI components render it as `⚙️ {notice}` — but only in the builder preview (`mode === "draft"`). Hiding it from end users is deliberate: "infrastructure configuration on a salesperson's screen, and an invitation to doubt the content next to it." Whether an end user should nonetheless be told the answer came from a demo model is a **policy question**, added below. |
 
-**Remaining in Phase 1:** 1.6, 1.7, 1.12, 1.15–1.18, 1.20.
+**Also landed:** 1.17, 1.18, 1.20, and the shared-report halves of 1.15/1.16.
+
+| # | Product | What changed |
+|---|---|---|
+| 1.17 | Registry | Decision extraction quotes the transcript or extracts nothing — the coffee-machine case now yields no decision |
+| 1.18 | Registry | The assistant answers Passport / Verified / who-approves / what-is-an-agent from the real `APP_DOCS` wording, and no longer invents a paid invoice |
+| 1.20 | Registry | Each agent gets its own verification report, provenance following its state |
+
+1.20 also closed the "identical report hash across nine agents" and "byte-identical
+evidence across four agents" findings: one shared `REPORT` constant was the cause of
+all three. Reported as a precedence bug in `StatusBadge`; it was not — trust rendering
+is a frozen contract and behaved correctly, the fixture was contradicting the agent's
+own state.
+
+**Remaining in Phase 1:** 1.6, 1.7, 1.12, and the residue of 1.15/1.16 (labelling
+canned interview answers; the "Chain intact ✓" assurance panel over demo data).
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
