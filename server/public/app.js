@@ -3638,6 +3638,23 @@ function normalizeRelation(r) {
   };
 }
 
+// Statuses a grounded answer may draw on — retrieval.ts ANSWERABLE_STATUSES.
+// Canonical, and Canonical whose review date has passed.
+const ANSWERABLE_STATUSES = ['canonical', 'needs_update'];
+
+// "Superseded by X" reads as "the answer moved over there". It only means that
+// once X is part of the official record. Where the replacement is still a
+// draft or in review, Ask will not use it and this page is still what the
+// record serves — so the subject has NO approved answer, and a banner that
+// stops at naming the replacement makes it look filled.
+function supersededByUnanswerableHTML(rel) {
+  if (rel.reads !== 'superseded_by') return '';
+  const status = rel.other.status;
+  if (!status || ANSWERABLE_STATUSES.includes(status)) return '';
+  return `<p class="rel-note muted">The page named as its replacement is not part of the official record yet,
+    so nothing here has been approved on this subject. This page is still what the record serves.</p>`;
+}
+
 function relationEntryHTML(rel) {
   return `
     <li class="relation rel-${esc(rel.reads)}"${rel.id ? ` data-relation="${esc(rel.id)}"` : ''}>
@@ -3650,6 +3667,7 @@ function relationEntryHTML(rel) {
       </div>
       ${rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
         <p class="rel-note muted">No note was recorded with this assertion.</p>`}
+      ${supersededByUnanswerableHTML(rel)}
       <p class="rel-meta muted">Asserted by ${actorLabel(rel.assertedBy)}${
         rel.assertedAt ? ` · ${esc(fmtAgo(rel.assertedAt) ?? '')} (${esc(fmtDateTime(rel.assertedAt))})` : ''
       }${rel.id ? ` · <button class="btn subtle rel-withdraw" type="button" data-withdraw="${esc(rel.id)}">Withdraw</button>` : ''}</p>
