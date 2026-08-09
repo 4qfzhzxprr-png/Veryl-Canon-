@@ -3253,6 +3253,11 @@ function referenceRowHTML({ r, cls, valueHTML, marks, prov, valueTitle }) {
     </div>`;
 }
 
+function askerMarkHTML() {
+  return `<span class="kind-tag ref-asker"
+    title="Resolved with your own identity, so another reader of this page may see a different value here, or none">resolved for you</span>`;
+}
+
 function serviceMarkHTML() {
   return `<span class="kind-tag ref-service"
     title="Resolved with a service identity, so this value is visible to everyone who can view this collection">service-resolved</span>`;
@@ -3266,12 +3271,13 @@ const SERVICE_SENTENCE = 'Service-resolved: visible to everyone who can view thi
 function referencePlaceholderHTML(ref) {
   const r = normalizeReference(ref);
   const service = r.authMode === 'service' || r.serviceResolved;
+  const perAsker = !service && r.authMode === 'per_asker';
   return referenceRowHTML({
     r,
     cls: 'is-resolving',
     valueHTML: '<span class="skel-line ref-skel-value" aria-hidden="true"></span>'
       + '<span class="sr-only">Resolving this value from its source…</span>',
-    marks: service ? [serviceMarkHTML()] : [],
+    marks: service ? [serviceMarkHTML()] : perAsker ? [askerMarkHTML()] : [],
     prov: `${esc(clip(r.sourceName || r.sourceId || 'Its source', 32))} · resolving…`
       + (service ? ` ${SERVICE_SENTENCE}` : ''),
   });
@@ -3323,6 +3329,8 @@ function referenceFieldHTML(r, sourcesById) {
 
   if (service) {
     marks.push(serviceMarkHTML());
+  } else if (authModeOf(r, sourcesById) === 'per_asker') {
+    marks.push(askerMarkHTML());
     prov += ` ${SERVICE_SENTENCE}`;
   }
 
@@ -3356,13 +3364,14 @@ function referenceFieldHTML(r, sourcesById) {
 function referenceUnreachableHTML(ref, err) {
   const r = normalizeReference(ref);
   const service = r.authMode === 'service' || r.serviceResolved;
+  const perAsker = !service && r.authMode === 'per_asker';
   return referenceRowHTML({
     r,
     cls: 'is-error',
     valueHTML: '<span class="ref-value is-unresolved">Not resolved</span>',
     marks: [
       '<span class="badge badge-unresolved sm">unresolved</span>',
-      ...(service ? [serviceMarkHTML()] : []),
+      ...(service ? [serviceMarkHTML()] : perAsker ? [askerMarkHTML()] : []),
     ],
     prov: `Canon could not reach its own resolver: ${esc(endSentence(clip(err?.message ?? 'the request failed')))}
       The reference is still on this page; only its value is missing.`,

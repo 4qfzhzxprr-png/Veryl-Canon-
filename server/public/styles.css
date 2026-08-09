@@ -585,6 +585,11 @@ label.check input { width: auto; display: inline; margin: 0; }
 }
 
 .kind-tag.ref-service { color: var(--amber); border-color: var(--amber); }
+/* "resolved for you" sits beside "service-resolved" and answers the same
+   question — who is this value true for — so it takes the same treatment.
+   Muted rather than amber: a per-asker value is the normal case, not a
+   caution, it just needs saying. */
+.kind-tag.ref-asker { color: var(--muted); border-color: var(--muted); }
 
 /* Centred rather than baseline-aligned: an empty box has no baseline, and
    letting it set one would make the placeholder row a different height from
