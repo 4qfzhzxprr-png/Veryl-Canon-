@@ -841,6 +841,13 @@ export function createApi(
     // token. Anything else is a bug that got far enough to cost something, and
     // it pays.
     let charges: Charge[] = [];
+    // A binary upload is streamed to the spool BEFORE the handler runs, so a
+    // throw in between — an agent whose action vocabulary excludes this route,
+    // a narrowing refusal — would orphan a file up to the upload cap. The
+    // handler's own `finally` cleans it on the paths that reach the handler;
+    // this is the belt for the paths that don't. rmSync(force) is idempotent,
+    // so cleaning an already-cleaned file is a no-op.
+    let spooledArchive: string | null = null;
     try {
       const url = new URL(req.url ?? '/', 'http://canon');
       // The door's own routes, before the record's route table: sign in, sign
@@ -923,7 +930,7 @@ export function createApi(
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
       const body = match.binary
-        ? { archivePath: await spoolBinaryBody(req) }
+        ? { archivePath: (spooledArchive = await spoolBinaryBody(req)) }
         : req.method === 'GET' || req.method === 'DELETE'
           ? {}
           : await readBody(req);
@@ -1006,6 +1013,8 @@ export function createApi(
           errorId,
         });
       }
+    } finally {
+      if (spooledArchive) rmSync(spooledArchive, { force: true });
     }
   });
 }
