@@ -3708,7 +3708,7 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
       ${group.noteHTML()}
       ${rows.length
         ? `<ul class="rel-list">${rows.map(relationEntryHTML).join('')}</ul>`
-        : '<p class="muted rel-empty">The record does not hold a conflict or a supersession for this page.</p>'}
+        : `<p class="muted rel-empty">No conflict or supersession is shown for this page.</p>`}
     </section>`;
 
   host.querySelector('#rel-assert')?.addEventListener('click', () => openRelationModal(pageId, page));
