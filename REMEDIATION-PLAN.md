@@ -130,6 +130,37 @@ people and none reports back to the person who acted.
 
 Do this as one design, once, and adopt it in all three.
 
+### 8.1 — landed early, because it was one line and it was everywhere
+
+Studio's zero horizontal padding was reported as a mobile finding; it is not. The
+shared chrome lives in `packages/shell`, every Tailwind config globbed `./app` and
+`./components` and nothing else, and `px-lg` / `py-xl` / `gap-md` / `py-sm` appear ONLY
+in the shell — so they were never generated for **any of the three apps**. The header,
+the notice bar and the `<main>` wrapper had no padding at all: text against the edge of
+the viewport on every authenticated screen, worst on a phone.
+
+It survived because the failure has no error and no wrong markup. The class is in the
+DOM, the stylesheet just has no rule for it, so it reads as a design choice — nobody
+looks for a missing CSS rule when the component looks like it was written that way. And
+nothing in the apps' own files happens to use those four classes, so there was no
+accidental rescue either.
+
+Proven rather than assumed: compiling each config before the change emits none of the
+four; after, all four. The guard that keeps it fixed reads the class names **out of the
+shell's source** rather than hardcoding them, so adding a `gap-2xl` to the header fails
+the test until the globs cover it — and it checks all three apps, because one of them
+quietly re-narrowing its globs is the regression it exists to catch. Verified by
+mutation: reverting Canon's config alone reddens Canon's case and no other.
+
+**Observed while running these:** `apps/registry/tests/bootstrap.test.ts` — "creates the
+principal … then never again" — is intermittently red (roughly one run in four). Its
+`onEmptyRegistry` helper deletes every principal inside a transaction it rolls back,
+which isolates its own writes but not a peer suite committing a principal mid-transaction
+under READ COMMITTED. Unrelated to anything in this branch (it reproduces with the branch's
+changes stashed) and not fixed here: I could not reproduce it deterministically, and a
+fix I cannot verify against the actual failure is a guess. Recorded so it is not
+mistaken for noise.
+
 ---
 
 ## Phase 5 — Loading and empty-state discipline
