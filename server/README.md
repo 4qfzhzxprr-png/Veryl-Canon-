@@ -366,9 +366,24 @@ A registered Source carries a `baseUrl`, and Canon fetches it server-side when a
 
 | Variable | Meaning |
 | --- | --- |
-| `CANON_IMPORT_ROOTS` | Optional; colon- or comma-separated directories an import may read from. Unset means unrestricted, which is the historical behaviour. Set it in any deployment where `admin` on a collection is not the same trust level as shell access — the import path is operator input, and the server reads it. A file that resolves outside the run's own root (a symlink) is refused whether or not this is set. |
+| `CANON_IMPORT_ROOTS` | Optional; colon- or comma-separated directories an import may read from. Unset means unrestricted, which is the historical behaviour. Set it in any deployment where `admin` on a collection is not the same trust level as shell access — the import path is operator input, and the server reads it. A file that resolves outside the run's own root (a symlink) is refused whether or not this is set. Does not apply to `POST /imports/upload`: the spool it unpacks into is chosen by the server, not aimed by the caller. |
+| `CANON_IMPORT_SPOOL` | Optional; where uploaded archives land and unpack. Defaults to a `canon-import-spool` directory under the OS temp dir. The spool holds a corpus only for the life of one run — archive and unpacked tree are removed on success and on every refusal alike. Point it at the volume with the space if exports are large. |
+| `CANON_IMPORT_UPLOAD_MAX_BYTES` | Optional; the upload cap for `POST /imports/upload`. Defaults to 256 MiB — its own limit, separate from the 8 MiB JSON body cap, because an export archive is the one legitimate large body this server accepts. Over the cap the stream is cut mid-body and the partial file removed. |
 
 Running an import takes **`admin`** on the target collection, not `edit`: it names a server-side path, reads it, and lands up to two thousand pages in one call. Reading a run's record (`GET /imports`, `GET /imports/:id`) stays at `view` — the bar is on aiming the run, not on seeing what it did.
+
+**`POST /imports/upload`** is the same importer fed by an upload instead of a
+server-side path: `source`, `collectionId`, `type` and `runId` ride the query
+string, the body is the export archive itself (`.zip`, as Confluence and
+Google Takeout produce). The archive unpacks in the spool through a
+zero-dependency reader that refuses, by name, everything an export tool would
+never write: encrypted entries, ZIP64, unknown compression methods, traversal
+names, and the three bomb shapes (`src/zip.ts` — the whole central directory
+is validated before the first byte is written). A lone wrapping folder — the
+space or drive name every export tool adds — is entered automatically. The
+run underneath is `POST /imports` exactly: same admin bar, same draft-only
+arrival, same audit events, and the same idempotency, because the unpack
+directory is keyed by run id.
 
 ### Rate limiting
 

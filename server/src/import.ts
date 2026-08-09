@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { forbiddenRole } from './abilities.js';
+import { extractZip } from './zip.js';
 import {
   Actor,
   CanonError,
@@ -625,13 +627,33 @@ export interface ImportInput {
   runId?: string;
 }
 
+export interface ImportUploadInput {
+  source: ImportSource;
+  collectionId: string;
+  type?: DocType;
+  runId?: string;
+  /** Where the request pipeline spooled the uploaded archive. */
+  archivePath: string;
+}
+
+/**
+ * Where uploaded archives unpack. Overridable because the spool briefly holds
+ * a whole corpus and an operator may want it on the volume with the space —
+ * but unlike an import path, nobody AIMS this: the server owns it entirely,
+ * which is why runs from here skip CANON_IMPORT_ROOTS (see `run`).
+ */
+export function importSpoolDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.CANON_IMPORT_SPOOL?.trim();
+  return configured ? resolve(configured) : join(tmpdir(), 'canon-import-spool');
+}
+
 export class ImportService {
   constructor(
     private readonly db: DatabaseSync,
     private readonly host: ImportHost,
   ) {}
 
-  run(actorId: string, input: ImportInput): ImportSummary {
+  run(actorId: string, input: ImportInput, opts: { serverManagedRoot?: boolean } = {}): ImportSummary {
     const actor = this.host.getActor(actorId);
     const source = input?.source;
     if (!source || !IMPORT_SOURCES.includes(source)) {
@@ -676,12 +698,18 @@ export class ImportService {
     // The run's own boundary, resolved once: every file read below must land
     // inside it, whatever symlinks the export directory carries.
     const realRoot = realPathOr(root);
-    const permittedRoots = importRootsFromEnv();
-    if (permittedRoots.length && !permittedRoots.some((permitted) => within(permitted, realRoot))) {
-      throw new CanonError('forbidden', 'This deployment restricts imports to CANON_IMPORT_ROOTS', {
-        path: root,
-        permittedRoots,
-      });
+    // CANON_IMPORT_ROOTS bounds which paths an ADMIN may aim the process at.
+    // A server-managed root (the upload spool — /imports/upload) was chosen by
+    // this process, not by the caller, so the admin-aiming concern the roots
+    // exist for does not arise and the containment rule above still does.
+    if (!opts.serverManagedRoot) {
+      const permittedRoots = importRootsFromEnv();
+      if (permittedRoots.length && !permittedRoots.some((permitted) => within(permitted, realRoot))) {
+        throw new CanonError('forbidden', 'This deployment restricts imports to CANON_IMPORT_ROOTS', {
+          path: root,
+          permittedRoots,
+        });
+      }
     }
 
     const runId = input.runId?.trim() || randomUUID();
@@ -959,6 +987,70 @@ export class ImportService {
       )
       .run(runId, result.file, result.pageId, hash, result.outcome, result.reason, now());
     return result;
+  }
+
+  // ---- upload ingestion (POST /imports/upload) -------------------------
+
+  /**
+   * The whole bring-your-corpus path in one call: an uploaded archive
+   * unpacks into the spool and runs through the SAME importer, with the same
+   * audit trail, the same draft-only arrival, and the same idempotency.
+   *
+   * Ordering is deliberate: role and source are checked BEFORE the archive
+   * is opened, so a non-admin's upload costs no unpacking; the unpack
+   * directory is keyed by run id, so a retry with the same run id lands on
+   * the same recorded path and the importer's idempotency applies; and the
+   * spool — archive and unpacked tree both — is removed in `finally`,
+   * success or refusal, because a corpus is a thing Canon imports, not a
+   * thing it quietly keeps two copies of.
+   */
+  runFromArchive(actorId: string, input: ImportUploadInput): ImportSummary {
+    const runId = input?.runId?.trim() || randomUUID();
+    const unpackDir = join(importSpoolDir(), runId);
+    // One finally over EVERYTHING, refusals included: an archive the spool
+    // accepted is the spool's to remove, and "we refused you AND kept your
+    // corpus" is not a sentence this server gets to say.
+    try {
+      const source = input?.source;
+      if (!source || !IMPORT_SOURCES.includes(source)) {
+        throw new CanonError('invalid', `Unknown import source: ${String(source)}`, { supported: IMPORT_SOURCES });
+      }
+      if (!input.collectionId) throw new CanonError('invalid', 'An import requires a target collection');
+      // Role BEFORE the archive opens: a non-admin's upload costs no unpacking.
+      this.requireRole(actorId, input.collectionId, 'admin');
+      let archive: Buffer;
+      try {
+        archive = readFileSync(input.archivePath);
+      } catch {
+        throw new CanonError('invalid', 'The uploaded archive could not be read back from the spool');
+      }
+      rmSync(unpackDir, { recursive: true, force: true });
+      mkdirSync(unpackDir, { recursive: true });
+      try {
+        extractZip(archive, unpackDir);
+      } catch (err) {
+        // Whatever was half-written is not an export; nothing downstream may
+        // mistake it for one.
+        rmSync(unpackDir, { recursive: true, force: true });
+        throw err;
+      }
+      // Export tools usually wrap everything in one top-level folder (the
+      // space or drive name). The importer wants the folder the documents
+      // live in, so a lone wrapping directory is entered rather than making
+      // every upload fail with "no documents found".
+      let root = unpackDir;
+      const top = readdirSync(root, { withFileTypes: true }).filter((e) => e.name !== '__MACOSX');
+      if (top.length === 1 && top[0]!.isDirectory()) root = join(root, top[0]!.name);
+
+      return this.run(
+        actorId,
+        { source, path: root, collectionId: input.collectionId, type: input.type, runId },
+        { serverManagedRoot: true },
+      );
+    } finally {
+      rmSync(unpackDir, { recursive: true, force: true });
+      rmSync(input.archivePath, { force: true });
+    }
   }
 
   // ---- run records -----------------------------------------------------

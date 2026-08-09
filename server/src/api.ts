@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { createServer, IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { AgentAuth, AgentSession, passportAuthUnavailable, runInAgentRequestScope } from './agentauth.js';
 import {
@@ -10,6 +12,7 @@ import {
   visibleActors,
 } from './auth.js';
 import { freshnessScheduleFor } from './freshness.js';
+import { importSpoolDir } from './import.js';
 import { countParam, idParam, instantParam, objectBody, optionalCount, optionalString, requiredCount } from './input.js';
 import { loggerFromEnv, noteRequest, requestPath, type Logger } from './log.js';
 import { KNOWLEDGE_ROUTES, KNOWLEDGE_PREFIX } from './knowledge.js';
@@ -79,6 +82,12 @@ interface Route {
    * it is not part of that Canon's surface.
    */
   devOnly?: boolean;
+  /**
+   * The body is an uploaded artifact, not JSON: the pipeline spools it to a
+   * temp file under its own (much larger) cap and hands the handler
+   * `{ archivePath }`. Today that is /imports/upload and nothing else.
+   */
+  binary?: boolean;
 }
 
 function route(method: string, path: string, handler: Handler, open = false, devOnly = false): Route {
@@ -326,6 +335,21 @@ const routes: Route[] = [
   }),
 
   route('POST', '/imports', ({ store, actorId, body }) => store.runImport(actorId, body)),
+  // The same importer, fed by an UPLOAD instead of a server-side path — the
+  // difference between "ask whoever has shell access" and "bring your export".
+  // Parameters ride the query string because the body is the archive itself.
+  {
+    ...route('POST', '/imports/upload', ({ store, actorId, query, body }) =>
+      store.runImportUpload(actorId, {
+        source: (query.get('source') ?? '') as never,
+        collectionId: query.get('collectionId') ?? '',
+        type: (query.get('type') ?? undefined) as never,
+        runId: query.get('runId') ?? undefined,
+        archivePath: body.archivePath,
+      }),
+    ),
+    binary: true,
+  },
   route('GET', '/imports', ({ store, actorId }) => store.listImportRuns(actorId)),
   route('GET', '/imports/:id', ({ store, actorId, params }) => store.getImportRun(actorId, params.id!)),
 
@@ -600,6 +624,7 @@ const RATE_LIMITED: { method: string; pattern: RegExp; bucket: BucketName }[] = 
   { method: 'GET', pattern: /^\/pages\/[^/]+\/references$/, bucket: 'references' },
   // Walks an operator-named directory and writes a page per document.
   { method: 'POST', pattern: /^\/imports$/, bucket: 'import' },
+  { method: 'POST', pattern: /^\/imports\/upload$/, bucket: 'import' },
 ];
 
 /**
@@ -699,6 +724,48 @@ function authKey(req: IncomingMessage): string {
 // chunk, so an oversized body is refused as it arrives rather than after it
 // has all been accepted.
 export const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Uploaded-archive cap (CANON_IMPORT_UPLOAD_MAX_BYTES, default 256 MiB). Its
+ * own limit because an export archive is the one legitimate large body this
+ * server accepts, and raising the JSON cap to fit it would raise it for every
+ * route that has no business being large.
+ */
+export function maxUploadBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.CANON_IMPORT_UPLOAD_MAX_BYTES ?? '');
+  return Number.isFinite(configured) && configured > 0 ? configured : 256 * 1024 * 1024;
+}
+
+/** Stream a binary body to the import spool, capped. Returns the file path.
+ * Over the cap, the request dies mid-stream and the partial file is removed —
+ * buffering an oversized corpus to refuse it afterwards would be the DoS. */
+async function spoolBinaryBody(req: IncomingMessage): Promise<string> {
+  const limit = maxUploadBytes();
+  const dir = importSpoolDir();
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `upload-${randomUUID()}.zip`);
+  const sink = createWriteStream(path, { flags: 'wx' });
+  let size = 0;
+  try {
+    for await (const chunk of req) {
+      size += (chunk as Buffer).byteLength;
+      if (size > limit) {
+        req.destroy();
+        throw new CanonError('invalid', `Upload is larger than ${limit} bytes`, {
+          limit,
+          hint: 'Split the export, or raise CANON_IMPORT_UPLOAD_MAX_BYTES',
+        });
+      }
+      if (!sink.write(chunk)) await new Promise<void>((r) => sink.once('drain', () => r()));
+    }
+    await new Promise<void>((r, j) => sink.end((err?: Error | null) => (err ? j(err) : r())));
+    return path;
+  } catch (err) {
+    sink.destroy();
+    rmSync(path, { force: true });
+    throw err;
+  }
+}
 
 async function readBody(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
@@ -855,7 +922,11 @@ export function createApi(
       const groups = url.pathname.match(match.pattern)!.slice(1);
       const params: Record<string, string> = {};
       match.names.forEach((name, i) => (params[name] = decodeURIComponent(groups[i]!)));
-      const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
+      const body = match.binary
+        ? { archivePath: await spoolBinaryBody(req) }
+        : req.method === 'GET' || req.method === 'DELETE'
+          ? {}
+          : await readBody(req);
       // The Registry's half of the intersection, applied before the store
       // applies Canon's own permissions. Neither side can widen the other.
       const limits = session
