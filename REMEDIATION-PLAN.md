@@ -223,6 +223,11 @@ picks up the ticket.
    always the builder's responsibility?
 4. **Canon: correct the one page carrying a false version note** from defect 1.4, or
    leave the record as it was written?
+5. **Should an end user be told an AI answer came from the offline mock?** Today the
+   marker is stripped for viewers by design and shown only in the builder preview. The
+   argument for stripping is good; the consequence is that a published app can present
+   canned text with citation chips and no hedge, which is the single most repeated
+   defect shape across all three products.
 
 ---
 
@@ -257,7 +262,21 @@ window selection, which `retrieval.ts:103-109` records as already tried and meas
 useless ("on a schedule every window holds a figure"). Reverted; the real fault was the
 window's END, not its start.
 
-**Remaining in Phase 1:** 1.5, 1.6, 1.7, 1.11, 1.12, 1.13, 1.15–1.18, 1.20.
+**Also landed since:** 1.5 (Canon queue + map legend say what is shown, not what the
+record holds) and the clipboard half of 1.11 — `copy link` now copies on every browser
+and context, via one helper with a real fallback. Four call sites shared a
+`navigator.clipboard?.writeText(t).then(...)` that throws a TypeError when the API is
+absent; the guest invitation was the one that mattered, since mail is unconfigured and
+that link must be handed over by hand.
+
+**Two more narrowed rather than fixed**
+
+| # | Finding | What is actually true |
+|---|---|---|
+| 1.11 | "Published URLs don't resolve" | Split in two. The clipboard bug is fixed. The address itself — `<slug>.<domain>` — is a DNS and served-domains deployment gap (tester 36 proved host routing works when the Host header is set), not an application defect. Left open as a deployment item. |
+| 1.13 | "A builder cannot tell mock AI from real" | Mostly already built. `splitProviderNotice` lifts the mock's self-identification out of the answer and all three AI components render it as `⚙️ {notice}` — but only in the builder preview (`mode === "draft"`). Hiding it from end users is deliberate: "infrastructure configuration on a salesperson's screen, and an invitation to doubt the content next to it." Whether an end user should nonetheless be told the answer came from a demo model is a **policy question**, added below. |
+
+**Remaining in Phase 1:** 1.6, 1.7, 1.12, 1.15–1.18, 1.20.
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
