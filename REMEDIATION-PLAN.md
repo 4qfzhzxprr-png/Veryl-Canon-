@@ -351,7 +351,7 @@ tests answer the question without it).
 |---|---|---|
 | 3.1 | "The kill switch does not kill" — a quarantined agent kept answering in rooms while the catalog still showed Verified | **WITHDRAWN.** `agent_registry.py:181` raises `403 revoked — "This agent has been quarantined by its Registry"`, and rooms, MCP and Teams each return the canonical block notice for a quarantined agent (`rooms.py:10`, `mcp.py:189`, `teams_install.py:481`). The demo does not propagate. The product does. |
 | 3.2 | The certification gate is unenforced — a reviewer self-verified with solo mode off | **WITHDRAWN.** `review._assert_distinct_reviewer` raises 403 when the reviewer is the owner or the author, and only `allow_self=True` lifts it. `test_review_self_verify.py` pins both halves. |
-| 3.3 | A reviewer can mark a check Pass while the engine reports FAILED, and the UI says "all checks pass" | **Open, needs the running backend.** Whether the server validates the checklist against the engine verdict was not established by reading alone. |
+| 3.3 | A reviewer can mark a check Pass while the engine reports FAILED, and the UI says "all checks pass" | **CONFIRMED, and fixed.** `record_review` never read the engine's run at all — see below. |
 | 3.4 | The audit log records none of it | **Narrowed, and real.** The events are recorded — but the whole service has only ten action names (`create`, `data_access`, `export`, `invoke`, `login`, `logout`, `mail_connect`, `register`, `state_change`, `update`). A role change, a quarantine and a connector grant all land as `state_change` or `export` with the specifics in `detail`, so the filter can never offer "Connector · granted" and an examiner cannot select the events they came for. Not "unaudited" — **indistinguishable**, which is a contract-shaped fix, not a logging one. |
 
 **That is two more of the test's biggest findings withdrawn**, both from the same
@@ -361,8 +361,172 @@ buyer, an auditor and a new employee actually meet.
 
 **Still real, and still to do:** 3.5 Canon's agent `write` folding in
 `approve`/`publish` (verified in `agentauth.ts` against `REGISTRY-CONTRACT.md:52`),
-3.6 ungoverned Text components, 3.7 unapproved egress, 3.8 unaudited denials in Canon,
+3.6 ungoverned Text components, 3.8 unaudited denials in Canon,
 3.9 body-link leaks, 3.10 slug-walking before authorization, 3.11 session management.
+
+### 3.11 — landed
+
+Two halves, both real.
+
+**A password floor the browser enforced and the server did not.** Self-serve register
+and password-reset confirm both pin `min_length=8`, and the accept-invitation screen
+tells the invitee "At least 8 characters" — but `AcceptInvitationRequest.password` was a
+bare `str`. Anything posting straight at the endpoint could set a one-character
+password, which put the weakest credential in a company on the path an admin uses to
+add people. Now pinned to the same floor, with tests for the refusal, for the exactly-8
+boundary, and for the invitation surviving a rejected attempt so the real link still
+works. Login stays `min_length=1` on purpose: it checks a password, it does not create
+one, and a floor there would leak which passwords are too short to be real. The field's
+shape is unchanged, so `api.ts` still mirrors it.
+
+**Sessions you could not see and could not end.** `revoke_session` had exactly one
+caller — logout — which only ever ends the session making the request. Someone who
+stayed signed in on a shared machine had no remedy short of an admin deactivating their
+whole account. Added `GET /auth/sessions` and `POST /auth/sessions/revoke-others`, plus
+**Account security → Where you're signed in**.
+
+The `session` table records only `created_at`/`expires_at`, which cannot tell two
+sessions apart — a list of three identical rows is not something anyone can act on.
+Rather than restructure a frozen model, each entry recovers its origin from the audit
+row that minted it: `audit.record` already folds the request's IP and user-agent into
+every row, and login/register write `session_id` there. When that row is gone to
+retention the fields come back null and the panel says *"We no longer have a record of
+where this one started"* rather than printing "Unknown device" as though that were a
+device. Eleven backend tests and eight component tests, including the ones that matter:
+a revoked session actually stops authenticating, one person's revoke never touches
+another's sessions, expired rows are never reported as signed in, and dismissing the
+confirmation signs nobody out.
+
+Deliberately *not* "sign out everywhere including here" — the act of securing an
+account should not also log you out of the screen you are securing it from. Sign out
+covers that one.
+
+### 3.3 — landed
+
+The tester was right, and the mechanism was simpler than the claim. `record_review`
+never looked at the automated run. The engine and the checklist score two of the same
+categories (`grounding_fidelity`, `security_probes`), so a reviewer could mark
+`security_probes` pass while the engine's own run had failed it, and the report that
+came out said pass with nothing recorded anywhere that a machine had disagreed. The
+catalog badge, the certification built on it, and anyone reading the report months
+later all saw a clean sign-off.
+
+The fix is not a veto. The human is the authority and the engine is explicitly
+advisory; blocking the override would be the wrong product. What was wrong is that the
+override was invisible. Now:
+
+- every human check carries the engine's verdict on the same category, when it scored
+  one (`engine_result`);
+- clearing a category the engine **failed** is recorded as an override on the report,
+  with the reviewer's reason;
+- an override with no written reason is refused (422) — your judgement stands, but it
+  goes on the record;
+- the certified report carries the overrides forward, so certification cannot launder a
+  contested sign-off into a clean one;
+- the reviewer meets the rule while deciding rather than as a 422 after committing: the
+  checklist reads the same run the server reads, shows the engine's verdict inline,
+  opens the note with *"Why is the automated failure not a real problem here?"*, and
+  keeps both decision buttons disabled until it is answered;
+- `ReportView` can no longer print the unqualified *"All checks passed — clear to
+  verify"* over an override. It now says how many categories were passed over an
+  automated failure, names them, and quotes the reason.
+
+An engine `warn` the reviewer passes is deliberately **not** an override — a warning is
+advisory, and treating a judgement call as a reversal would make the signal noise. The
+engine's result is still shown either way.
+
+Contract change (mirrored in the same commit, per the frozen-contract rule):
+`VerificationCheck.engine_result` and `VerificationReport.overrides`, both optional. A
+report with no engine run is byte-identical to what it was before, so existing stored
+report hashes still reproduce — pinned by a test.
+
+Backend 2209 passing (12 new), web 358 passing (8 new), 357 E2E passing (1 new, which
+drives the whole override flow through the browser). `APP_DOCS` documents the
+disagreement rule; v86.
+
+### 3.4 — landed
+
+The narrowing held: the events were never missing, they were unselectable and
+unreadable. Every one of them is in `detail.event` — 184 distinct names across the
+service — while `action` carries ten values total, so a role change, a quarantine and
+a connector grant all arrive as `state_change` or `export`. The viewer's ACTION column
+rendered the action, so it said *"State change"* about all three, and the filter offered
+only those ten. A log that cannot say what happened is not the record the page claims it
+is.
+
+Three parts, no new action names and no rewritten rows — the chain commits to `action`,
+and re-labelling history to fix a filter would be the wrong trade:
+
+- **`GET /audit?event=…`** matches `detail.event` exactly, or a whole family when the
+  value ends in a dot (`billing.`). An exact name is never treated as a prefix, so
+  `agent.role` cannot quietly drag in `agent.roles_set` — a filter that silently widens
+  is worse than one that finds nothing, because the extra rows look like an answer.
+- **`GET /audit/events`** returns the event names present in *this org's* log with
+  counts. Deliberately not a hardcoded list of every name the code can write: a menu of
+  names that produced no rows here is a menu of dead ends, and one that has drifted from
+  the code is worse. An empty catalogue means nothing of the kind has happened, which is
+  itself an answer.
+- **The column leads with the event** when a row has one, so the log reads as what
+  happened rather than as which of ten buckets it fell into. Free-text search humanizes
+  the event as well as the action, because the label a person copies out of the table
+  has to find its own rows.
+
+This also closed a demo divergence pointing the *other* way. The fixture hoisted a
+wrapped `state_change` event up into the `action` token, so the demo's action dropdown
+offered twenty specific names while the product's offers ten — the demo was showing a
+vocabulary the product does not have, and the tester was partly reading that. The
+fixture now carries the event exactly where the service puts it, and both paths render
+the same thing.
+
+Backend 2217 passing (8 new), web 366 (8 new), 358 E2E (1 new). `APP_DOCS` v87.
+
+### 3.7 — landed, and one half narrowed
+
+Three claims, checked separately.
+
+**"A builder can send company data outward from an unpublished draft with no
+approval" — true.** `app/api/gateway/route.ts` runs `trigger` and `rowtrigger` under
+`mode: "draft"` with no restriction, and a row action carries a real record snapshot.
+The signed body, the audit row and the delivery log were byte-for-byte what an approved,
+published app produces, so a receiving system that pages an on-call engineer or opens a
+ticket could not tell a builder's test from the real thing, and neither could an admin
+reading the log.
+
+Blocking drafts outright would be the wrong fix — a button a builder cannot test is a
+button they publish blind. So the rule is narrower and says what it is: a draft delivery
+is **marked** in the signed payload, the audit event and the delivery log, and a draft
+may not carry anything above `internal` out of the company. The refusal names the actual
+rule and the way forward (publish it) rather than pointing at a connection clearance
+that was never the problem — and an ordinary egress refusal is *not* relabelled as a
+draft one, which a test pins, because a draft-shaped message there would send someone to
+publish an app that would still be refused.
+
+**"Destination invisible" — true, and a one-line cause.** The admin console rendered
+`{c.description || c.url}`. Every real and seeded connection has a description, so the
+one screen where an admin governs egress showed the blurb the *builder* reads and never
+said where the data actually goes. Both are shown now. (The copy above it — "Builders
+never see URLs or secrets" — is correct and stays; the admin is not the builder.)
+
+**"Failed deliveries record no actor" — true.** `by: user.name` was on the `delivered`
+row only. The failed, blocked and denied rows — the set anyone investigating opens first
+— were anonymous, and the component's own comment described the asymmetry as though it
+were a design. Every row now carries the person, their id, and the control they pressed,
+whatever the outcome.
+
+**"…and cannot be retried" — narrowed, deliberately not fixed.** A retry needs the
+payload, and the payload is deliberately never stored: the delivery log keeps a body
+hash and a field-name list precisely so it is "enough to prove an archived payload is the
+one this row describes, and useless for reconstructing it". Adding a replay button means
+storing what left the building in a second place, which trades a real confidentiality
+property for a convenience. Instead the failed row now names the person and the component
+so a re-send is a deliberate human act. Recorded here rather than silently skipped.
+
+Studio 1671 passing (8 new), registry 351, canon 127, guards 108, shell 18.
+
+This is also the phase's unblocking: standing the backend up locally (Python 3.12 venv,
+Postgres 16 + pgvector, `alembic upgrade head`) makes the whole suite runnable —
+2197 passing, and the previously-skipped live tests now actually run. **3.3 is no longer
+blocked.**
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
