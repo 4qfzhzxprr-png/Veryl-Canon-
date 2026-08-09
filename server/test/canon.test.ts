@@ -307,6 +307,22 @@ test('the last administrator of a collection cannot be removed or demoted', () =
   assert.equal(store.roleOf(marc.id, collection.id), 'admin');
 });
 
+// An external auditor's five refused requests left no trace, under a page that
+// advertises a record of every view of restricted material. "Who tried and was
+// turned away" is the question an examiner asks first.
+test('a refused read of restricted material is on the record, like a read of it', () => {
+  const { store, dana, collection } = setup();
+  const page = store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Calibration' });
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+
+  expectCode(() => store.getPage(outsider.id, page.id), 'forbidden');
+
+  const refusals = store.queryAudit(dana.id, { action: 'page.view_refused' });
+  assert.equal(refusals.length, 1, 'the refusal is on the record');
+  assert.equal(refusals[0]!.actorId, outsider.id);
+  assert.equal(refusals[0]!.pageId, page.id);
+});
+
 test('review workflow: the approver can send a draft back with a comment', () => {
   const { store, marc, iris, collection } = setup();
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Q4 plan' });

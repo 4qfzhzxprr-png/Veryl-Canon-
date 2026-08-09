@@ -729,17 +729,31 @@ export class CanonStore {
   getPage(actorId: string, id: string, opts: { logView?: boolean } = {}): Page {
     const row = this.pageRow(id);
     const collectionId = row.collection_id as string;
-    this.requireRole(actorId, collectionId, 'view');
-    const page = this.toPage(row);
-    if (opts.logView) {
-      const restricted = (
+    const restricted =
+      (
         this.db.prepare('SELECT restricted FROM collections WHERE id = ?').get(collectionId) as {
           restricted: number;
         }
-      ).restricted;
-      if (restricted === 1) {
-        this.audit(actorId, 'page.view', { collectionId, pageId: id });
-      }
+      ).restricted === 1;
+    try {
+      this.requireRole(actorId, collectionId, 'view');
+    } catch (err) {
+      // A refusal on restricted material is recorded on the same terms as a
+      // read of it. "Who tried and was turned away" is the question an examiner
+      // asks first, and the log answered it with nothing: an auditor's five
+      // refused requests left no trace at all under a page promising a record
+      // of every view of restricted material.
+      //
+      // Scoped to restricted collections exactly as `page.view` is, and for the
+      // same reason: everything else would bury the log under the capability
+      // probes the UI fires on every sign-in, and a log nobody can read is not
+      // evidence either.
+      if (restricted) this.audit(actorId, 'page.view_refused', { collectionId, pageId: id });
+      throw err;
+    }
+    const page = this.toPage(row);
+    if (opts.logView && restricted) {
+      this.audit(actorId, 'page.view', { collectionId, pageId: id });
     }
     return page;
   }
