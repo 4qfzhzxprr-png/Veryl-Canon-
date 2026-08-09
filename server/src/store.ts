@@ -1207,10 +1207,13 @@ export class CanonStore {
   // stays a working note; a reviewed type returns to Draft because the
   // Canonical mark applies to reviewed content, not to whatever came after.
   //
-  // `opts.authorId` exists for exactly one caller: an accepted proposal, whose
-  // version is authored by the agent that proposed it while the acting actor
-  // is the person who accepted it (proposals.ts). Everywhere else author and
-  // actor are the same, which is why it defaults to actorId.
+  // `opts.authorId` separates who WROTE a version from who ACTED to create it,
+  // for the two places they differ: an accepted proposal, authored by the agent
+  // that proposed it while the acting actor is the person who accepted it
+  // (proposals.ts), and an approval, authored by the drafter while the acting
+  // actor is the approver granting the mark. On publish they are necessarily
+  // the same — only the current editor may publish — which is why it defaults
+  // to actorId.
   private writeVersion(
     actorId: string,
     page: Page,
@@ -1571,7 +1574,13 @@ export class CanonStore {
         fields,
         note: input.note ?? 'Approved as Canonical',
       },
-      { toStatus: 'canonical' },
+      // The approver grants the mark; they did not write the words. Without
+      // this the version — and with it Version History, the compare header and
+      // the attestation bundle — named the approver as author of text the
+      // drafter wrote. Those are the three artifacts Canon produces to PROVE
+      // separation of duties, and they were the ones asserting it had not
+      // happened, while the audit log recorded the split correctly all along.
+      { toStatus: 'canonical', authorId: draft.editor_id as string },
     );
     // The mark follows the act that grants it. `marked_version` is the log's
     // `page.approve` answer denormalised onto the row so retrieval can ask

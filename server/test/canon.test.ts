@@ -261,6 +261,33 @@ test('review workflow: draft -> in review -> canonical, by the named approver on
   assert.equal(republished.currentVersion, 2);
 });
 
+// Four testers, in four different roles, read the approver's name where the
+// drafter's belonged: on the version, in the compare header, and in the
+// downloaded attestation. Canon ENFORCES author != approver at submission and
+// then reported them as the same person in the artifacts that exist to prove
+// it did. The audit log was right throughout, which is what gave the game away.
+test('approval records the drafter as author, not the approver who granted the mark', () => {
+  const { store, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Retention policy' });
+  store.editDraft(marc.id, page.id, {
+    body: 'Claims records are kept for seven years.',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
+  });
+  store.submitForReview(marc.id, page.id);
+  const canonical = store.approve(iris.id, page.id);
+  assert.equal(canonical.status, 'canonical');
+
+  // Marc typed it; Iris granted the mark. The version says Marc.
+  const versions = store.listVersions(iris.id, page.id);
+  assert.equal(versions.length, 1);
+  assert.equal(versions[0]!.authorId, marc.id);
+  assert.notEqual(versions[0]!.authorId, iris.id);
+
+  // And the split is still legible in the log, from the other direction.
+  const approvals = store.queryAudit(iris.id, { action: 'page.approve' });
+  assert.equal(approvals[0]!.actorId, iris.id);
+});
+
 test('review workflow: the approver can send a draft back with a comment', () => {
   const { store, marc, iris, collection } = setup();
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Q4 plan' });
