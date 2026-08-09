@@ -288,6 +288,25 @@ test('approval records the drafter as author, not the approver who granted the m
   assert.equal(approvals[0]!.actorId, iris.id);
 });
 
+// A reviewer removed her own membership from a collection she had created four
+// minutes earlier — one unconfirmed click — and stranded it: no administrator
+// left, so members could not be changed, restriction could not be altered, and
+// Canon has no archive or delete for a collection. Even the org administrator
+// got "No access" from every screen.
+test('the last administrator of a collection cannot be removed or demoted', () => {
+  const { store, dana, marc, collection } = setup();
+  store.setMember(dana.id, collection.id, marc.id, 'edit');
+
+  expectCode(() => store.removeMember(dana.id, collection.id, dana.id), 'workflow');
+  expectCode(() => store.setMember(dana.id, collection.id, dana.id, 'edit'), 'workflow');
+  assert.equal(store.roleOf(dana.id, collection.id), 'admin', 'still administered');
+
+  // The way out is the act that was missing: hand the role on first.
+  store.setMember(dana.id, collection.id, marc.id, 'admin');
+  store.removeMember(dana.id, collection.id, dana.id);
+  assert.equal(store.roleOf(marc.id, collection.id), 'admin');
+});
+
 test('review workflow: the approver can send a draft back with a comment', () => {
   const { store, marc, iris, collection } = setup();
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Q4 plan' });

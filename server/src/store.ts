@@ -350,6 +350,33 @@ export class CanonStore {
   // `administrator` role. The second is the break-glass path a Canon needs when
   // a collection's last admin leaves; it is not silent, because the grant it
   // makes is this very audit event with the administrator's name on it.
+  // A collection with no administrator cannot be administered back: its members
+  // cannot be changed, its restriction cannot be altered, and Canon has no
+  // archive or delete for one. A reviewer removed her own membership from a
+  // collection she had created four minutes earlier — one unconfirmed click —
+  // and stranded it, with a published policy page inside it, recoverable only
+  // by hand-crafting a request no screen offers.
+  //
+  // So the last administrator cannot be taken off, by themselves or by an org
+  // administrator: hand the role to somebody else first, which is the act that
+  // was missing. Registry already refuses the same thing in the same words.
+  private refuseLastAdminLoss(collectionId: string, memberId: string, nextRole: Role | null): void {
+    if (nextRole === 'admin') return;
+    const current = this.db
+      .prepare('SELECT role FROM collection_members WHERE collection_id = ? AND actor_id = ?')
+      .get(collectionId, memberId) as { role: Role } | undefined;
+    if (current?.role !== 'admin') return;
+    const others = this.db
+      .prepare("SELECT COUNT(*) AS n FROM collection_members WHERE collection_id = ? AND actor_id != ? AND role = 'admin'")
+      .get(collectionId, memberId) as { n: number };
+    if (others.n > 0) return;
+    throw new CanonError(
+      'workflow',
+      'This is the only administrator of this collection. Give somebody else the admin role first — a collection with no administrator cannot be administered back.',
+      { collectionId, memberId },
+    );
+  }
+
   setMember(actorId: string, collectionId: string, memberId: string, role: Role): void {
     this.requirePermissionAdmin(actorId, collectionId, 'Adding a member');
     this.getActor(memberId);
@@ -358,6 +385,7 @@ export class CanonStore {
     // there is nothing here for an administrator to widen.
     refuseSystemActor(memberId, 'Granting a collection role');
     if (!ROLE_RANK[role]) throw new CanonError('invalid', `Unknown collection role: ${role}`);
+    this.refuseLastAdminLoss(collectionId, memberId, role);
     const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, role);
     this.audit(actorId, 'collection.member_set', {
       collectionId,
@@ -382,6 +410,7 @@ export class CanonStore {
     memberId: string,
   ): { removed: boolean; remaining: Role | null; groups: { group: string; role: Role }[] } {
     this.requirePermissionAdmin(actorId, collectionId, 'Removing a member');
+    this.refuseLastAdminLoss(collectionId, memberId, null);
     const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, null);
     this.audit(actorId, 'collection.member_removed', {
       collectionId,
