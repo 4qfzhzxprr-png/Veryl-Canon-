@@ -54,7 +54,7 @@ import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
 import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 import { AUDIT_CSV_MAX_ROWS, AUDIT_CSV_PAGE_ROWS, RawResponse, auditCsvResponse } from './csv.js';
-import { ImportInput, ImportRunRecord, ImportService, ImportSummary } from './import.js';
+import { ImportInput, ImportRunRecord, ImportService, ImportSummary, ImportUploadInput } from './import.js';
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceAbilities, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
@@ -2464,6 +2464,10 @@ export class CanonStore {
 
   runImport(actorId: string, input: ImportInput): ImportSummary {
     return new ImportService(this.db, this).run(actorId, input);
+  }
+
+  runImportUpload(actorId: string, input: ImportUploadInput): ImportSummary {
+    return new ImportService(this.db, this).runFromArchive(actorId, input);
   }
 
   getImportRun(actorId: string, runId: string): ImportRunRecord {

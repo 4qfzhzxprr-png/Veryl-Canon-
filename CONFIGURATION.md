@@ -219,7 +219,9 @@ decision for whoever owns the data, not a default to drift into:
 
 | Variable | Required? | Default | Meaning | Safety |
 | --- | --- | --- | --- | --- |
-| `CANON_IMPORT_ROOTS` | recommended | unset = unrestricted | Colon- or comma-separated directories an import may read from. | §5 assumption 3: `admin` on one collection otherwise buys the ability to name any server-side path. Set it wherever collection admin is not the same trust level as shell access. |
+| `CANON_IMPORT_ROOTS` | recommended | unset = unrestricted | Colon- or comma-separated directories an import may read from. | §5 assumption 3: `admin` on one collection otherwise buys the ability to name any server-side path. Set it wherever collection admin is not the same trust level as shell access. Does not govern `POST /imports/upload` — its spool is server-chosen, not caller-aimed. |
+| `CANON_IMPORT_SPOOL` | optional | `canon-import-spool` under the OS temp dir | Where uploaded export archives land and unpack for `POST /imports/upload`. | Holds a corpus only for the life of one run: archive and unpacked tree are removed on success and on every refusal. Put it on the volume with the space if exports are large. |
+| `CANON_IMPORT_UPLOAD_MAX_BYTES` | optional | `268435456` (256 MiB) | Upload cap for `POST /imports/upload`, separate from the 8 MiB JSON body cap. | Over the cap the stream is cut mid-body and the partial file removed — the refusal costs the disk nothing. The archive itself is opened by a validating reader (`server/src/zip.ts`) that refuses encryption, ZIP64, traversal names and size-lying entries by name. |
 
 ## Rate limiting
 
