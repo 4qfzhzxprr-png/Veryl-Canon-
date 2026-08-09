@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { createApi } from '../src/api.js';
@@ -149,6 +149,56 @@ test('upload: a non-admin costs no unpacking, and the archive does not linger', 
     assert.equal(err.code, 'forbidden');
   }
   assert.equal(existsSync(path), false, 'a refused upload is still cleaned out of the spool');
+});
+
+test('upload: a traversal runId cannot delete anything outside the spool (S5 A1)', () => {
+  // The critical the S5 panel found: runId is a path component of the spool
+  // directory the importer rm -rf's in its finally, and the finally runs even
+  // when the role check refuses. A no-role caller must NOT be able to delete
+  // an arbitrary tree — the request refuses, and the victim survives.
+  const { store, dana, collection } = setup();
+  const outsider = store.createActor({ kind: "person", name: "Mallory", email: "m@example.com" });
+  // A sibling directory of the spool that must be untouched.
+  const spool = importSpoolDir();
+  mkdirSync(spool, { recursive: true });
+  const victim = mkdtempSync(join(dirname(spool), "victim-"));
+  writeFileSync(join(victim, "keep.txt"), "important");
+  const traversal = `../${victim.split(sep).pop()}`;
+  try {
+    store.runImportUpload(outsider.id, {
+      source: "confluence", collectionId: collection.id,
+      runId: traversal, archivePath: spooled(Buffer.from("nope")),
+    });
+    assert.fail("a traversal runId must be refused");
+  } catch (err) {
+    assert.ok(err instanceof CanonError);
+    // Rejected as invalid BEFORE any filesystem work — not a role refusal.
+    assert.equal(err.code, "invalid");
+  }
+  assert.equal(existsSync(join(victim, "keep.txt")), true, "the victim tree must survive");
+  rmSync(victim, { recursive: true, force: true });
+  void dana;
+});
+
+test('upload: `..` and absolute-looking runIds are refused, and a normal one still works', () => {
+  const { store, marc, collection } = setup();
+  for (const bad of ["..", ".", "a/b", "a\\b", "with space", "x".repeat(201)]) {
+    try {
+      store.runImportUpload(marc.id, {
+        source: "confluence", collectionId: collection.id,
+        runId: bad, archivePath: spooled(Buffer.from("nope")),
+      });
+      assert.fail(`runId ${JSON.stringify(bad)} should be refused`);
+    } catch (err) {
+      assert.ok(err instanceof CanonError && err.code === "invalid", `for ${JSON.stringify(bad)}`);
+    }
+  }
+  // A plain safe token is fine.
+  const zip = zipDir(CONFLUENCE, "SPACE");
+  const ok = store.runImportUpload(marc.id, {
+    source: "confluence", collectionId: collection.id, runId: "run_2026-08-09.1", archivePath: spooled(zip),
+  });
+  assert.equal(ok.counts.imported, 6);
 });
 
 test('upload: an archive that is not a zip refuses in words and cleans up', () => {

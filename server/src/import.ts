@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { forbiddenRole } from './abilities.js';
 import { extractZip } from './zip.js';
@@ -1005,8 +1005,27 @@ export class ImportService {
    * thing it quietly keeps two copies of.
    */
   runFromArchive(actorId: string, input: ImportUploadInput): ImportSummary {
-    const runId = input?.runId?.trim() || randomUUID();
-    const unpackDir = join(importSpoolDir(), runId);
+    // The runId is caller-supplied AND becomes a path component of the spool
+    // directory this method rm -rf's in its `finally`. Left unchecked, a
+    // `runId=../../etc/cron.d` deletes an arbitrary tree on any request that
+    // reaches here — including one the role check below is about to refuse,
+    // because `finally` runs regardless. So it is validated to a single safe
+    // segment BEFORE it touches the filesystem, and the resolved path is then
+    // asserted to be a direct child of the spool — the same belt-and-braces
+    // the ZIP reader uses on entry names. (The plain `run` path never uses
+    // runId as a path; only this upload path does.)
+    const rawRunId = input?.runId?.trim();
+    if (rawRunId && !/^[A-Za-z0-9._-]{1,200}$/.test(rawRunId)) {
+      throw new CanonError('invalid', 'runId may contain only letters, numbers, dot, dash and underscore');
+    }
+    const runId = rawRunId || randomUUID();
+    const spool = importSpoolDir();
+    const unpackDir = resolve(join(spool, runId));
+    if (dirname(unpackDir) !== resolve(spool)) {
+      // Catches `.` / `..` and anything else that escapes one level down,
+      // even if the charset check above is ever loosened.
+      throw new CanonError('invalid', 'runId does not resolve to a spool entry');
+    }
     // One finally over EVERYTHING, refusals included: an archive the spool
     // accepted is the spool's to remove, and "we refused you AND kept your
     // corpus" is not a sentence this server gets to say.
