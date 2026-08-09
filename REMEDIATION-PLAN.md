@@ -290,8 +290,39 @@ all three. Reported as a precedence bug in `StatusBadge`; it was not — trust r
 is a frozen contract and behaved correctly, the fixture was contradicting the agent's
 own state.
 
-**Remaining in Phase 1:** 1.6, 1.7, 1.12, and the residue of 1.15/1.16 (labelling
-canned interview answers; the "Chain intact ✓" assurance panel over demo data).
+**Phase 1 is complete.** The last three:
+
+| # | Product | What changed |
+|---|---|---|
+| 1.6 | Canon | A supersession says so when its replacement is not in the official record yet, so "superseded by X" cannot imply an approved answer that does not exist |
+| 1.7 | Canon | A per-asker federated value is marked "resolved for you" — the unmarked half of the rule that already marks service-resolved values |
+| 1.12 | Studio | The generation relevance check no longer counts function words. One shared "with" between a lasagna-recipe prompt and the Opportunities description was suppressing the notice |
+
+1.12 also moved the predicate into `lib/generation-relevance.ts`: it lived inside the
+route handler, which is why the existing generation suite could not have caught it.
+
+---
+
+## Phase 1 scorecard
+
+**15 fixed** — 1.1, 1.2, 1.3, 1.5, 1.6, 1.7 (Canon); 1.8, 1.9, 1.10, 1.11a, 1.12
+(Studio); 1.15, 1.16, 1.17, 1.18, 1.19, 1.20 (Registry).
+
+**6 withdrawn after reading the code they accused** — 1.4, 1.13, 1.14, plus Registry's
+"fake" hash chain (real keyed HMAC in `services/api`), Canon's hidden relations
+(documented non-disclosure, pinned by a test), and the half of 1.11 that is a DNS
+deployment gap rather than an application defect.
+
+**1 approach abandoned mid-implementation** — answer-shape scoring in `bestWindow`,
+which `retrieval.ts:103-109` records as already tried and measured useless.
+
+Roughly two real defects per non-defect. Every fix was reproduced or proven before it
+was written, and three carry tests that fail without the change.
+
+**Next: Phase 2 (destructive and irreversible actions)** — 2.1 Canon sole-admin
+lockout, 2.2 Studio unconfirmed password reset, 2.3 the template-share 500, 2.4
+Registry unguarded admin grant and solo-mode toggle, 2.5 controls armed before their
+consequences load.
 
 The 50 individual tester reports, with reproduction steps and evidence, are the backing
 detail for every row above.
