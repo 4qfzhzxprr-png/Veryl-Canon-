@@ -380,6 +380,14 @@ const routes: Route[] = [
         collectionId: query.get('collectionId') ?? '',
         type: (query.get('type') ?? undefined) as never,
         runId: query.get('runId') ?? undefined,
+        // Who will own what this archive lands, asked once, exactly as the
+        // path-based run asks it — the body is the corpus, so these ride the
+        // query string with everything else the run needs to know.
+        fields: {
+          ownerId: query.get('ownerId') ?? undefined,
+          approverId: query.get('approverId') ?? undefined,
+          reviewDate: query.get('reviewDate') ?? undefined,
+        },
         archivePath: body.archivePath,
       }),
     ),

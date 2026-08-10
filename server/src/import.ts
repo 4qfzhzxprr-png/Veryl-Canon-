@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { forbiddenRole } from './abilities.js';
+import { isIsoDate } from './freshness.js';
 import { extractZip } from './zip.js';
 import {
   Actor,
@@ -100,6 +101,54 @@ export interface ImportFileResult {
   reason: string | null;
 }
 
+/**
+ * WHO OWNS WHAT AN IMPORT LANDS, ASKED ONCE PER RUN.
+ *
+ * Round seven, the quiet finding that mattered most: "all 9 imported pages
+ * landed with Owner —, Approver —, Review due — in nobody's queue. A migration
+ * silently produces unowned content, which is how a source of record decays."
+ * It was true: the importer named the importing actor as owner where the TYPE
+ * required one and nothing else, so a corpus arrived accountable to nobody and
+ * nothing on any screen said so.
+ *
+ * Ownership is a per-RUN question, not a per-file one. An export carries no
+ * owner, no approver and no review date — those are facts about how this
+ * organisation will look after the pages, which the file cannot know and the
+ * server must not guess. So the run asks once, and every page it lands carries
+ * the answer.
+ *
+ * WHAT A RUN MAY NOT ANSWER, AND WHY IT IS LEFT BLANK RATHER THAN FILLED. The
+ * EFFECTIVE DATE is deliberately not here. It is the day what a policy says
+ * began to apply — a fact about each document, different for every one of them,
+ * and the field a regulator asks about first (TYPE_RULES). One date stamped
+ * across two hundred imported policies would be a fabrication the record would
+ * then serve, cite and attest. A Policy import therefore still cannot publish,
+ * and that is the second half of the carry-in working as intended: the body
+ * waits in the draft and the run's own report names, per file, what the page is
+ * still short of. Visibly incomplete, never silently owned by nobody.
+ *
+ * Each field follows TYPE_RULES rather than being applied to whatever the run
+ * is importing: a Note carries no owner, no approver and no review date, and
+ * writing one onto it would store a field no screen in the product renders.
+ * A run that names one for a type that does not carry it is refused, with the
+ * type named, rather than having its answer quietly dropped.
+ */
+export interface ImportRunFields {
+  /** Who is accountable for these pages. Defaults to the importing actor. */
+  ownerId?: string | null;
+  /** Who will grant the Canonical mark, on types that name an approver. */
+  approverId?: string | null;
+  /** ISO date (YYYY-MM-DD), on types that carry a review date. */
+  reviewDate?: string | null;
+}
+
+/** The run's fields as they were APPLIED — what every page it landed carries. */
+export interface ResolvedImportFields {
+  ownerId: string | null;
+  approverId: string | null;
+  reviewDate: string | null;
+}
+
 export interface ImportSummary {
   runId: string;
   source: ImportSource;
@@ -107,6 +156,13 @@ export interface ImportSummary {
   collectionId: string;
   type: DocType;
   actorId: string;
+  /**
+   * The owner, approver and review date this run put on every page it landed.
+   * Recorded on the run rather than only on the pages, so a re-run repeats the
+   * same answer and a reader of the run record can see what was decided once
+   * for a whole corpus.
+   */
+  fields: ResolvedImportFields;
   /** How the page tree was recovered: from the export index, from page
    *  breadcrumbs, or not at all (a flat import). */
   hierarchy: 'tree' | 'breadcrumbs' | 'flat';
@@ -198,6 +254,31 @@ function hashOf(text: string): string {
 
 function posix(path: string): string {
   return sep === '/' ? path : path.split(sep).join('/');
+}
+
+/** "an owner", "an owner and a review date", "an owner, a review date and …". */
+function sentenceList(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]!}`;
+}
+
+/**
+ * The fields a stored run recorded. A run written before the record kept them
+ * reads as three nulls — which is exactly what it was: nothing was named.
+ */
+function runFieldsOf(summary: Partial<ImportSummary>): ResolvedImportFields {
+  const fields: Partial<ResolvedImportFields> = summary.fields ?? {};
+  return {
+    ownerId: fields.ownerId ?? null,
+    approverId: fields.approverId ?? null,
+    reviewDate: fields.reviewDate ?? null,
+  };
+}
+
+/** A field somebody typed: blank, whitespace and absent all mean "not stated". */
+function trimmedOrNull(value: string | null | undefined): string | null {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +707,8 @@ export interface ImportInput {
   type?: DocType;
   /** Re-use a run id to resume or retry an interrupted run idempotently. */
   runId?: string;
+  /** Owner, approver and review date for every page this run lands. */
+  fields?: ImportRunFields;
 }
 
 export interface ImportUploadInput {
@@ -633,6 +716,7 @@ export interface ImportUploadInput {
   collectionId: string;
   type?: DocType;
   runId?: string;
+  fields?: ImportRunFields;
   /** Where the request pipeline spooled the uploaded archive. */
   archivePath: string;
 }
@@ -713,6 +797,12 @@ export class ImportService {
       }
     }
 
+    // Asked once, applied to every page below. Resolved BEFORE the run row is
+    // written and before a single file is read: a run whose owner does not
+    // exist, or whose review date is not a date, must refuse before it lands
+    // two hundred pages nobody can fix in one act.
+    const fields = this.resolveRunFields(actorId, type, input.fields);
+
     const runId = input.runId?.trim() || randomUUID();
     const startedAt = now();
     const existing = this.db.prepare('SELECT * FROM import_runs WHERE id = ?').get(runId) as
@@ -746,6 +836,13 @@ export class ImportService {
         type,
         hierarchy: discovery.hierarchy,
         files: documents.length,
+        // Who this run made accountable for everything it is about to land.
+        // On the START event because it is a decision taken before the work,
+        // and because an examiner asking "who was named owner of these two
+        // hundred pages, and by whom" gets one row rather than two hundred.
+        ownerId: fields.ownerId,
+        approverId: fields.approverId,
+        reviewDate: fields.reviewDate,
       },
     });
 
@@ -778,6 +875,7 @@ export class ImportService {
         root,
         realRoot,
         type,
+        fields,
         collectionId: input.collectionId,
         doc,
         spaceName: discovery.spaceName,
@@ -826,6 +924,7 @@ export class ImportService {
       collectionId: input.collectionId,
       type,
       actorId,
+      fields,
       hierarchy: discovery.hierarchy,
       startedAt,
       finishedAt: now(),
@@ -853,6 +952,8 @@ export class ImportService {
       /** The run root with every symlink resolved; nothing may be read outside it. */
       realRoot: string;
       type: DocType;
+      /** The run's owner, approver and review date; every page gets them. */
+      fields: ResolvedImportFields;
       collectionId: string;
       doc: DiscoveredDocument;
       spaceName: string | null;
@@ -936,10 +1037,23 @@ export class ImportService {
             hash,
           );
         }
-        const published = this.writeBody(actor.id, prior.page_id, ctx, converted.body, title);
+        const written = this.writeBody(actor.id, prior.page_id, ctx, converted.body, title);
         return this.record(
           ctx.runId,
-          { ...base, outcome: 'updated', pageId: prior.page_id, title, published, reason: 'content changed since the last run' },
+          {
+            ...base,
+            outcome: 'updated',
+            pageId: prior.page_id,
+            title,
+            published: written.published,
+            // Both sentences, in that order: what changed, and — where the
+            // page still cannot publish — what it is short of. A re-run that
+            // said only "content changed" left the reader to work out why the
+            // new text was not on the page.
+            reason: written.held
+              ? `content changed since the last run. ${written.held}`
+              : 'content changed since the last run',
+          },
           hash,
         );
       }
@@ -950,7 +1064,7 @@ export class ImportService {
         type: ctx.type,
         title,
       });
-      const published = this.writeBody(actor.id, page.id, ctx, converted.body, title);
+      const written = this.writeBody(actor.id, page.id, ctx, converted.body, title);
       return this.record(
         ctx.runId,
         {
@@ -958,8 +1072,8 @@ export class ImportService {
           outcome: 'imported',
           pageId: page.id,
           title,
-          published,
-          reason: published ? null : 'body held in the draft: this type needs a named approver before it can publish',
+          published: written.published,
+          reason: written.held,
         },
         hash,
       );
@@ -972,22 +1086,103 @@ export class ImportService {
   // The imported body goes into the draft and is then published as a version so
   // the page is readable and searchable. Publishing always lands on status
   // 'draft' (see CanonStore.writeVersion): an import can never produce a
-  // Canonical page. Types that require a named approver keep their body in the
-  // draft, because Canon will not publish them without one.
+  // Canonical page.
+  //
+  // WHAT KEEPS A BODY IN THE DRAFT is now read off TYPE_RULES in full, rather
+  // than off `requiresApprover` alone. That single flag was right about the one
+  // case it knew ("a Policy needs an approver") and silent about the two it did
+  // not, so a run that DID name an approver would have gone on to call
+  // `publish`, been refused by `validateReadyToPublish` for a missing review or
+  // effective date, and had a perfectly good page reported as `failed` — the
+  // whole file, not the one field. Deciding here, from the same table
+  // `validateReadyToPublish` reads, means the run says what the page is short
+  // of and the page itself survives to be finished by a person.
   private writeBody(
     actorId: string,
     pageId: string,
-    ctx: { source: ImportSource; doc: DiscoveredDocument; type: DocType },
+    ctx: { source: ImportSource; doc: DiscoveredDocument; type: DocType; fields: ResolvedImportFields },
     body: string,
     title: string,
-  ): boolean {
+  ): { published: boolean; held: string | null } {
     const rules = TYPE_RULES[ctx.type];
     const fields: PageFields = {};
-    if (rules.requiresOwner) fields.ownerId = actorId;
+    // The run's answers, each applied only where the type carries the field.
+    // `resolveRunFields` has already refused anything the type does not carry,
+    // so this is the same rule stated twice on purpose: the one that refuses
+    // the run and the one that writes the page cannot drift apart.
+    if (rules.requiresOwner) fields.ownerId = ctx.fields.ownerId ?? actorId;
+    if (rules.requiresApprover && ctx.fields.approverId) fields.approverId = ctx.fields.approverId;
+    if (rules.allowsReviewDate && ctx.fields.reviewDate) fields.reviewDate = ctx.fields.reviewDate;
     this.host.editDraft(actorId, pageId, { title, body, fields });
-    if (rules.requiresApprover) return false;
+
+    const missing: string[] = [];
+    if (rules.requiresOwner && !fields.ownerId) missing.push('an owner');
+    if (rules.requiresApprover && !fields.approverId) missing.push('a named approver');
+    if (rules.requiresReviewDate && !fields.reviewDate) missing.push('a review date');
+    // Never supplied by a run, and argued at ImportRunFields: the day a policy
+    // began to apply is a fact about the document, not about the migration.
+    if (rules.requiresEffectiveDate && !fields.effectiveDate) missing.push('an effective date');
+    if (missing.length) {
+      return {
+        published: false,
+        held: `body held in the draft: this ${ctx.type} needs ${sentenceList(missing)} before it can publish`,
+      };
+    }
     this.host.publish(actorId, pageId, { note: `Imported from ${ctx.source}: ${ctx.doc.file}` });
-    return true;
+    return { published: true, held: null };
+  }
+
+  /**
+   * The run's owner, approver and review date, checked once before any file is
+   * read. Every refusal here names the type, because "a note carries no review
+   * date" is a fact about the choice the operator just made and not a
+   * complaint about their typing.
+   */
+  private resolveRunFields(
+    actorId: string,
+    type: DocType,
+    input: ImportRunFields | undefined,
+  ): ResolvedImportFields {
+    const rules = TYPE_RULES[type];
+    const asked = input ?? {};
+    const ownerId = trimmedOrNull(asked.ownerId);
+    const approverId = trimmedOrNull(asked.approverId);
+    const reviewDate = trimmedOrNull(asked.reviewDate);
+
+    if (ownerId && !rules.requiresOwner) {
+      throw new CanonError('invalid', `A ${type} carries no owner, so an import cannot name one`, { field: 'ownerId' });
+    }
+    if (approverId && !rules.requiresApprover) {
+      throw new CanonError('invalid', `A ${type} names no approver, so an import cannot name one`, {
+        field: 'approverId',
+      });
+    }
+    if (reviewDate) {
+      if (!rules.allowsReviewDate) {
+        throw new CanonError('invalid', `A ${type} carries no review date; it never holds the Canonical mark`, {
+          field: 'reviewDate',
+        });
+      }
+      if (!isIsoDate(reviewDate)) {
+        throw new CanonError('invalid', `A review date is an ISO date (YYYY-MM-DD), not '${reviewDate}'`, {
+          field: 'reviewDate',
+        });
+      }
+    }
+    // Both are real actors, established before the run rather than on the first
+    // file: `editDraft` would refuse each of two hundred pages one at a time,
+    // and a run that fails two hundred times over one mistyped id is a run
+    // nobody can read the report of.
+    if (ownerId) this.host.getActor(ownerId);
+    if (approverId) this.host.getActor(approverId);
+
+    return {
+      // The importing actor is the fallback owner, which is what the importer
+      // has always done — now stated in the run record rather than implied.
+      ownerId: rules.requiresOwner ? (ownerId ?? actorId) : null,
+      approverId: rules.requiresApprover ? approverId : null,
+      reviewDate: rules.allowsReviewDate ? reviewDate : null,
+    };
   }
 
   private record(runId: string, result: ImportFileResult, hash: string): ImportFileResult {
@@ -1077,7 +1272,7 @@ export class ImportService {
 
       return this.run(
         actorId,
-        { source, path: root, collectionId: input.collectionId, type: input.type, runId },
+        { source, path: root, collectionId: input.collectionId, type: input.type, runId, fields: input.fields },
         { serverManagedRoot: true },
       );
     } finally {
@@ -1121,6 +1316,7 @@ export class ImportService {
       collectionId: row.collection_id as string,
       type: row.type as DocType,
       actorId: row.actor_id as string,
+      fields: runFieldsOf(summary),
       hierarchy: summary.hierarchy ?? 'flat',
       startedAt: row.started_at as string,
       finishedAt: (row.finished_at as string) ?? '',
@@ -1154,6 +1350,7 @@ export class ImportService {
         collectionId: row.collection_id as string,
         type: row.type as DocType,
         actorId: row.actor_id as string,
+        fields: runFieldsOf(summary),
         hierarchy: summary.hierarchy ?? 'flat',
         startedAt: row.started_at as string,
         finishedAt: (row.finished_at as string) ?? '',
@@ -1168,8 +1365,11 @@ export class ImportService {
     const role = this.host.roleOf(actorId, collectionId);
     if (!role || ROLE_RANK[role] < ROLE_RANK[needed]) {
       // One sentence, built in abilities.ts, and the same one the screen shows
-      // before the click (USER-TESTING.md T4.4, second round).
-      throw forbiddenRole(this.db, collectionId, role, needed);
+      // before the click (USER-TESTING.md T4.4, second round). The act is named
+      // — "Importing needs…" rather than "This needs…" — because the screen's
+      // own refusal comes from `collectionAbilities.runImport`, and the two
+      // being one string is the whole point of building them in one place.
+      throw forbiddenRole(this.db, collectionId, role, needed, 'Importing');
     }
   }
 

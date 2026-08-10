@@ -200,4 +200,12 @@ export interface CollectionAbilities {
    * this sentence about a collection the reader is not looking at.
    */
   assertRelation: PageAbility;
+  /**
+   * `runImport` — `admin` HERE, and nothing else (import.ts: "ADMIN, NOT EDIT").
+   * The import screen draws its collection picker from this: a run names a
+   * server-side path, reads files nobody in Canon reviewed, and lands up to two
+   * thousand pages in one call, so the screen that aims one must offer exactly
+   * the collections the server would accept it for.
+   */
+  runImport: PageAbility;
 }

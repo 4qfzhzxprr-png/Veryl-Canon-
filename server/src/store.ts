@@ -2145,6 +2145,12 @@ export class CanonStore {
       addMember: membership('Adding a member'),
       removeMember: membership('Removing a member'),
       assertRelation: holds('edit') ? CAN : needsRoleHere(this.db, here, role, 'Asserting a relation', 'edit'),
+      // `ImportService.requireRole(collectionId, 'admin')`, mirrored — and
+      // deliberately NOT `membership`, which the org-level `administrator` also
+      // satisfies. An import is refused by `roleOf` alone, so an org
+      // administrator holding no role here is refused it, and an ability that
+      // said otherwise would offer a form the server throws away a corpus over.
+      runImport: holds('admin') ? CAN : needsRoleHere(this.db, here, role, 'Importing', 'admin'),
     };
   }
 
