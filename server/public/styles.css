@@ -1266,6 +1266,11 @@ label.check input { width: auto; display: inline; margin: 0; }
    an affordance for a feature, not a call to action. */
 .comment-mention-hint { font-size: 0.85rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; }
 .mention-chip { padding: 0 0.35rem; font-size: 0.85rem; }
+/* A comment's footer: who closed it, and the one control that closes or
+   reopens it. Right-aligned and quiet — resolving is bookkeeping, not the
+   point of the conversation. */
+.comment-actions { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 0.5rem; margin-top: 0.35rem; }
+.comment-resolved-by { font-size: 0.85rem; margin-right: auto; }
 .rel-note { margin: 0.35rem 0 0; font-size: 0.9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rel-meta { margin: 0.35rem 0 0; font-size: 0.8rem; }
 .rel-withdraw { font-size: 0.8rem; padding: 0 0.35rem; }

@@ -4102,7 +4102,13 @@ function normalizeComment(c) {
     body: c.body ?? c.text ?? c.content ?? '',
     authorId: c.authorId ?? c.actorId ?? c.author ?? null,
     createdAt: c.createdAt ?? c.at ?? null,
-    resolved: c.resolved ?? c.resolvedAt ?? false,
+    resolved: Boolean(c.resolved ?? c.resolvedAt ?? false),
+    // WHO resolved it and WHEN. The server has carried both since resolve was
+    // written; the client dropped them, so "resolved" was a bare tag — a
+    // conversation closed by nobody, at no time. On a record whose whole claim
+    // is that you can see who decided what, that is the wrong kind of gap.
+    resolvedAt: c.resolvedAt ?? null,
+    resolvedBy: c.resolvedBy ?? null,
     // An approver's send-back reason is a comment (USER-TESTING.md T4.3), and
     // the most consequential sentence on the page should not read as an
     // ordinary remark. The server derives it from the event that recorded the
@@ -4115,6 +4121,35 @@ function normalizeComment(c) {
 // in `page.abilities.comment` shape, or null on a server that serves none. A
 // refusal replaces the box with the reason rather than leaving a form that
 // 403s at the last click (T4.4).
+/**
+ * A comment's resolution: who closed it and when, plus the way to close or
+ * reopen it.
+ *
+ * `POST /comments/:id/resolve` and `/reopen` have existed since resolve was
+ * written, and `resolved_at`/`resolved_by` are stored — but nothing rendered a
+ * button, so the send-back banner's promise that a comment "can be replied to
+ * and resolved" was half true: you could reply, and there was no way to
+ * resolve. A conversation that cannot be closed is one that stays open on the
+ * page forever, which is how a page ends up with a wall of remarks nobody can
+ * tell the live ones from.
+ *
+ * Both routes take the `comment` role — the same one that let you write the
+ * comment — so the gate the composer already computes is exactly the right
+ * gate here, and a reader without it sees the state and no buttons.
+ */
+function commentResolutionHTML(c, canComment) {
+  const who = c.resolvedBy ? actorLabel(c.resolvedBy) : null;
+  const when = c.resolvedAt ? fmtDateTime(c.resolvedAt) : null;
+  const provenance = c.resolved && (who || when)
+    ? `<span class="muted comment-resolved-by">Resolved${who ? ` by ${who}` : ''}${when ? ` on ${esc(when)}` : ''}.</span>`
+    : '';
+  if (!canComment) return provenance ? `<div class="comment-actions">${provenance}</div>` : '';
+  const button = c.resolved
+    ? `<button class="btn subtle" type="button" data-reopen="${esc(c.id)}">Reopen</button>`
+    : `<button class="btn subtle" type="button" data-resolve="${esc(c.id)}">Resolve</button>`;
+  return `<div class="comment-actions">${provenance}${button}</div>`;
+}
+
 /**
  * Who this reader can mention, and how.
  *
@@ -4186,6 +4221,8 @@ async function renderCommentsPanel(pageId, ability = null, collectionId = null) 
       <p class="muted">Comments could not be loaded: ${esc(err.message)}</p></section>`;
     return;
   }
+  // The same gate the composer uses: resolve and reopen both take `comment`.
+  const canComment = !(ability && ability.can === false);
   host.innerHTML = `
     <section class="panel" id="comments-panel">
       <h2 class="h-small">Comments</h2>
@@ -4199,6 +4236,7 @@ async function renderCommentsPanel(pageId, ability = null, collectionId = null) 
                 ${c.sentBack ? '<span class="role-tag">sent this back</span>' : ''}
                 ${c.resolved ? '<span class="role-tag">resolved</span>' : ''}</div>
               <div class="comment-body">${esc(c.body)}</div>
+              ${commentResolutionHTML(c, canComment)}
             </li>`).join('')}
         </ul>` : '<p class="muted">No comments yet.</p>'}
       ${ability && !ability.can
@@ -4210,6 +4248,24 @@ async function renderCommentsPanel(pageId, ability = null, collectionId = null) 
            </form>`}
     </section>`;
   wireMentionChips(host);
+  for (const btn of host.querySelectorAll('[data-resolve], [data-reopen]')) {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.resolve ?? btn.dataset.reopen;
+      const verb = btn.dataset.resolve ? 'resolve' : 'reopen';
+      btn.disabled = true;
+      try {
+        await api('POST', `/comments/${id}/${verb}`);
+        renderCommentsPanel(pageId, ability, collectionId);
+      } catch (err) {
+        btn.disabled = false;
+        // A Canon that does not serve these routes is not a broken one — say
+        // so once rather than leaving a button that silently does nothing.
+        if (err.status === 404 || err.status === 405) {
+          toast('Resolving a comment is not available on this Canon yet.', 'info');
+        } else toastError(err);
+      }
+    });
+  }
   host.querySelector('#comment-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = e.target.body.value.trim();
