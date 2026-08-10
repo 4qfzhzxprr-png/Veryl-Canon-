@@ -187,6 +187,66 @@ Two things that could have gone wrong and are pinned instead:
 - **Never the author's own draft.** The editor's live preview renders from the textarea
   and never applies the list. A hole where their link is would invite them to "fix" it.
 
+## Phase 4 — done, and half of it was not what was reported
+
+The plan said to do this as one design adopted three times. In the event the three
+products needed three different things, because they had three different amounts of it
+already built — and checking first was worth more here than anywhere else in the test.
+
+**Canon: "comments notify nobody" — wrong.** Canon has eleven notification kinds, an
+outbox with delivery attempts, and a non-disclosure rule that *withholds* a mention
+rather than refusing the comment, so `@`-ing an outsider does not mail them a restricted
+page's title. What was real underneath:
+
+- Mentions had **no usable address**. `@<actorId>` was the only form and an actor id is
+  a UUID; the composer was a bare textarea that said nothing about it. Names resolve
+  now, scoped to the collection's members — the set that can be *named* is the set that
+  can be *reached*, so nothing is learned by guessing. Longest-first ordering alone was
+  not enough and a test caught it: `@Dana Reyes` contains `@Dana`, so without claiming
+  the matched span the shorter name is a permanent false positive of the longer.
+- A comment naming nobody **reached nobody**, including the person §3 makes accountable
+  for the page. New `comment_added` kind, weaker than a mention: you were not asked,
+  your page was discussed. A page with no owner still tells nobody, and that is pinned —
+  it is the record being honest, not a dropped message.
+- **Resolve had routes and no button.** `POST /comments/:id/resolve` and `/reopen` have
+  existed since resolve was written, and `resolved_at`/`resolved_by` are stored — so the
+  send-back banner's promise that a comment "can be replied to and resolved" was half
+  true. The client was also dropping who resolved it and when, so "resolved" rendered as
+  a conversation closed by nobody at no time.
+- **Authors could not see submitted work.** `myDrafts` excludes `in_review` because the
+  move is the approver's — right about whose turn it is, wrong about what the author
+  needs. New strand, deliberately **outside the count**: the badge is what is waiting on
+  *you*, and a badge you cannot clear is ignored within a week. Naming the approver hit
+  the trap the codebase warns about — `pages.approver_id` is the *published* version's
+  and is null on a page that never published — so it reads the same `fields_json` column
+  `approve` enforces against.
+
+**Registry: one demo defect, one real one.** "Agents submitted never reach the queue" is
+the fixture: session-created agents live in `CREATED_AGENTS`, `agentByVersion` was
+taught about that when submitted drafts stayed "Draft" forever, and `mockQueue` never
+was. Same bug, second half, different function — only the half somebody reported got
+fixed. "No reviewer record of their own decisions" is real and the data was never
+missing: `verification_run` has carried `reviewer_id` and `reviewer_decision` since
+sign-off was written. `GET /review/decisions` reads it back; the strip merges it behind
+this sitting's entries so a decision made ten seconds ago does not wait on a refetch.
+Deliberately the caller's own record only — an admin wanting the team's has the audit
+log, which 3.4 made filterable. An advisory engine run is not a decision, and listing it
+would credit a person with a machine's output.
+
+**Studio: one real, two not.** `approvalNote` was written by the approve route and read
+by **nothing** — the only other mention in the codebase is the seed. An approver who
+sent a version back and typed why sent it nowhere; nothing in the builder's surfaces
+renders `rejected` at all. A decision now writes a notification carrying the note. The
+doorbell rule (rings carry no data) is about governed data crossing a channel that
+checked nobody's access — an approver's sentence about somebody's own work is not that.
+
+Not what was reported: there **is** a notifications area (the bell is mounted in the
+shell, backed by a real API with server-side read state), and the unused
+`digest_ready`/`alert_fired` templates are dead code rather than a broken delivery,
+because a digest goes out through a workflow connection.
+
+Canon 836 passing, Registry 2223 backend + 366 web + 358 E2E, Studio 1680.
+
 ---
 
 ## Phase 5 — Loading and empty-state discipline
