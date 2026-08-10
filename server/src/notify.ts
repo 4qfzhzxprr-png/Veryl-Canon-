@@ -63,6 +63,13 @@ function ensureDeliveryColumns(db: DatabaseSync): void {
 // now Needs Update. It rides the same outbox as every other notification.
 export type NotificationKind =
   | 'mention'
+  // Somebody commented on a page you OWN, without naming you (comments.ts).
+  // §3 makes the owner accountable for keeping a page true and a comment is
+  // usually somebody saying it is not — but it only reached them if the
+  // commenter knew their UUID, so the ordinary case reached nobody. Distinct
+  // from `mention` because it is a weaker claim on the reader's attention: you
+  // were not asked, your page was discussed.
+  | 'comment_added'
   | 'review_requested'
   | 'draft_approved'
   | 'draft_sent_back'

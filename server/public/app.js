@@ -3165,7 +3165,7 @@ async function viewPage(id) {
   renderDivergencesPanel(id);
   renderRelationsPanel(id, page, relations);
   renderRelatedPanel(id);
-  renderCommentsPanel(id, can?.comment ?? null);
+  renderCommentsPanel(id, can?.comment ?? null, page.collectionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -4115,9 +4115,66 @@ function normalizeComment(c) {
 // in `page.abilities.comment` shape, or null on a server that serves none. A
 // refusal replaces the box with the reason rather than leaving a form that
 // 403s at the last click (T4.4).
-async function renderCommentsPanel(pageId, ability = null) {
+/**
+ * Who this reader can mention, and how.
+ *
+ * `@<actorId>` was the only form the server accepted and an actor id is a
+ * UUID — so "mention someone to bring them in", which the product describes as
+ * a workflow, could not be performed by a person. The server now resolves a
+ * member's NAME as well; this is the half that makes it discoverable, because
+ * a feature nobody can see is not one.
+ *
+ * The list is the collection's members, which is exactly the set the server
+ * will resolve and exactly the set a mention would reach — somebody outside it
+ * is withheld anyway. So the names offered here can never be a promise the
+ * server then breaks.
+ */
+function mentionHintHTML(people) {
+  if (!people.length) return '';
+  return `<p class="muted comment-mention-hint">Mention someone with <code>@</code>:
+    ${people.map((p) => `<button type="button" class="btn subtle mention-chip"
+      data-mention="${esc(p.name)}">@${esc(p.name)}</button>`).join(' ')}</p>`;
+}
+
+/** Clicking a name inserts it at the cursor — a hint you cannot act on is a
+ *  smaller version of the same problem. */
+function wireMentionChips(host) {
+  const box = host.querySelector('#comment-form textarea');
+  if (!box) return;
+  for (const chip of host.querySelectorAll('.mention-chip')) {
+    chip.addEventListener('click', () => {
+      const insert = `@${chip.dataset.mention} `;
+      const at = box.selectionStart ?? box.value.length;
+      const end = box.selectionEnd ?? at;
+      box.value = box.value.slice(0, at) + insert + box.value.slice(end);
+      box.focus();
+      const caret = at + insert.length;
+      box.setSelectionRange(caret, caret);
+    });
+  }
+}
+
+/** The collection's members, as names. Empty on any failure: the composer is
+ *  still usable without the hint, and a broken hint must not cost a comment. */
+async function mentionableIn(collectionId) {
+  if (!collectionId) return [];
+  try {
+    const rows = await api('GET', `/collections/${collectionId}/members`);
+    const list = Array.isArray(rows) ? rows : (rows?.members ?? []);
+    return list
+      .map((m) => ({ id: m.actorId ?? m.actor_id, name: actorName(m.actorId ?? m.actor_id) }))
+      // Not yourself: the server never notifies an author about their own
+      // comment, so offering your own name would be a chip that does nothing.
+      .filter((m) => m.id && m.name && m.name !== '—' && m.id !== state.actor?.id);
+  } catch {
+    return [];
+  }
+}
+
+async function renderCommentsPanel(pageId, ability = null, collectionId = null) {
   const host = document.getElementById('comments-host');
   if (!host || state.features.comments === false) return;
+  const mentionable = ability && ability.can === false ? [] : await mentionableIn(collectionId);
   let comments;
   try {
     const r = await api('GET', `/pages/${pageId}/comments`);
@@ -4148,16 +4205,18 @@ async function renderCommentsPanel(pageId, ability = null) {
         ? `<p class="muted">${esc(ability.why ?? 'You cannot comment on this page.')}</p>`
         : `<form id="comment-form" class="stack">
              <textarea name="body" rows="2" required placeholder="Add a comment…"></textarea>
+             ${mentionHintHTML(mentionable)}
              <div><button class="btn" type="submit">Comment</button></div>
            </form>`}
     </section>`;
+  wireMentionChips(host);
   host.querySelector('#comment-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = e.target.body.value.trim();
     if (!body) return;
     try {
       await api('POST', `/pages/${pageId}/comments`, { body });
-      renderCommentsPanel(pageId, ability);
+      renderCommentsPanel(pageId, ability, collectionId);
     } catch (err) {
       if (err.status === 404 || err.status === 405) {
         state.features.comments = false;

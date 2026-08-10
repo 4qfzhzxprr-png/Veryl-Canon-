@@ -690,3 +690,33 @@ test('body links: the editor preview renders what the author typed', () => {
   const preview = source.slice(source.indexOf('const preview ='), source.indexOf('const preview =') + 2000);
   assert.doesNotMatch(preview, /withWithheldLinks/);
 });
+
+// ---------------------------------------------------------------------------
+// The comment loop's client half (Phase 4)
+//
+// The mention machinery was complete and had no usable address: `@<actorId>`
+// was the only form the server accepted, an actor id is a UUID, and the
+// composer was a bare textarea that said nothing about any of it.
+
+test('comments: the composer says who can be mentioned, and inserting one works', () => {
+  const hint = source.slice(source.indexOf('function mentionHintHTML('), source.indexOf('async function mentionableIn('));
+  assert.match(hint, /Mention someone with/);
+  // A hint you cannot act on is a smaller version of the same problem.
+  assert.match(hint, /data-mention=/);
+  assert.match(hint, /setSelectionRange/);
+});
+
+test('comments: the names offered are the collection members, not the directory', () => {
+  // The server resolves a name against the collection's members only — so
+  // offering anybody else would be a promise the server then breaks, and would
+  // make the directory probeable one chip at a time.
+  const fn = source.slice(source.indexOf('async function mentionableIn('), source.indexOf('async function renderCommentsPanel('));
+  assert.match(fn, /\/collections\/\$\{collectionId\}\/members/);
+  // And never yourself: an author is never notified about their own comment.
+  assert.match(fn, /state\.actor\?\.id/);
+});
+
+test('comments: a failed member lookup costs the hint, never the comment box', () => {
+  const fn = source.slice(source.indexOf('async function mentionableIn('), source.indexOf('async function renderCommentsPanel('));
+  assert.match(fn, /catch \{\s*return \[\];/);
+});
