@@ -1827,6 +1827,26 @@ async function viewQueue() {
     ),
   ];
 
+  // WAITING ON SOMEBODY ELSE, and outside the count.
+  //
+  // "Your drafts" leaves out a page that is In Review, because the move is the
+  // approver's — right about whose turn it is, wrong about what the author
+  // needs. Someone who submitted a policy on Tuesday read "You have no drafts
+  // in progress" on Wednesday: true, and it reads as "nothing of yours is in
+  // flight" while their work sits in somebody else's queue with no way to find
+  // out whose or for how long.
+  //
+  // Uncounted for the same reason the notices are: the badge is a number of
+  // things waiting on YOU, and this is the one strand that is explicitly not.
+  const submitted = (queue.awaitingSomebodyElse ?? []).map((p) => queuePageRow(
+    p,
+    collections,
+    `submitted ${esc(fmtAgo(p.updatedAt) ?? '')}`,
+    // The approver by name, because "who do I chase" is the whole question. A
+    // type that names no single approver says so rather than inventing one.
+    p.approverId ? `Waiting on ${actorName(p.approverId)}.` : 'Waiting on anyone who can approve it.',
+  ));
+
   // Notices last, and outside the count. The outbox has no read state, so a
   // number counting these would never go down; what they add is the sentence —
   // who asked, who sent it back, what they said — beside the work itself.
@@ -1853,8 +1873,17 @@ async function viewQueue() {
         <div class="empty-state">
           <h2>Nothing is waiting on you</h2>
           <p>No approvals, no pages of yours past review, no contradictions against anything you own, and
-          no drafts in progress.</p>
+          no drafts in progress.${submitted.length
+            ? ' You do have work with somebody else — it is below.'
+            : ''}</p>
         </div>` : strands.join('')}
+      ${submitted.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">Waiting on somebody else</h2>
+          <p class="muted queue-strand-blurb">Work you submitted. It is not counted above: the number is what
+          the record is waiting on <strong>you</strong> for, and these are waiting on someone else.</p>
+          <table class="queue-table"><tbody>${submitted.join('')}</tbody></table>
+        </section>` : ''}
       ${notices.length ? `
         <section class="queue-strand">
           <h2 class="queue-strand-head">Notices</h2>

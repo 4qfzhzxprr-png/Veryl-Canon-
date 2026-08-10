@@ -418,3 +418,107 @@ test('the queue over HTTP has no subject but the asker, and is closed to agents'
     registryServer.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Work you submitted (Phase 4)
+//
+// `myDrafts` names its statuses to leave out `in_review`, because the move is
+// the approver's and the page is already in THEIR strand. That is right about
+// whose turn it is and wrong about what the author needs: someone who submitted
+// a policy on Tuesday read "You have no drafts in progress" on Wednesday —
+// true, and it reads as "nothing of yours is in flight" while their work sits
+// in somebody else's queue with no way to find out whose or for how long.
+
+test('the queue: work I submitted is shown to me, not silently dropped', () => {
+  const { store, priya, iris, collection } = setup();
+  const page = policyInReview(store, priya.id, collection.id, 'Retention policy', {
+    ownerId: priya.id,
+    approverId: iris.id,
+  });
+
+  const mine = store.myQueue(priya.id);
+  // It is not in "your drafts" — that strand is work I can sit down and finish.
+  assert.equal(mine.myDrafts.some((p) => p.pageId === page.id), false);
+  // It IS on my screen, and it names who has it.
+  assert.equal(mine.awaitingSomebodyElse.length, 1);
+  assert.equal(mine.awaitingSomebodyElse[0]!.pageId, page.id);
+  assert.equal(mine.awaitingSomebodyElse[0]!.approverId, iris.id);
+});
+
+test('the queue: submitted work is NOT counted in the badge', () => {
+  // The badge is a number of things waiting on YOU. A submission is the one
+  // strand that is explicitly waiting on somebody else, and counting it would
+  // make the badge un-clearable by anything the author can do — a badge you
+  // cannot clear is ignored within a week, which is how this queue came to
+  // exist in the first place.
+  const { store, priya, iris, collection } = setup();
+  policyInReview(store, priya.id, collection.id, 'Retention policy', {
+    ownerId: priya.id,
+    approverId: iris.id,
+  });
+
+  const mine = store.myQueue(priya.id);
+  assert.equal(mine.awaitingSomebodyElse.length, 1);
+  assert.equal(mine.counts.total, 0);
+  // And it has no count field of its own, so nothing can add it back by
+  // summing the counts object.
+  assert.equal('awaitingSomebodyElse' in mine.counts, false);
+});
+
+test('the queue: the approver still sees it as work waiting on them', () => {
+  // Closing the author's loop must not open a hole in the approver's: the same
+  // page is on both screens, saying two different true things.
+  const { store, priya, iris, collection } = setup();
+  const page = policyInReview(store, priya.id, collection.id, 'Retention policy', {
+    ownerId: priya.id,
+    approverId: iris.id,
+  });
+
+  const theirs = store.myQueue(iris.id);
+  assert.equal(theirs.awaitingMyApproval.some((p) => p.pageId === page.id), true);
+  assert.equal(theirs.counts.total >= 1, true);
+  // And it is not listed to them as something they submitted.
+  assert.equal(theirs.awaitingSomebodyElse.length, 0);
+});
+
+test('the queue: a draft I have not submitted stays in my drafts, not in flight', () => {
+  const { store, priya, collection } = setup();
+  const page = store.createPage(priya.id, { collectionId: collection.id, type: 'policy', title: 'Draft only' });
+  store.editDraft(priya.id, page.id, { body: 'not submitted' });
+
+  const mine = store.myQueue(priya.id);
+  assert.equal(mine.myDrafts.some((p) => p.pageId === page.id), true);
+  assert.equal(mine.awaitingSomebodyElse.length, 0);
+});
+
+test('the queue: a page sent back to me is mine again, not still in flight', () => {
+  const { store, priya, iris, collection } = setup();
+  const page = policyInReview(store, priya.id, collection.id, 'Retention policy', {
+    ownerId: priya.id,
+    approverId: iris.id,
+  });
+  store.sendBack(iris.id, page.id, { comment: 'The second figure is wrong.' });
+
+  const mine = store.myQueue(priya.id);
+  assert.equal(mine.awaitingSomebodyElse.length, 0);
+  assert.equal(mine.sentBackToMe.some((p) => p.pageId === page.id), true);
+});
+
+test('the queue: the approver shown is the DRAFT\'s, not the published page\'s', () => {
+  // `pages.approver_id` is the approver of the PUBLISHED version and is NULL on
+  // a page that has never published — so the one strand whose whole purpose is
+  // "who has my work" read null and the screen said "waiting on anyone who can
+  // approve it" precisely when somebody had been named. The draft's
+  // `fields_json` is where `approve` reads its approver, so it is what the
+  // author is told to chase.
+  const { store, priya, iris, collection } = setup();
+  const page = policyInReview(store, priya.id, collection.id, 'Never published', {
+    ownerId: priya.id,
+    approverId: iris.id,
+  });
+
+  // The page row itself has no approver yet — nothing has published.
+  assert.equal(store.getPage(priya.id, page.id).approverId, null);
+  // The queue still names the person who has it.
+  assert.equal(store.myQueue(priya.id).awaitingSomebodyElse[0]!.approverId, iris.id);
+});

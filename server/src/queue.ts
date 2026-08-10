@@ -129,6 +129,13 @@ export interface WorkQueue {
   myPagesPastReview: QueryResultPage[];
   /** Drafts this actor holds and can still edit: work in progress. */
   myDrafts: QueryResultPage[];
+  /**
+   * Work this actor SUBMITTED that is now waiting on somebody else.
+   *
+   * Deliberately outside `counts` — see WAITING ON SOMEBODY ELSE below. The
+   * badge means "waiting on you", and these are the opposite of that.
+   */
+  awaitingSomebodyElse: QueryResultPage[];
   /** `conflicts_with` assertions against a page this actor owns (relations.ts). */
   conflictsOnMyPages: OwnedConflict[];
   /** Open source contradictions on a page this actor owns (divergence.ts, §7). */
@@ -224,6 +231,32 @@ export class QueueService {
       })
       .filter((p) => !sentBackIds.has(p.pageId));
 
+    // WAITING ON SOMEBODY ELSE. The same lock, the one status the strand above
+    // excludes.
+    //
+    // `myDrafts` names its statuses to leave out `in_review` because the MOVE
+    // is the approver's and the page is already in their strand — which is
+    // right about whose turn it is and wrong about what the author needs. An
+    // author who submitted a policy on Tuesday saw "You have no drafts in
+    // progress" on Wednesday: true, and it reads as "you have nothing in
+    // flight" when in fact their work is sitting in somebody else's queue with
+    // no way to find out whose or for how long.
+    //
+    // NOT counted in `total`, for the same reason `notices` is not: the badge
+    // is a number of things waiting on THIS actor, and a submission is the one
+    // thing on this screen that is explicitly waiting on somebody else.
+    // Counting it would make the badge un-clearable by anything the actor can
+    // do, and a badge you cannot clear is ignored within a week.
+    const awaitingSomebodyElse = this.withDraftApprover(
+      this.host.runQuery(actorId, {
+        draftHeldBy: actorId,
+        statuses: ['in_review'],
+        sort: 'updatedAt',
+        direction: 'asc', // longest-waiting first: it is the one you chase
+        limit,
+      }),
+    );
+
     // CONTRADICTION, in both of the record's senses. A page-to-page conflict
     // somebody asserted (relations.ts) and a source disagreeing with the system
     // that owns the fact (divergence.ts, §7) are two different problems with
@@ -283,6 +316,7 @@ export class QueueService {
       sentBackToMe,
       myPagesPastReview,
       myDrafts,
+      awaitingSomebodyElse,
       conflictsOnMyPages,
       divergencesOnMyPages,
       notices,
@@ -292,10 +326,39 @@ export class QueueService {
         sentBackToMe,
         myPagesPastReview,
         myDrafts,
+        // Uncounted, but a truncated list is still a list that is lying about
+        // its own completeness — that is a rendering fact, not a badge fact.
+        awaitingSomebodyElse,
         conflictsOnMyPages,
         divergencesOnMyPages,
       ].some((strand) => strand.length >= limit),
     };
+  }
+
+  /**
+   * Overwrite `approverId` with the DRAFT's approver, for pages in review.
+   *
+   * `QueryResultPage.approverId` is `pages.approver_id` — the approver of the
+   * PUBLISHED version, which answers a different question and is NULL on a page
+   * that has never published. So the one strand whose whole purpose is "who has
+   * my work" was reading null and the screen said "waiting on anyone who can
+   * approve it" precisely when somebody had been named. A test caught it.
+   *
+   * The draft's `fields_json` is where `approve` reads its approver from, and
+   * where `awaitingApprovalBy` matches — so this reads the same column the
+   * enforcement does, and the author is told to chase the person who will
+   * actually decide. Null stays null on a type that names no single approver
+   * (a Plan), and the screen says so rather than inventing a name.
+   */
+  private withDraftApprover(pages: QueryResultPage[]): QueryResultPage[] {
+    if (!pages.length) return pages;
+    const stmt = this.db.prepare(
+      "SELECT json_extract(fields_json, '$.approverId') AS approver_id FROM drafts WHERE page_id = ?",
+    );
+    return pages.map((page) => {
+      const row = stmt.get(page.pageId) as { approver_id: string | null } | undefined;
+      return { ...page, approverId: row?.approver_id ?? page.approverId };
+    });
   }
 
   /**
