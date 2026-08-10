@@ -768,6 +768,31 @@ test('register: generating one is audited, and the HTML rendering is self-contai
   assert.match(html, /Compliance/);
 });
 
+// A bundle and the audit-chain copy are built to leave the company — an auditor,
+// a regulator, a customer's counsel reads them. An internal filename in one is a
+// leak of how the team works and a dangling reference to a document the reader
+// cannot see. The substance stays; the filename goes.
+test('register: nothing customer-facing cites an internal filename', async () => {
+  const { store, dana, collection } = await history();
+
+  // The register attestation, in bundle and rendered form.
+  const bundle = store.collectionAttestation(dana.id, collection.id, { at: '2026-06-01', format: 'html' });
+  const asserts = bundle.manifest.asserts.join('\n');
+  // The backdating assertion is still made — just without naming where it was
+  // once missed.
+  assert.match(asserts, /effective date preceding their own first publication/);
+  assert.doesNotMatch(asserts, /USER-TESTING/);
+  const { renderCollectionAttestationHtml } = await import('../src/attestation.js');
+  assert.doesNotMatch(renderCollectionAttestationHtml(bundle), /USER-TESTING/);
+
+  // The audit-chain verification copy still tells an operator to carry the head
+  // off-box — just without naming the runbook that spells out how.
+  const chain = store.verifyAuditChain(dana.id);
+  assert.match(chain.externalAnchor, /off-box/);
+  assert.doesNotMatch(chain.externalAnchor, /OPERATIONS\.md/);
+  assert.equal(JSON.stringify(chain).includes('OPERATIONS.md'), false);
+});
+
 // ---------------------------------------------------------------------------
 // Permission
 

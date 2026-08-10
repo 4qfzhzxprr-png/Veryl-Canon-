@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { forbiddenRole } from './abilities.js';
+import { forbiddenRole, notFoundIfStranger } from './abilities.js';
 import { Actor, ActorKind, actorNameForMessage, CanonError, Role, ROLE_RANK } from './model.js';
 import type { Notifier } from './notify.js';
 
@@ -293,6 +293,9 @@ export class CommentService {
 
   list(actorId: string, pageId: string): Comment[] {
     const page = this.page(pageId);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist rather than which collection refuses them.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such page: ${pageId}`);
     this.requireRole(actorId, page.collectionId, 'view');
     const rows = this.db
       .prepare(

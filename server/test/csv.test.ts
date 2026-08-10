@@ -74,6 +74,22 @@ test('csv: RFC 4180 escaping of quotes, commas, newlines and edge whitespace', (
   assert.equal(csvRow(['a', 'b,c']), 'a,"b,c"\r\n', 'records end with CRLF');
 });
 
+// The saved file must carry the same permission-filtered caveat the screen and
+// the attestation bundle do: an auditor opening it later has only the bytes, no
+// response headers, and the row count reads as the log's own total unless the
+// file says otherwise. The caveat leads the file, and names no hidden count.
+test('csv: the export opens with the permission-filtered caveat, ahead of the header', () => {
+  const empty = auditCsv([]);
+  const [firstLine, secondLine] = empty.split('\r\n');
+  assert.ok(firstLine!.startsWith('# '), 'the first line is a comment');
+  assert.match(firstLine!, /PERMISSION-FILTERED/);
+  assert.match(firstLine!, /not a claim that nothing else exists/);
+  assert.equal(secondLine, 'id,at,actor_id,actor_kind,action,collection_id,page_id,details');
+  // It states scope, never a number: how much a limited reader cannot see is
+  // exactly what must not travel.
+  assert.doesNotMatch(firstLine!, /\d/);
+});
+
 test('csv: the audit export survives a round trip through a strict reader', () => {
   const events: AuditEvent[] = [
     {
@@ -97,10 +113,15 @@ test('csv: the audit export survives a round trip through a strict reader', () =
       details: { file: 'Benefits, Overview_1.html', outcome: 'imported' },
     },
   ];
-  const rows = parseCsv(auditCsv(events));
-  assert.equal(rows.length, 3);
-  assert.deepEqual(rows[0], [...AUDIT_CSV_COLUMNS]);
-  assert.deepEqual(rows[1], [
+  const raw = auditCsv(events);
+  // The first line is the permission-filtered caveat, a `#` comment ahead of the
+  // header row so it survives the saved file (see AUDIT_CSV_SCOPE_NOTE).
+  assert.ok(raw.startsWith('# PERMISSION-FILTERED:'), 'the file opens with the scope caveat');
+  assert.match(raw, /not a claim that nothing else exists/);
+  const rows = parseCsv(raw);
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows[1], [...AUDIT_CSV_COLUMNS]);
+  assert.deepEqual(rows[2], [
     '1',
     '2026-07-30T09:00:00.000Z',
     'actor-1',
@@ -111,9 +132,9 @@ test('csv: the audit export survives a round trip through a strict reader', () =
     JSON.stringify(events[0]!.details),
   ]);
   // The details column holds JSON with a quote and a newline in one field.
-  assert.deepEqual(JSON.parse(rows[1]![7]!), events[0]!.details);
-  assert.deepEqual(rows[2]!.slice(5, 7), ['', ''], 'a null column is an empty field, not the word null');
-  assert.deepEqual(JSON.parse(rows[2]![7]!).file, 'Benefits, Overview_1.html');
+  assert.deepEqual(JSON.parse(rows[2]![7]!), events[0]!.details);
+  assert.deepEqual(rows[3]!.slice(5, 7), ['', ''], 'a null column is an empty field, not the word null');
+  assert.deepEqual(JSON.parse(rows[3]![7]!).file, 'Benefits, Overview_1.html');
 });
 
 test('API: GET /audit.csv downloads the filtered log as CSV', async () => {
@@ -136,18 +157,20 @@ test('API: GET /audit.csv downloads the filtered log as CSV', async () => {
     assert.equal(res.headers.get('x-canon-row-cap'), String(AUDIT_CSV_MAX_ROWS));
     assert.equal(res.headers.get('x-canon-truncated'), 'false');
 
-    const rows = parseCsv(await res.text());
-    assert.deepEqual(rows[0], [...AUDIT_CSV_COLUMNS]);
-    const actions = rows.slice(1).map((r) => r[4]);
+    const body = await res.text();
+    assert.ok(body.startsWith('# PERMISSION-FILTERED:'), 'the download opens with the scope caveat');
+    const rows = parseCsv(body);
+    assert.deepEqual(rows[1], [...AUDIT_CSV_COLUMNS]);
+    const actions = rows.slice(2).map((r) => r[4]);
     assert.ok(actions.includes('page.publish') && actions.includes('collection.create'));
 
     // The same filters as GET /audit.
     const filtered = parseCsv(
       await (await fetch(`${base}/audit.csv?action=page.publish`, { headers: { 'x-actor-id': dana.id } })).text(),
     );
-    assert.equal(filtered.length, 2);
-    assert.equal(filtered[1]![4], 'page.publish');
-    assert.equal(filtered[1]![6], page.id);
+    assert.equal(filtered.length, 3); // caveat, header, one matching row
+    assert.equal(filtered[2]![4], 'page.publish');
+    assert.equal(filtered[2]![6], page.id);
 
     // `limit` is REFUSED rather than honoured, and refused rather than
     // ignored. An export bounded by a caller's row count is a sample wearing a
@@ -185,7 +208,7 @@ test('csv: the export carries the whole filtered population, past one page of it
   assert.ok(total > AUDIT_PAGE_DEFAULT, `needs more than one page to be a real test, had ${total}`);
 
   const response = store.auditCsv(dana.id);
-  const records = response.body.split('\r\n').filter(Boolean).length - 1; // less the header
+  const records = response.body.split('\r\n').filter((l) => Boolean(l) && !l.startsWith('#')).length - 1; // less the header
   assert.equal(records, total, 'every matching event is in the file');
   assert.equal(response.headers['x-canon-rows'], String(total));
   assert.equal(response.headers['x-canon-truncated'], 'false');
@@ -194,7 +217,7 @@ test('csv: the export carries the whole filtered population, past one page of it
   // A filter narrows the file, and the file is still the WHOLE of what matched.
   const filtered = store.auditCsv(dana.id, { action: 'page.create' });
   assert.equal(
-    filtered.body.split('\r\n').filter(Boolean).length - 1,
+    filtered.body.split('\r\n').filter((l) => Boolean(l) && !l.startsWith('#')).length - 1,
     store.auditSummary(dana.id, { action: 'page.create' }).matching,
   );
 });

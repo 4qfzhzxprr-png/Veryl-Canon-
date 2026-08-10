@@ -360,7 +360,9 @@ test('permissions: a source referenced by a page the viewer cannot see is not on
 test('permissions: a non-member is refused, and an unknown collection or actor is not found', () => {
   const { store, marc, outsider, collection } = setup();
   note(store, marc.id, collection.id, 'Handbook');
-  expectCode(() => store.collectionGraph(outsider.id, collection.id), 'forbidden');
+  // A non-member holds NO role here, so the map answers exactly as it does for
+  // a collection that never existed — existence, never identity.
+  expectCode(() => store.collectionGraph(outsider.id, collection.id), 'not_found');
   expectCode(() => store.collectionGraph(marc.id, 'no-such-collection'), 'not_found');
   expectCode(() => store.collectionGraph('no-such-actor', collection.id), 'not_found');
 });
@@ -442,13 +444,26 @@ test('API: GET /collections/:id/graph serves the map, and refuses a non-member',
     assert.equal(graph.edges.length, 1);
     assert.equal(graph.edges[0]?.kind, 'child');
 
+    // A non-member holds NO role here, so the map answers exactly as it does
+    // for a collection that never existed: a 404 whose body names nothing, not
+    // a 403 that would hand over the collection's name and id (existence, never
+    // identity).
     const refused = await fetch(`${base}/collections/${collection.id}/graph`, {
       headers: { 'x-actor-id': outsider.id },
     });
-    assert.equal(refused.status, 403);
+    assert.equal(refused.status, 404);
+    const refusedBody = (await refused.json()) as { error: string; message: string };
+    assert.equal(refusedBody.error, 'not_found');
+    assert.equal(refusedBody.message.includes('Compliance'), false, 'the collection is not named');
 
     const missing = await fetch(`${base}/collections/nope/graph`, { headers: { 'x-actor-id': dana.id } });
     assert.equal(missing.status, 404);
+    const missingBody = (await missing.json()) as { message: string };
+    assert.equal(
+      refusedBody.message.replace(collection.id, '<id>'),
+      missingBody.message.replace('nope', '<id>'),
+      'a hidden collection and a nonexistent one answer word for word the same',
+    );
 
     const anonymous = await fetch(`${base}/collections/${collection.id}/graph`);
     assert.equal(anonymous.status, 401);

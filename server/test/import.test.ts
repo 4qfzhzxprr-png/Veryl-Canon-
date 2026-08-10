@@ -221,6 +221,70 @@ test('import: a truncated export is named as truncated, not as an empty page', (
   assert.equal(logged.details.reason, broken.reason);
 });
 
+// Round-seven's truncation was caught only because NOTHING survived the
+// unclosed comment: the file parsed to an empty body and tripped the
+// empty-document branch. A file with readable content BEFORE the unclosed
+// comment parses to a non-empty body — `parseHtml` swallows only from the last
+// `<!--` to EOF — so it slipped past that branch entirely and imported as a
+// clean page with its tail silently dropped. A page that is missing its end,
+// presented as whole, is the worst outcome an importer can have.
+test('import: a file truncated after some surviving content is failed, not imported clean', () => {
+  const { store, marc, collection } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'canon-import-trunc-'));
+  // A paragraph that survives, then an unclosed comment, then a paragraph that
+  // is dropped. The title comes from the content, so the body is non-empty and
+  // the empty-document branch never sees this file.
+  writeFileSync(
+    join(root, 'Retention.html'),
+    [
+      '<html><head><title>Retention Policy</title></head><body>',
+      '<p>Records are kept for seven years.</p>',
+      '<!--',
+      '<p>Destroy after the retention window closes; escalate exceptions to Legal.</p>',
+      '</body></html>',
+    ].join('\n'),
+  );
+  try {
+    const summary = store.runImport(marc.id, { source: 'google-docs', path: root, collectionId: collection.id });
+    const result = byFile(summary, 'Retention.html');
+
+    assert.equal(result.outcome, 'failed', 'a truncated file must not import as a clean page');
+    assert.equal(result.pageId, null, 'and no page is written for it');
+    assert.equal(summary.counts.imported, 0);
+    assert.equal(summary.counts.failed, 1);
+    // The cause, in the operator's words, and what to do about it.
+    assert.match(result.reason ?? '', /stops inside a comment that is never closed/);
+    assert.match(result.reason ?? '', /re-export this page/);
+    // The dropped tail is nowhere in the record: nothing was imported.
+    assert.equal(store.tree(marc.id, collection.id).length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The other direction: a whole file that merely ENDS with a dangling comment
+// opener and nothing after it lost nothing, and must still import cleanly — the
+// truncation guard keys on content actually dropped, not on the bare presence
+// of an unclosed marker.
+test('import: a file ending in an empty dangling comment still imports, nothing was lost', () => {
+  const { store, marc, collection } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'canon-import-whole-'));
+  writeFileSync(
+    join(root, 'Whole.html'),
+    '<html><head><title>Whole Page</title></head><body><p>All of the content is here.</p></body></html>\n<!--',
+  );
+  try {
+    const summary = store.runImport(marc.id, { source: 'google-docs', path: root, collectionId: collection.id });
+    const result = byFile(summary, 'Whole.html');
+    assert.equal(result.outcome, 'imported', 'nothing was dropped, so the page is whole');
+    assert.ok(result.pageId);
+    assert.equal(summary.counts.imported, 1);
+    assert.equal(summary.counts.failed, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('import: re-running a run id is idempotent, and changed files become new versions', () => {
   const { store, marc, collection } = setup();
   const scratch = mkdtempSync(join(tmpdir(), 'canon-import-'));

@@ -20,6 +20,33 @@ export const DOC_TYPES: readonly DocType[] = ['policy', 'spec', 'plan', 'note'];
 // Canonical through the ordinary review workflow — there is no second path.
 export type PageStatus = 'draft' | 'in_review' | 'canonical' | 'needs_update' | 'archived';
 
+/**
+ * A page's OWN standing while a REVISION of it is in review.
+ *
+ * Submitting an edit to a marked page does `UPDATE pages SET status='in_review'`,
+ * overwriting the column with the DRAFT's standing — but the page itself still
+ * holds the mark: `current_version` still equals `marked_version`, and Ask still
+ * draws on that version. So there are two facts, not one — the page's standing
+ * and its draft's — and a surface that shows only `status` reads a Canonical
+ * page as unreviewed. This derives the page's own standing (`canonical` or
+ * `needs_update`, exactly as `statusAfterReview` would compute it if review
+ * ended now with no change) so a surface can show it WITH the revision noted
+ * separately. Returns null when `status` already tells the whole story: the page
+ * is not in review, or its in-review draft is a first submission over no prior
+ * mark, where "In Review" is the only standing there is.
+ */
+export function revisionUnderReviewStanding(
+  row: Record<string, unknown>,
+  today: string,
+): PageStatus | null {
+  if (row.status !== 'in_review') return null;
+  const current = (row.current_version as number) ?? null;
+  const marked = (row.marked_version as number) ?? null;
+  if (current === null || marked === null || current !== marked) return null;
+  const reviewDate = (row.review_date as string) ?? null;
+  return reviewDate && reviewDate < today ? 'needs_update' : 'canonical';
+}
+
 // Collection roles, ranked. A higher role implies every lower one.
 export type Role = 'view' | 'comment' | 'edit' | 'approve' | 'admin';
 export const ROLE_RANK: Record<Role, number> = {
@@ -221,6 +248,15 @@ export interface Page {
   type: DocType;
   title: string;
   status: PageStatus;
+  /**
+   * The page's own standing when a REVISION is in review over a still-marked
+   * version — `canonical` or `needs_update` — so a surface can show the page's
+   * standing and note the revision separately, rather than reading `status`
+   * (which is `in_review`, the DRAFT's standing) as the page's own. Null
+   * whenever `status` already tells the whole story. Derived, never stored; see
+   * `revisionUnderReviewStanding`.
+   */
+  pageStanding: PageStatus | null;
   ownerId: string | null;
   approverId: string | null;
   effectiveDate: string | null;

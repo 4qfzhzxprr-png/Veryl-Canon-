@@ -644,6 +644,92 @@ test('oracle: an import run in a collection you hold no role in reads as no such
   }
 });
 
+test('oracle: a page or collection you hold no role in reads as one that never existed, across every read', async () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const compliance = store.createCollection(dana.id, { name: 'Compliance', restricted: true });
+  const page = store.createPage(dana.id, { collectionId: compliance.id, type: 'note', title: 'Salary bands' });
+  store.editDraft(dana.id, page.id, { body: 'Band 4 tops out at 92,000.', fields: { ownerId: dana.id } });
+
+  const outsider = store.createActor({ kind: 'person', name: 'Mallory' });
+  const FAKE_PAGE = 'a4f0b1c2-0000-4000-8000-000000000000';
+  const FAKE_COLL = 'b5f1c2d3-0000-4000-8000-000000000000';
+
+  const expectAsync = async (p: Promise<unknown>, codeExpected: string): Promise<CanonError> => {
+    try {
+      await p;
+    } catch (err) {
+      assert.ok(err instanceof CanonError, `expected CanonError, got ${err}`);
+      assert.equal(err.code, codeExpected, `expected ${codeExpected}, got ${err.code}: ${err.message}`);
+      return err;
+    }
+    assert.fail(`expected ${codeExpected}, but the call resolved`);
+  };
+
+  // EXISTENCE, NEVER IDENTITY. `GET /pages/:id/related` already answers a hidden
+  // page with the same 404 a nonexistent one gets; every base read must match
+  // it. A stranger's refusal (holds NO role on the collection) must be BYTE
+  // IDENTICAL to the genuinely-nonexistent case — no collection name, no id, no
+  // needed/held role — so the pair cannot be an existence oracle.
+  const pageReads: [string, () => CanonError][] = [
+    ['getPage', () => expectCode(() => store.getPage(outsider.id, page.id), 'not_found')],
+    ['getDraft', () => expectCode(() => store.getDraft(outsider.id, page.id), 'not_found')],
+    ['listComments', () => expectCode(() => store.listComments(outsider.id, page.id), 'not_found')],
+    ['listRelations', () => expectCode(() => store.listRelations(outsider.id, page.id), 'not_found')],
+    ['listReferences', () => expectCode(() => store.listReferences(outsider.id, page.id), 'not_found')],
+  ];
+  for (const [name, run] of pageReads) {
+    const hidden = run();
+    const missing = expectCode(() => store.getPage(outsider.id, FAKE_PAGE), 'not_found');
+    assert.equal(
+      hidden.message.replace(page.id, '<id>'),
+      missing.message.replace(FAKE_PAGE, '<id>'),
+      `${name}: a hidden page and a nonexistent one are word for word the same`,
+    );
+    const wire = JSON.stringify({ message: hidden.message, ...hidden.details });
+    assert.equal(wire.includes(compliance.id), false, `${name}: no collection id leaks`);
+    assert.equal(wire.includes('Compliance'), false, `${name}: no collection name leaks`);
+    assert.equal(wire.includes('view role'), false, `${name}: no needed/held role leaks`);
+  }
+
+  // The async read (resolveReferences reaches sources) is on the same footing.
+  const hiddenResolve = await expectAsync(store.resolveReferences(outsider.id, page.id), 'not_found');
+  assert.equal(hiddenResolve.message.replace(page.id, '<id>'), `No such page: <id>`);
+
+  // The two collection reads, and the map, likewise.
+  const collReads: [string, () => CanonError][] = [
+    ['getCollection', () => expectCode(() => store.getCollection(outsider.id, compliance.id), 'not_found')],
+    ['listMembers', () => expectCode(() => store.listMembers(outsider.id, compliance.id), 'not_found')],
+    ['collectionGraph', () => expectCode(() => store.collectionGraph(outsider.id, compliance.id), 'not_found')],
+  ];
+  for (const [name, run] of collReads) {
+    const hidden = run();
+    const missing = expectCode(() => store.getCollection(outsider.id, FAKE_COLL), 'not_found');
+    assert.equal(
+      hidden.message.replace(compliance.id, '<id>'),
+      missing.message.replace(FAKE_COLL, '<id>'),
+      `${name}: a hidden collection and a nonexistent one are word for word the same`,
+    );
+    assert.equal(hidden.message.includes('Compliance'), false, `${name}: no collection name leaks`);
+  }
+
+  // THE OTHER DIRECTION, PINNED. A member who DOES hold a role keeps the
+  // informative refusal — the leak was only the no-role case. A `view`-holder
+  // refused a draft (which needs `edit`) is told, in the collection's name,
+  // what the act needs and who holds it, so the request-access wall can offer
+  // the ask.
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  store.setMember(dana.id, compliance.id, marc.id, 'view');
+  const informed = expectCode(() => store.getDraft(marc.id, page.id), 'forbidden');
+  assert.match(informed.message, /edit role on Compliance/);
+  assert.equal(informed.details.collectionId, compliance.id, 'the wall reads { collectionId, held } off it');
+  assert.equal(informed.details.held, 'view');
+  // And a view-holder reads the page, the comments and the collection as before.
+  assert.equal(store.getPage(marc.id, page.id).title, 'Salary bands');
+  assert.deepEqual(store.listComments(marc.id, page.id), []);
+  assert.equal(store.getCollection(marc.id, compliance.id).name, 'Compliance');
+});
+
 // ---------------------------------------------------------------------------
 // R5 — audit events naming no collection were visible to everyone
 

@@ -409,6 +409,23 @@ function badge(status, size = '') {
   return `<span class="badge badge-${esc(status)} ${size}"${title}>${esc(label)}</span>`;
 }
 
+// A page has TWO standings at once while a marked page is being edited: its own
+// last Canonical (or Needs Update) standing — what a reader may rely on right
+// now, and what Ask still draws on — and its DRAFT's, which is In Review.
+// Submitting a revision overwrites `status` with the draft's, so a plain
+// `badge(page.status)` reads a Canonical page with a pending edit as unreviewed.
+// The server carries the page's own standing separately in `pageStanding` (set
+// only while a revision is in review over a still-marked version); where it is
+// present, show it, with the revision noted BESIDE it rather than in place of
+// it — "Canonical · revision in review". Everywhere else this is just `badge`.
+function pageBadge(page, size = '') {
+  const standing = page && page.pageStanding;
+  if (!standing) return badge(page && page.status, size);
+  const note = `A revision of this page is in review; its ${STATUS_LABELS[standing] ?? standing} version is ` +
+    'still the record’s own answer until the revision is approved.';
+  return `${badge(standing, size)}<span class="revision-note ${esc(size)}" title="${esc(note)}"> · revision in review</span>`;
+}
+
 /**
  * The key. One row per status, each saying whether a reader may rely on the
  * page — the treatment Needs Update already got, given to the other four.
@@ -1420,7 +1437,10 @@ function supersededChipHTML(mark) {
 function searchHitHTML(it, { withCollection = null } = {}) {
   const id = it.pageId ?? it.id;
   const title = it.title ?? '(untitled)';
-  const status = it.status ? badge(it.status, 'sm') : '';
+  // The page's own standing, with a pending revision noted separately: a reader
+  // arriving through search at a Canonical page with an edit in review must not
+  // read it as unreviewed (its Canonical version is still the answer).
+  const status = it.status ? pageBadge(it, 'sm') : '';
   // Beside the status and not instead of it: both are true, and a superseded
   // Draft and a superseded Canonical page are different situations.
   const superseded = supersededChipHTML(it.supersededBy);
@@ -2861,7 +2881,7 @@ function collectionContentsHTML(tree) {
               here: this is the screen somebody chooses a page FROM, and a
               chip that says only DRAFT over a page the record has replaced
               sends them into it none the wiser. See supersededChipHTML. */ ''}
-        <td class="nowrap">${badge(n.status, 'sm')} ${supersededChipHTML(n.supersededBy)}</td>
+        <td class="nowrap">${pageBadge(n, 'sm')} ${supersededChipHTML(n.supersededBy)}</td>
         <td>${n.ownerId ? actorLabel(n.ownerId) : '<span class="muted">—</span>'}</td>
         ${/* For a page In Review this is the approver the server will accept —
               the draft's, the same one the queue is built on — so a queue can
@@ -3714,7 +3734,7 @@ async function viewPage(id) {
       <section class="main">
         <p class="breadcrumb"><a href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a></p>
         <div class="page-head">
-          <h1 class="doc-title">${esc(page.title)} ${badge(page.status)}</h1>
+          <h1 class="doc-title">${esc(page.title)} ${pageBadge(page)}</h1>
           <div class="actions">${actions.join('')}</div>
         </div>
         ${refusalNote}${askAccess}
@@ -3730,7 +3750,7 @@ async function viewPage(id) {
         <dl class="field-block">
           <div><dt>Type</dt><dd>${esc(TYPE_LABELS[page.type] ?? page.type)}</dd></div>
           ${Array.isArray(page.aliases) && page.aliases.length ? `<div><dt>Also known as</dt><dd>${page.aliases.map((a) => esc(a)).join(', ')}</dd></div>` : ''}
-          <div><dt>Status</dt><dd>${badge(page.status)}</dd></div>
+          <div><dt>Status</dt><dd>${pageBadge(page)}</dd></div>
           ${rules.owner || page.ownerId ? `<div><dt>Owner</dt><dd>${pendingFieldCell(page.ownerId, pendingOf('ownerId'), actorLabel, hasPublished)}</dd></div>` : ''}
           ${rules.approver || page.approverId ? `<div><dt>Approver</dt><dd>${pendingFieldCell(page.approverId, pendingOf('approverId'), actorLabel, hasPublished)}</dd></div>` : ''}
           ${/* The basis is shown wherever the date is. The editor makes an
@@ -6340,9 +6360,14 @@ function auditCountLine(shownCount, matching) {
     return `These filters match ${n.toLocaleString()} event${n === 1 ? '' : 's'}, but none of them came back ` +
       'with this page of the log. Reload before treating this as an empty result.';
   }
+  // Every count on this screen is PERMISSION-FILTERED to the reader — the same
+  // property the attestation bundle spells out (attestation.ts BUNDLE_LIMITS).
+  // "you can see" keeps the number from being read as the record's own total: a
+  // non-admin's 1,098 is the events THEY may see, and the log holds more. The
+  // hidden count is never named.
   return shownCount >= n
-    ? `${n.toLocaleString()} event${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} these filters. All of them are shown.`
-    : `Showing the ${shownCount.toLocaleString()} most recent of ${n.toLocaleString()} matching events.`;
+    ? `${n.toLocaleString()} event${n === 1 ? '' : 's'} you can see match${n === 1 ? 'es' : ''} these filters. All of them are shown.`
+    : `Showing the ${shownCount.toLocaleString()} most recent of ${n.toLocaleString()} matching events you can see.`;
 }
 
 /** The heading over an empty table, which may only claim absence when the
@@ -6457,7 +6482,10 @@ async function viewAudit(query = {}) {
             draw the Attestation button. So the check ran on this screen and
             nobody was ever shown what it said. */ ''}
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
-      material, attributed to its actor.
+      material, attributed to its actor. The counts and totals on this screen — the
+      action list, and the number of matching events — cover only what you can see;
+      the record may hold more that your role does not, and these numbers are not a
+      claim that nothing else exists.
       <button class="btn subtle" id="audit-verify" type="button">Check the chain</button></p>
       <div id="audit-verdict" aria-live="polite"></div>
       <form id="audit-filters" class="inline-form">
@@ -6655,9 +6683,13 @@ async function viewAudit(query = {}) {
   // hard-coded array here that had drifted: ten action types the record writes
   // were absent from it, and four it offered have never been written.
   const fillActions = (actions, selected) => {
+    // The total is the sum of the per-action counts the server returned, which
+    // are PERMISSION-FILTERED to this reader — so "you can see" travels with it,
+    // for the same reason the count line and the header carry it: the number is
+    // this reader's, not the record's.
     const total = actions.reduce((n, a) => n + a.count, 0);
     form.action.innerHTML =
-      `<option value="">All actions (${total.toLocaleString()})</option>` +
+      `<option value="">All actions you can see (${total.toLocaleString()})</option>` +
       actions
         .map((a) => `<option value="${esc(a.action)}"${a.action === selected ? ' selected' : ''}>${esc(a.action)} (${a.count.toLocaleString()})</option>`)
         .join('');

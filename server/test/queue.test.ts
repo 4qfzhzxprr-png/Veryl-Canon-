@@ -153,7 +153,8 @@ test('the queue: a page I cannot see is in nobody\'s queue, however it is asked 
   assert.deepEqual(store.myQueue(dana.id).awaitingMyApproval, []);
   // The page is still there, and still waiting on somebody who can see it.
   assert.deepEqual(store.myQueue(chair.id).awaitingMyApproval, []); // named approver is Marcus
-  expectCode(() => store.getPage(marcus.id, boardPage.id), 'forbidden');
+  // Membership withdrawn, he holds nothing on the board: the page reads as gone.
+  expectCode(() => store.getPage(marcus.id, boardPage.id), 'not_found');
 });
 
 // ---- the other strands --------------------------------------------------

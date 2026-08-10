@@ -338,9 +338,13 @@ test('API: GET /search returns permission-filtered, highlighted results', async 
     // say".
     assert.deepEqual(
       Object.keys(hits.json[0]).sort(),
-      ['collectionId', 'ownerId', 'pageId', 'snippet', 'status', 'supersededBy', 'title', 'type'],
+      ['collectionId', 'ownerId', 'pageId', 'pageStanding', 'snippet', 'status', 'supersededBy', 'title', 'type'],
     );
     assert.equal(hits.json[0].supersededBy, null);
+    // Present and null when there is no revision in review, the same way
+    // supersededBy is: a client can tell "no pending revision" from "this read
+    // does not say" (see revisionUnderReviewStanding).
+    assert.equal(hits.json[0].pageStanding, null);
 
     const filtered = await call(`/search?q=vault&type=note&collection=${collection.id}`, dana.id);
     assert.equal(filtered.json.length, 1);

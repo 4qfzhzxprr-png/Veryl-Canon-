@@ -35,7 +35,10 @@ function expectCode(fn: () => unknown, code: string) {
 test('permissions: a non-member cannot see or write to a collection', () => {
   const { store, collection } = setup();
   const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
-  expectCode(() => store.getCollection(outsider.id, collection.id), 'forbidden');
+  // Reading a collection you hold no role in answers as if it did not exist:
+  // the refusal must not confirm the collection is there (existence, never
+  // identity). Writing to it is still an informative forbidden.
+  expectCode(() => store.getCollection(outsider.id, collection.id), 'not_found');
   expectCode(
     () => store.createPage(outsider.id, { collectionId: collection.id, type: 'note', title: 'Sneak' }),
     'forbidden',
@@ -91,7 +94,9 @@ test('abilities: an administrator of the Canon may administer a membership, and 
 test('abilities: reading a collection’s abilities needs `view`, like the collection itself', () => {
   const { store, collection } = setup();
   const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
-  expectCode(() => store.collectionAbilities(outsider.id, collection.id), 'forbidden');
+  // It reads through `getCollection`, so a stranger meets the same not_found the
+  // collection's genuine absence gives — existence, never identity.
+  expectCode(() => store.collectionAbilities(outsider.id, collection.id), 'not_found');
 });
 
 test('a refusal names who can only to somebody who could already have looked', () => {
@@ -100,12 +105,22 @@ test('a refusal names who can only to somebody who could already have looked', (
   // table and every comment on every page in it, so this gives nothing away.
   assert.match(store.collectionAbilities(marc.id, collection.id).removeMember.why!, /Dana holds it/);
 
-  // A non-member is told where to go instead. The same sentence with names in
-  // it would be a restricted collection's staff list, handed out by a 403.
+  // A non-member is told NOTHING — not the names, not the collection's own
+  // name, not that it is there at all. A 403 naming the collection is an
+  // existence oracle (a real hidden id would name it, a fake id would not), so
+  // a stranger to the collection meets the same not_found its genuine absence
+  // gives, and it carries neither "Compliance", nor a held/needed role, nor a
+  // name to ask.
   const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
-  const refused = expectCode(() => store.getCollection(outsider.id, collection.id), 'forbidden');
-  assert.match(refused.message, /This needs the view role on Compliance; you hold none there\./);
-  assert.match(refused.message, /An administrator of this collection can grant it\.$/);
+  const refused = expectCode(() => store.getCollection(outsider.id, collection.id), 'not_found');
+  const invented = expectCode(() => store.getCollection(outsider.id, 'no-such-collection-id'), 'not_found');
+  assert.equal(
+    refused.message.replace(collection.id, '<id>'),
+    invented.message.replace('no-such-collection-id', '<id>'),
+    'a hidden collection and a nonexistent one are word for word the same',
+  );
+  assert.ok(!refused.message.includes('Compliance'), 'the collection is not named');
+  assert.ok(!refused.message.includes('view role'), 'no held or needed role is disclosed');
   assert.ok(!refused.message.includes('Dana'), 'a non-member is told nobody’s name');
 });
 
@@ -315,7 +330,9 @@ test('a refused read of restricted material is on the record, like a read of it'
   const page = store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Calibration' });
   const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
 
-  expectCode(() => store.getPage(outsider.id, page.id), 'forbidden');
+  // The read is refused as a not_found (existence, never identity), but the
+  // refusal on restricted material is on the record all the same.
+  expectCode(() => store.getPage(outsider.id, page.id), 'not_found');
 
   const refusals = store.queryAudit(dana.id, { action: 'page.view_refused' });
   assert.equal(refusals.length, 1, 'the refusal is on the record');

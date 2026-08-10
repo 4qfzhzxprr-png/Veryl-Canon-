@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { forbiddenRole } from './abilities.js';
+import { forbiddenRole, notFoundIfStranger } from './abilities.js';
 import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
 import { Asker, ConnectorRegistry, ResolveRequest } from './connectors.js';
 import { Source, SourceAuthMode, SourceService } from './sources.js';
@@ -327,6 +327,9 @@ export class ReferenceService {
    */
   list(actorId: string, pageId: string): PageReference[] {
     const page = this.page(pageId);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist rather than which collection refuses them.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such page: ${pageId}`);
     this.requireRole(actorId, page.collectionId, 'view');
     const rows = this.db
       .prepare('SELECT id FROM page_references WHERE page_id = ? ORDER BY created_at, id')
@@ -346,7 +349,10 @@ export class ReferenceService {
     const actor = this.host.getActor(actorId);
     const page = this.page(pageId);
     // Canon's own permission first, always. Nothing reaches a source on
-    // behalf of an actor who may not read the page.
+    // behalf of an actor who may not read the page. A stranger to the
+    // collection is told the page does not exist (abilities.ts), never which
+    // collection would refuse them.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such page: ${pageId}`);
     this.requireRole(actorId, page.collectionId, 'view');
 
     const references = this.db

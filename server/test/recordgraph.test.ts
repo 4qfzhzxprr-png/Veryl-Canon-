@@ -377,8 +377,9 @@ test('record: GET /collections/:id/graph is unchanged — same payload, same rul
   assert.equal(neighbour.external, true, 'and still marks the neighbour as external');
   assert.ok(perCollection.generatedAt);
   // A non-member is still refused there, which is the difference between a map
-  // OF a collection and a map of the record.
-  expectCode(() => store.collectionGraph(marc.id, board.id), 'forbidden');
+  // OF a collection and a map of the record. Holding no role, the refusal is a
+  // not_found — the collection's identity is not disclosed by refusing it.
+  expectCode(() => store.collectionGraph(marc.id, board.id), 'not_found');
   assert.ok(handbook);
 });
 

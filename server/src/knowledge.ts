@@ -290,14 +290,23 @@ function effectiveCollections(call: KnowledgeCall): EffectiveCollection[] {
 }
 
 /**
- * A page's collection, established through the PERSON — which is both the
- * lookup and the person's view check in one call, in the store's own code.
- * A page that does not exist is a not_found from the store, untouched; a page
- * the person may not see is a person refusal.
+ * A page's collection, and the PERSON's view check on it.
+ *
+ * The collection is resolved by existence alone (`pageCollectionId`): a page
+ * that does not exist is a plain not_found, untouched. The person's half is
+ * then asked as `requirePerson`, so a page the person may not see is the
+ * labelled `person_not_permitted` refusal the Studio contract requires.
+ *
+ * This no longer reads through `getPage(person)`: that call's refusal to a
+ * stranger is now the existence-masking not_found a missing page gives (P1,
+ * abilities.ts) — right for a human at the boundary, but it would turn "the
+ * person holds no role" into a bare "no such page" for an app that can plainly
+ * see the page, losing the intersection's whose-refusal-is-it answer.
  */
 function pageCollectionForPerson(call: KnowledgeCall, pageId: string): string {
+  const collectionId = call.store.pageCollectionId(pageId);
   try {
-    return call.store.getPage(call.person.id, pageId).collectionId;
+    call.store.requireRoleFor(call.person.id, collectionId, 'view');
   } catch (err) {
     if (err instanceof CanonError && err.code === 'forbidden') {
       throw new CanonError(
@@ -308,12 +317,14 @@ function pageCollectionForPerson(call: KnowledgeCall, pageId: string): string {
           reason: 'person_not_permitted',
           refusedBy: 'person',
           onBehalfOf: call.person.id,
+          collectionId,
           pageId,
         },
       );
     }
     throw err;
   }
+  return collectionId;
 }
 
 // ---- audit --------------------------------------------------------------
@@ -427,6 +438,11 @@ export const KNOWLEDGE_ROUTES: KnowledgeRouteSpec[] = [
   knowledge('GET', `${KNOWLEDGE_PREFIX}/collections/:id`, 'collection', async (call) => {
     const collectionId = call.params.id!;
     requirePerson(call, collectionId, 'view');
+    // The app's half is asked directly rather than left to `getCollection`'s
+    // refusal shape: a stranger's refusal there is now the existence-masking
+    // not_found (P1, abilities.ts), which `asApp` would pass through as a bare
+    // 404 instead of the labelled `app_not_permitted` this surface promises.
+    requireApp(call, collectionId, 'view');
     const result = await asApp(call, () => call.store.getCollection(call.app.actorId, collectionId));
     return { result, collectionId };
   }),
@@ -447,6 +463,11 @@ export const KNOWLEDGE_ROUTES: KnowledgeRouteSpec[] = [
   knowledge('GET', `${KNOWLEDGE_PREFIX}/pages/:id`, 'page', async (call) => {
     const pageId = call.params.id!;
     const collectionId = pageCollectionForPerson(call, pageId);
+    // The app's half, asked directly: `getPage`'s refusal to a stranger is now
+    // the existence-masking not_found (P1, abilities.ts), so the labelled
+    // `app_not_permitted` this surface promises is gated here rather than read
+    // off the fetch below.
+    requireApp(call, collectionId, 'view');
     const page = await asApp(call, () => call.store.getPage(call.app.actorId, pageId, { logView: true }));
     const current = page.currentVersion
       ? call.store.getVersion(call.app.actorId, page.id, page.currentVersion)

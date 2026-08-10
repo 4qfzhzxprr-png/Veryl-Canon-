@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { forbiddenRole } from './abilities.js';
+import { forbiddenRole, notFoundIfStranger } from './abilities.js';
 import { Actor, CanonError, DocType, PageStatus, Role, ROLE_RANK } from './model.js';
 
 // Page relations: the explicit edge Canon gains when two pages contradict each
@@ -378,6 +378,9 @@ export class RelationService {
    */
   list(actorId: string, pageId: string): PageRelationView[] {
     const page = this.page(pageId);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist rather than which collection refuses them.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such page: ${pageId}`);
     this.requireRole(actorId, page.collectionId, 'view');
     // The membership test moved from the JOIN to a column. It used to be an
     // INNER JOIN, which dropped the whole relation when the far page was

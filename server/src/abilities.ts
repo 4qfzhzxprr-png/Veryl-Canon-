@@ -35,6 +35,33 @@ import { OrgRole, ORG_ROLE_RANK, listOrgRoleHolders } from './orgrole.js';
 // sentence below carries the collection's name and every screen may therefore
 // repeat it about a collection the reader is not currently looking at.
 
+/**
+ * EXISTENCE, NEVER IDENTITY — the refusal a stranger gets on a READ.
+ *
+ * A 403 that names the collection is an existence oracle. A real hidden page
+ * used to 403 and hand over its collection's name and id; a fake page 404s
+ * ("No such page") and names nothing — so the pair told an outsider both that
+ * the page is real and what restricted collection holds it (policy question 1,
+ * "existence, never identity", and the repo's org-scoped-404 requirement).
+ * `GET /pages/:id/related` already answers a hidden page with the SAME 404 a
+ * nonexistent one gets, and every read about a collection the actor holds NO
+ * role in must match it.
+ *
+ * So the line is drawn at "holds any role on the collection":
+ *   - holds NOTHING  → the resource is "not found", in the exact words its
+ *     genuine absence uses, indistinguishable from it;
+ *   - holds a role, refused something STRONGER → the informative refusal
+ *     (`forbiddenRole`) stands, because to a member the collection's identity
+ *     is no secret and the request-access wall needs `{ collectionId, held }`
+ *     to offer the ask only where the actor already holds a role.
+ *
+ * `held` is what the actor holds on the collection (null if nothing); `message`
+ * is the not_found the missing resource throws, so the two are byte-identical.
+ */
+export function notFoundIfStranger(held: Role | null, message: string): void {
+  if (!held) throw new CanonError('not_found', message);
+}
+
 /** A refusal, in the shape every ability projection uses. */
 export const CAN: PageAbility = { can: true, why: null };
 
