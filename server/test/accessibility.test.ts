@@ -285,3 +285,22 @@ test('search: a suggestion is an offer, never an applied correction', () => {
   // back — the results on screen are always the results for what was typed.
   assert.doesNotMatch(fn, /location\.hash/);
 });
+
+// Policy question 3, Canon's half, on the client: the author is the only person
+// who can judge the prose around a link, so they are the person told.
+test('link audience: the warning reaches the author after the act, and waits to be read', () => {
+  assert.match(client, /function raiseLinkWarnings\(response\)/);
+  assert.match(client, /for \(const w of warnings\) toast\(w, 'warn'\);/);
+  // Persistent, like a refusal and unlike good news: the act HAPPENED, so
+  // there is nothing to retry, and a 2.5-second life would put it on screen
+  // while its reader was three actions further on.
+  assert.match(client, /if \(kind === 'error' \|\| kind === 'warn'\) \{/);
+  // Both moments an author commits text.
+  assert.match(client, /const published = await api\('POST', `\/pages\/\$\{id\}\/publish`/);
+  assert.match(client, /raiseLinkWarnings\(published\);/);
+  assert.match(client, /raiseLinkWarnings\(submitted\);/);
+  // And while they are still writing, in its own block — not appended to the
+  // alias collisions, whose explanation is about a different field.
+  assert.match(client, /#link-warnings/);
+  assert.match(client, /linkWarningsHTML\(d\.linkWarnings\)/);
+});

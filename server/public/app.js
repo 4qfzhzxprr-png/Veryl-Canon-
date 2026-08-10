@@ -459,8 +459,14 @@ function toast(message, kind = 'error') {
   text.textContent = message;
   el.appendChild(text);
   const leave = () => { el.classList.add('leaving'); setTimeout(() => el.remove(), 300); };
-  // Good news and warnings pass; a refusal waits to be read.
-  if (kind === 'error') {
+  // Good news passes; a refusal waits to be read — and so does a WARNING, which
+  // is the third kind and the reason this is no longer a two-way split. "You
+  // published, and eleven of your fourteen readers cannot follow a link in
+  // it" is not good news and it is not a refusal: the act happened, and the
+  // sentence is the only thing that will make the author go back and look. A
+  // two-and-a-half-second life would put it on screen while its reader was
+  // already three actions further on.
+  if (kind === 'error' || kind === 'warn') {
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'toast-close';
@@ -4935,8 +4941,9 @@ async function openSubmitReviewDialog(page, draftFields, afterSubmit) {
           await api('PUT', `/pages/${page.id}/draft`, { fields: { approverId: chosen } });
         }
       }
-      await api('POST', `/pages/${page.id}/submit`);
+      const submitted = await api('POST', `/pages/${page.id}/submit`);
       toast('Submitted for review.', 'ok');
+      raiseLinkWarnings(submitted);
       afterSubmit();
     },
   });
@@ -4984,6 +4991,34 @@ function aliasFieldNotice(value) {
  * every save rather than fading — because a mis-steered search stays
  * mis-steered for as long as the name is shared.
  */
+/**
+ * WHAT THE AUTHOR IS TOLD ABOUT WHO CAN FOLLOW THEIR LINKS.
+ *
+ * Policy question 3, Canon's half. `withheldLinks` already stops a link's
+ * LABEL reaching a reader who may not open the target — but the sentence
+ * around the link is prose, and prose is the author's. "As set out in the
+ * workforce reduction plan" gives away exactly what the withheld label was
+ * protecting, and no permission check will ever find it.
+ *
+ * So the author is told the fact and left with the judgement: how many of the
+ * people who can read this page cannot open that link. It is persistent for
+ * the same reason the alias collisions are — the condition does not go away
+ * when the notice does — and it is never a block, because a cross-collection
+ * link is a normal, useful thing and a product that refuses one is a product
+ * that stops people writing down what is true.
+ */
+function linkWarningsHTML(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return '';
+  return `<p class="notice notice-stale link-audience">${warnings.map((w) => esc(w)).join('<br>')}</p>`;
+}
+
+/** The same sentences, after the act, where the editor is no longer on screen. */
+function raiseLinkWarnings(response) {
+  const warnings = response?.linkWarnings;
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  for (const w of warnings) toast(w, 'warn');
+}
+
 function aliasWarningsHTML(warnings) {
   if (!Array.isArray(warnings) || warnings.length === 0) return '';
   return `<p class="notice notice-stale alias-collision">${warnings.map((w) => esc(w)).join('<br>')}<br>
@@ -5146,6 +5181,7 @@ async function viewEditor(id) {
               the record's official answers use them only while the page holds the Canonical mark.</p>
             <p id="alias-live" class="muted type-help" aria-live="polite"></p>
             <div id="alias-warnings" aria-live="polite"></div>
+            <div id="link-warnings" aria-live="polite"></div>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
@@ -5178,6 +5214,7 @@ async function viewEditor(id) {
   // carries, so a collision that predates this editing session is on screen
   // from the first paint rather than after the first save.
   app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(draft.warnings);
+  app.querySelector('#link-warnings').innerHTML = linkWarningsHTML(draft.linkWarnings);
 
   // The toolbar and the preview. The preview is the same renderMarkdown() the
   // page view uses, inside the same .doc-body, because a preview that renders
@@ -5231,6 +5268,7 @@ async function viewEditor(id) {
     // it is about — replaced wholesale each save, so a collision the editor
     // just removed stops being claimed.
     app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(d.warnings);
+    app.querySelector('#link-warnings').innerHTML = linkWarningsHTML(d.linkWarnings);
     return d;
   };
 
@@ -5268,8 +5306,12 @@ async function viewEditor(id) {
         // is marked failed too — cancelling the dialog must not land the
         // editor back on a stale "Draft saved …".
         try { await save(); } catch (err) { markSaveFailed(err); throw err; }
-        await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
+        const published = await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
         toast('Published.', 'ok');
+        // After the navigation, and persistent: the editor that was showing
+        // this is gone, and the page the author lands on has no reason to say
+        // it. Publishing is the moment the text stops being theirs alone.
+        raiseLinkWarnings(published);
         location.hash = `#/pages/${id}`;
       },
     });

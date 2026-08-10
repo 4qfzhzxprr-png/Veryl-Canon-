@@ -716,3 +716,109 @@ test('withheldLinks leaves a body with no links alone', () => {
   const { store, marc } = setup();
   assert.deepEqual(store.withheldLinks(marc.id, 'Plain prose, no links at all.'), []);
 });
+
+// ---------------------------------------------------------------------------
+// Policy question 3, Canon's half: warn the AUTHOR
+//
+// `withheldLinks` above closed the reader's half — a link to a page the reader
+// cannot open loses its label, so a restricted title is not handed over in the
+// body of a page they were granted. What it deliberately could not reach is
+// PROSE: "as set out in the workforce reduction plan" gives away exactly what
+// the withheld label was protecting, and no permission check will ever find it.
+//
+// The only person who can judge that sentence is the person writing it. So at
+// the two moments an author commits text — publish and submit — they are told
+// how many of this page's own readers cannot follow each link in it. A fact,
+// never a block: a cross-collection link is a normal, useful thing, and a
+// product that refuses one is a product that stops people writing down what is
+// true.
+
+test('link audience: an author is told how many of their readers cannot follow a link', () => {
+  const { store, dana, marc, engineering, compliance } = setup();
+  const secret = note(store, dana.id, engineering.id, 'Q3 Workforce Reduction Plan');
+  const page = store.createPage(dana.id, { collectionId: compliance.id, type: 'note', title: 'Headcount note' });
+  store.editDraft(dana.id, page.id, {
+    body: `The reduction is set out in [Q3 Workforce Reduction Plan](/pages/${secret}).`,
+  });
+
+  // Compliance holds Dana, Marc, Vera and the bot; of those, only Dana and
+  // Vera are in Engineering.
+  const published = store.publish(dana.id, page.id, {});
+  assert.equal(published.linkWarnings?.length, 1);
+  assert.match(published.linkWarnings![0]!, /“Engineering”/);
+  assert.match(published.linkWarnings![0]!, /2 of the 4 people who can read this page cannot open/);
+  // The sentence names the consequence, not just the count — what a reader
+  // sees is a link with no label, so the prose has to carry the meaning.
+  assert.match(published.linkWarnings![0]!, /the sentence around it has to stand on its own/);
+
+  // And it is a warning: the page published.
+  assert.equal(store.getPage(dana.id, page.id).currentVersion, 1);
+  // Marc, who is not in Engineering, is one of the people it is about — and he
+  // still gets the label withheld at read time, which is the other half.
+  assert.deepEqual(store.withheldLinks(marc.id, store.getVersion(marc.id, page.id, 1).body), [secret]);
+});
+
+test('link audience: nothing is said about a link every reader of this page can follow', () => {
+  const { store, dana, compliance } = setup();
+  const sibling = note(store, dana.id, compliance.id, 'Retention periods');
+  const page = store.createPage(dana.id, { collectionId: compliance.id, type: 'note', title: 'Pointer' });
+  store.editDraft(dana.id, page.id, { body: `See [Retention periods](/pages/${sibling}).` });
+  // Same collection, so every reader of this page is a reader of that one.
+  assert.equal(store.publish(dana.id, page.id, {}).linkWarnings, undefined);
+});
+
+test('link audience: says nothing about a page the AUTHOR themselves cannot open', () => {
+  // THE DISCLOSURE RULE, from the other side. Telling an author "your readers
+  // cannot follow this link" about a page they were themselves refused
+  // confirms that the page exists — the same oracle the record refuses
+  // everywhere else. Those links are handled at the far end, for the reader.
+  const { store, dana, marc, engineering, compliance } = setup();
+  const secret = note(store, dana.id, engineering.id, 'Q3 Workforce Reduction Plan');
+  const page = store.createPage(marc.id, { collectionId: compliance.id, type: 'note', title: 'Pasted id' });
+  store.editDraft(marc.id, page.id, { body: `Something about [[${secret}]].` });
+  const published = store.publish(marc.id, page.id, {});
+  assert.equal(published.linkWarnings, undefined, 'Marc holds no role in Engineering and learns nothing');
+});
+
+test('link audience: three links into one collection are one thing to know, said once', () => {
+  const { store, dana, engineering, compliance } = setup();
+  const a = note(store, dana.id, engineering.id, 'Plan A');
+  const b = note(store, dana.id, engineering.id, 'Plan B');
+  const page = store.createPage(dana.id, { collectionId: compliance.id, type: 'note', title: 'Three links' });
+  store.editDraft(dana.id, page.id, {
+    body: `[A](/pages/${a}) and [B](/pages/${b}) and [[${a}]].`,
+  });
+  const warnings = store.publish(dana.id, page.id, {}).linkWarnings!;
+  assert.equal(warnings.length, 1, 'one line per target collection, not per link');
+  assert.match(warnings[0]!, /2 links in this page go to “Engineering”/);
+});
+
+test('link audience: the same warning reaches an author who submits rather than publishes', () => {
+  // Submitting is the other moment the text stops being theirs to change: from
+  // here it is an approver's to accept.
+  const { store, dana, marc, engineering, compliance } = setup();
+  const secret = note(store, dana.id, engineering.id, 'Q3 Workforce Reduction Plan');
+  const page = store.createPage(marc.id, { collectionId: compliance.id, type: 'policy', title: 'Headcount policy' });
+  store.setMember(dana.id, engineering.id, marc.id, 'view');
+  store.editDraft(marc.id, page.id, {
+    body: `As set out in [Q3 Workforce Reduction Plan](/pages/${secret}).`,
+    fields: { ownerId: marc.id, approverId: dana.id, reviewDate: '2099-01-01', effectiveDate: '2020-01-01', effectiveDateBasis: 'Migrated from the old wiki.' },
+  });
+  const submitted = store.submitForReview(marc.id, page.id);
+  assert.equal(submitted.status, 'in_review', 'it is a warning, not a block');
+  assert.equal(submitted.linkWarnings?.length, 1);
+  assert.match(submitted.linkWarnings![0]!, /“Engineering”/);
+});
+
+test('link audience: the editor carries it while the author can still change the sentence', () => {
+  // The best moment to hear it is while the words are still being typed, so it
+  // rides on the draft too — in its own field, because a collision warning is
+  // about the names field and this one is about the body.
+  const { store, dana, engineering, compliance } = setup();
+  const secret = note(store, dana.id, engineering.id, 'Q3 Workforce Reduction Plan');
+  const page = store.createPage(dana.id, { collectionId: compliance.id, type: 'note', title: 'Draft' });
+  const saved = store.editDraft(dana.id, page.id, { body: `See [[${secret}]].` });
+  assert.equal(saved.linkWarnings.length, 1);
+  assert.deepEqual(saved.warnings, [], 'and it does not pretend to be an alias collision');
+  assert.equal(store.openDraft(dana.id, page.id).linkWarnings.length, 1, 'and it is there on the first paint');
+});
