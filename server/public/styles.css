@@ -533,6 +533,15 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
 /* ---------- forms ------------------------------------------------------ */
 
 label { display: block; font-weight: 550; font-size: 0.9rem; margin: 0.7rem 0 0; }
+/* THE THIRD INSTANCE OF THE SAME TRAP, and the first one that was live in the
+   product: an author `display` rule outranks the UA's `[hidden] { display:
+   none }`, so every `label` in this app that script hides with `.hidden = true`
+   went on showing. `.topnav[hidden]` and `.tree-toggle[hidden]` below each
+   document it for themselves; a rule on `label` covers the whole class,
+   because a form field's row is the shape most likely to be hidden by script.
+   Found by driving the identity screen in a browser: "Registry reference
+   (Agent Passport)" is hidden for a person and was on screen for everyone. */
+label[hidden] { display: none; }
 label input, label textarea, label select {
   display: block;
   width: 100%;
@@ -2571,3 +2580,46 @@ label.check input { width: auto; display: inline; margin: 0; }
 .citation-fields li { margin: 0.15rem 0; }
 .citation-fields .cf-label { font-weight: 600; margin-right: 0.4rem; }
 .citation-fields .cf-value { font-variant-numeric: tabular-nums; margin-right: 0.4rem; }
+
+/* ---------- imports ---------------------------------------------------- */
+/* A run's outcome per file, in the four words the importer itself uses. The
+   palette is the record's existing one and says the same things it says
+   everywhere else: accent for what landed, amber for what is waiting on a
+   person, muted for what was passed over, danger for what did not happen. */
+.imports-lede { max-width: 46rem; margin: 0.35rem 0 0; }
+.imports-table .import-meta, .import-files .import-meta { font-size: 0.82rem; margin-top: 0.15rem; }
+.import-file { font-family: var(--mono); font-size: 0.86rem; word-break: break-word; }
+.import-counts { font-size: 0.9rem; }
+.import-count { white-space: nowrap; }
+.import-count-failed { color: var(--danger); font-weight: 600; }
+.import-count-imported { color: var(--accent); font-weight: 600; }
+.import-outcome {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 99px;
+  padding: 0.12rem 0.55rem;
+  white-space: nowrap;
+}
+.import-outcome-imported { color: var(--accent-ink); background: var(--accent); border: 1px solid var(--accent); }
+.import-outcome-updated { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); }
+.import-outcome-skipped { color: var(--muted); border: 1px solid var(--border-strong); background: transparent; }
+.import-outcome-failed { color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger); }
+.import-row-failed td { background: var(--danger-soft); }
+.import-section { margin-top: 1.6rem; }
+.import-section h2 { font-size: 1.05rem; margin: 0 0 0.4rem; }
+.import-summary { margin-top: 0.8rem; }
+.import-summary p { margin: 0.25rem 0; }
+.import-path { word-break: break-all; }
+.import-failed-lede { color: var(--danger); margin: 0 0 0.5rem; }
+.import-fields { margin-top: 0.3rem; }
+.import-fields-note { margin: 0.4rem 0 0; }
+.import-rerun-notes { margin: 0.4rem 0 0.6rem; padding-left: 1.1rem; }
+.import-rerun-notes li { margin: 0.2rem 0; }
+.import-where { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.8rem 0.7rem; margin-top: 0.8rem; }
+.import-where legend { font-weight: 550; font-size: 0.9rem; padding: 0 0.3rem; }
+/* The iOS zoom guard: a text field under 16px makes Safari zoom the whole
+   dialog on focus, and this one is full of them. */
+.import-where input, [data-where] input { font-size: max(16px, 1rem); }

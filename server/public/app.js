@@ -133,6 +133,9 @@ const state = {
     // The queue (GET /queue). Not probed on its own: the first load of the nav
     // badge answers the question, and a 404 hides the entry.
     queue: null,
+    // Imports (GET /imports). Probed like sources, and then narrowed by what
+    // this reader has to do with them — see detectImports.
+    imports: null,
   },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
@@ -141,15 +144,23 @@ const state = {
   // `at` when it arrived: the nav badge and the view share one fetch rather
   // than each asking, and a stale badge is refreshed on navigation.
   queue: { data: null, at: 0, loading: null },
+  // The summary the last run in THIS tab returned. The stored run record keeps
+  // a file, a page and an outcome per file and no title, so this is the only
+  // place a page's title can come from on the run screen — and it is never
+  // stood in for: a run somebody else made, or one from before this page was
+  // loaded, shows the file names the record actually holds.
+  lastImport: null,
 };
 
 function resetFeatures() {
   state.features = {
     search: null, comments: null, ask: null, related: null, references: null, sources: null,
     map: null, wholeGraph: null, attestation: null,
-    relations: null, divergences: null, queue: null, gaps: null,
+    relations: null, divergences: null, queue: null, gaps: null, imports: null,
   };
   gapsProbe = null;
+  importsProbe = null;
+  state.lastImport = null;
   askProbe = null;
   sourcesProbe = null;
   attestationProbe = null;
@@ -1109,6 +1120,10 @@ function renderChrome() {
       // whoever signs in, same as the entries above.
       const gapsLink = document.getElementById('nav-gaps');
       if (gapsLink) gapsLink.hidden = true;
+      // Same rule as Gaps: the entry is scoped to what the NEXT identity can
+      // do with it, and nothing may be left standing from the last one.
+      const importsLink = document.getElementById('nav-imports');
+      if (importsLink) importsLink.hidden = true;
       await loadAuth();
       renderChrome();
       location.hash = '#/identity';
@@ -1118,6 +1133,7 @@ function renderChrome() {
     detectAsk();
     detectSources();
     detectGaps();
+    detectImports();
     detectMap();
     detectFreshness();
     // The queue's badge is part of the chrome: the first thing somebody who
@@ -1695,6 +1711,7 @@ async function route() {
     : parts[0] === 'gaps' ? 'gaps'
     : parts[0] === 'ask' ? 'ask'
     : parts[0] === 'sources' ? 'sources'
+    : parts[0] === 'imports' ? 'imports'
     : parts[0] === 'queue' ? 'queue'
     : 'home';
   markNav(section);
@@ -1711,6 +1728,9 @@ async function route() {
     if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
     if (parts[0] === 'gaps') return await render(() => viewGaps(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
+    if (parts[0] === 'imports') {
+      return await render(() => (parts[1] ? viewImportRun(parts[1]) : viewImports()));
+    }
     if (parts[0] === 'search') return await render(() => viewSearch(hashQuery()));
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
@@ -6690,6 +6710,574 @@ async function viewSources() {
       });
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Imports (CORE-PLAN.md Epic E, M4) — the screen for a server that was
+// finished and unreachable
+//
+// Round seven, tester 25, a migration engineer: "There is no import UI at all
+// — verified as both member and administrator." Everything underneath was
+// already built. `POST /imports`, `POST /imports/upload`, `GET /imports` and
+// `GET /imports/:id` are wired over a complete importer with Confluence and
+// Google Docs discovery, a file cap, per-file outcomes, run records and
+// idempotent re-runs — and `app.js` contained zero references to any of it.
+// The one failed file in that tester's corpus was discoverable only by
+// filtering the audit log to `import.page` and reading a details blob.
+//
+// So this is a renderer, and deliberately little else. Everything it shows was
+// in `ImportFileResult` and `ImportRunRecord` before it existed:
+//
+//   * THE RUN LIST, which is what "did the migration happen, and what came of
+//     it" looks like when it is a screen instead of a log query.
+//   * THE PER-FILE OUTCOME TABLE, with the reason each file gives — including
+//     the truncation cause (`html.ts::truncationNote`), which is the
+//     difference between "the file parsed to an empty document" and "the
+//     export ends inside an unclosed comment, so re-export this page". One
+//     sends an operator back to the source system looking for a page that is
+//     not empty; the other tells them what to do.
+//   * A RE-RUN, which needs no new server anything: a run id re-used skips
+//     files whose content is unchanged and retries the ones that failed. That
+//     IS the retry three testers asked for, and it has existed all along.
+//
+// WHAT THE SCREEN MAY OFFER is `collectionAbilities.runImport` — `admin` on
+// the collection the pages land in, and nothing else (import.ts: "ADMIN, NOT
+// EDIT"). The picker is built from it rather than from membership, so the
+// collections on offer are exactly the ones the server would accept a run for,
+// and the refusal a reader meets is the sentence the server would have thrown.
+
+const IMPORT_SOURCE_LABELS = { confluence: 'Confluence', 'google-docs': 'Google Docs' };
+const IMPORT_SOURCES = ['confluence', 'google-docs'];
+const IMPORT_OUTCOME_LABELS = { imported: 'Imported', updated: 'Updated', skipped: 'Skipped', failed: 'Failed' };
+// How a run recovered the page tree, in the words of somebody who has to
+// decide whether the result is good enough to keep.
+const IMPORT_HIERARCHY_NOTES = {
+  tree: 'The export listed its own page tree, and the pages nest the way they did in the source system.',
+  breadcrumbs: 'The export carried no index, so the nesting was recovered from each page’s own breadcrumbs.',
+  flat: 'Nothing in the export described a page tree, so every page arrived at the top level.',
+};
+
+let importsProbe = null;
+
+/**
+ * Whether this Canon serves imports AND this reader has anything to do with
+ * them. Two questions, because the nav is seven entries already and an eighth
+ * that opens onto an empty screen somebody may never be able to use is worse
+ * than no entry: it is offered to anyone who can START a run, and to anyone
+ * with a run to read, and to nobody else.
+ */
+async function detectImports() {
+  if (state.features.imports === null) {
+    importsProbe ??= (async () => {
+      let runs;
+      try {
+        runs = await api('GET', '/imports');
+      } catch (err) {
+        // 404/405 is a server without the route; anything else means the route
+        // is there and something else went wrong, which is not this probe's
+        // business to hide.
+        return err.status !== 404 && err.status !== 405 && err.status !== 0;
+      }
+      if (Array.isArray(runs) && runs.length) return true;
+      try {
+        const collections = await api('GET', '/collections');
+        return collections.some((c) => c.abilities?.runImport?.can === true);
+      } catch {
+        return false;
+      }
+    })();
+    const found = await importsProbe;
+    importsProbe = null;
+    if (state.features.imports === null) state.features.imports = found;
+  }
+  const link = document.getElementById('nav-imports');
+  if (link) link.hidden = state.features.imports !== true;
+  return state.features.imports === true;
+}
+
+/**
+ * The uploaded-archive door. Everything about it is `api()` except the body,
+ * which is the file itself rather than JSON — the run's parameters ride the
+ * query string precisely because the body is a corpus.
+ */
+async function apiUpload(path, file) {
+  const headers = { 'Content-Type': 'application/zip' };
+  const cookieSession = state.auth?.viaCookie === true;
+  const actorId = cookieSession ? null : state.actor?.id;
+  if (actorId) headers['X-Actor-Id'] = actorId;
+  if (cookieSession && state.auth?.csrfToken) {
+    headers[state.auth.csrfHeader ?? 'X-Canon-CSRF'] = state.auth.csrfToken;
+  }
+  let res;
+  try {
+    res = await fetch(path, { method: 'POST', headers, credentials: 'same-origin', body: file });
+  } catch {
+    throw { status: 0, code: 'network', message: 'Cannot reach the Canon server.', details: {} };
+  }
+  // A run lands pages, which changes what is waiting on people; the cached
+  // queue is dropped exactly as `api()` drops it after any write.
+  state.queue.at = 0;
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON body */ }
+  if (!res.ok) {
+    throw {
+      status: res.status,
+      code: data?.error ?? 'error',
+      message: data?.message ?? `The upload failed (${res.status})`,
+      details: data ?? {},
+    };
+  }
+  return data;
+}
+
+function importOutcomeHTML(outcome) {
+  const label = IMPORT_OUTCOME_LABELS[outcome] ?? outcome;
+  return `<span class="import-outcome import-outcome-${esc(outcome)}">${esc(label)}</span>`;
+}
+
+/** "6 imported · 1 failed" — the counts that are not zero, and never "0 failed". */
+function importCountsHTML(counts = {}) {
+  const parts = ['imported', 'updated', 'skipped', 'failed']
+    .filter((k) => Number(counts[k]) > 0)
+    .map((k) => `<span class="import-count import-count-${k}">${Number(counts[k])} ${k}</span>`);
+  if (!parts.length) return '<span class="muted">nothing to import</span>';
+  return parts.join(' · ');
+}
+
+/**
+ * What a run put on every page it landed. The importer asks once per run
+ * (import.ts, ImportRunFields) and this is where the answer is READ BACK —
+ * "Owner —, Approver —, Review due —" across nine pages was the finding, and
+ * a run that names nobody must say so here rather than showing an empty row.
+ */
+function importFieldsHTML(run) {
+  const fields = run?.fields ?? {};
+  const rules = TYPE_FIELDS[run?.type] ?? {};
+  const rows = [];
+  if (rules.owner) rows.push(['Owner', fields.ownerId ? esc(actorName(fields.ownerId)) : '<span class="muted">nobody named</span>']);
+  if (rules.approver) {
+    rows.push(['Approver', fields.approverId ? esc(actorName(fields.approverId)) : '<span class="muted">nobody named</span>']);
+  }
+  if (rules.reviewDate) {
+    rows.push(['Review date', fields.reviewDate ? esc(fmtDate(fields.reviewDate)) : '<span class="muted">none set</span>']);
+  }
+  if (!rows.length) {
+    return `<p class="muted">A ${esc(TYPE_LABELS[run?.type] ?? run?.type)} carries no owner, no approver and no
+      review date — it never holds the Canonical mark, so it has none of those to carry.</p>`;
+  }
+  return `<dl class="field-block import-fields">${rows
+    .map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${value}</dd></div>`)
+    .join('')}</dl>`;
+}
+
+function importsUnavailableHTML() {
+  return `
+    <div class="empty-state">
+      <h2>Imports are not available on this server</h2>
+      <p>This Canon server does not serve <code>/imports</code>. Pages arrive by being written here.</p>
+      <p><a class="btn" href="#/">Back to collections</a></p>
+    </div>`;
+}
+
+/**
+ * Why the "Import an export" control is refused, in the server's own words
+ * where there is exactly one sentence to quote.
+ *
+ * With several collections there is no single server sentence — the reader
+ * holds a different role on each — so what is said instead DESCRIBES THE
+ * LISTING rather than making a claim about the record (the rule Phase 1.1 and
+ * 1.5 established). It never says "you cannot import", which would be a claim
+ * about collections this reader may not even be a member of.
+ */
+function importRefusalWhy(collections) {
+  if (!collections.length) {
+    return 'Importing needs the admin role on the collection the pages land in, and you belong to no ' +
+      'collection yet. An administrator of a collection can grant it.';
+  }
+  if (collections.length === 1) {
+    return collections[0].abilities?.runImport?.why ??
+      'Importing needs the admin role on the collection the pages land in.';
+  }
+  return `Importing needs the admin role on the collection the pages land in; you administer none of the ` +
+    `${collections.length} collections you belong to. An administrator of a collection can grant it.`;
+}
+
+async function viewImports() {
+  markNav('imports');
+  let runs = [];
+  try {
+    runs = await api('GET', '/imports');
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) {
+      state.features.imports = false;
+      const link = document.getElementById('nav-imports');
+      if (link) link.hidden = true;
+      app.innerHTML = `<div class="page-wide">${importsUnavailableHTML()}</div>`;
+      return;
+    }
+    throw err;
+  }
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { /* names and abilities are both nice-to-have */ }
+  await loadActors().catch(() => null);
+  const byId = new Map(collections.map((c) => [c.id, c]));
+  const importable = collections.filter((c) => c.abilities?.runImport?.can === true);
+
+  const group = refusalGroup('these controls');
+  const startHTML = importable.length
+    ? '<button class="btn primary" id="new-import">Import an export</button>'
+    : group.refuse('Import an export', importRefusalWhy(collections), { className: 'btn primary' });
+
+  const rows = runs.map((r) => `
+    <tr>
+      <td>
+        <a href="#/imports/${esc(r.runId)}">${esc(IMPORT_SOURCE_LABELS[r.source] ?? r.source)} into
+          ${esc(byId.get(r.collectionId)?.name ?? 'a collection')}</a>
+        <div class="import-meta muted">${esc(TYPE_LABELS[r.type] ?? r.type)} pages · run by
+          ${esc(actorName(r.actorId))}</div>
+      </td>
+      <td class="import-counts">${importCountsHTML(r.counts)}</td>
+      <td class="nowrap">${esc(fmtAgo(r.startedAt) ?? '')}
+        <div class="import-meta muted">${esc(fmtDateTime(r.startedAt))}</div></td>
+    </tr>`).join('');
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <div>
+          <h1>Imports</h1>
+          <p class="muted imports-lede">Everything Canon has brought in from another system, and what became
+            of every file. Imported pages arrive as drafts — nothing an import lands carries the Canonical
+            mark, whoever ran it.</p>
+        </div>
+        <div class="actions">${startHTML}</div>
+      </div>
+      ${group.noteHTML()}
+      ${runs.length ? `
+        <div class="table-scroll"><table class="table imports-table">
+          <thead><tr><th>Run</th><th>Outcome</th><th>Started</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+        <p class="muted">Open a run to see every file it read, why any of them failed, and to run it again —
+          a re-run skips the files that have not changed and retries the ones that did not land.</p>` : `
+        <div class="empty-state">
+          <h2>No import has been run${collections.length ? ' in a collection you belong to' : ''}</h2>
+          <p>A Confluence space export or a folder of Google Docs exports arrives as draft pages, keeping the
+            page tree where the export describes one. Every file gets an outcome you can read, and nothing
+            becomes Canonical without passing through review.</p>
+        </div>`}
+    </div>`;
+
+  app.querySelector('#new-import')?.addEventListener('click', () => openImportModal(importable));
+}
+
+async function viewImportRun(runId) {
+  markNav('imports');
+  let run;
+  try {
+    run = await api('GET', `/imports/${encodeURIComponent(runId)}`);
+  } catch (err) {
+    renderErrorPage(err);
+    return;
+  }
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { /* as above */ }
+  await loadActors().catch(() => null);
+  const collection = collections.find((c) => c.id === run.collectionId) ?? null;
+
+  // The titles a run reported for its files are not on the stored record —
+  // `import_items` keeps the file, the page and the outcome. Where this is the
+  // run that has just finished in this tab, its own summary fills them in;
+  // otherwise the file name stands, which is what the record actually holds.
+  const titles = new Map(
+    state.lastImport?.runId === run.runId
+      ? (state.lastImport.files ?? []).filter((f) => f.title).map((f) => [f.file, f.title])
+      : [],
+  );
+  const items = run.items ?? [];
+  const failed = items.filter((i) => i.outcome === 'failed').length;
+
+  const group = refusalGroup('these controls');
+  const canRerun = collection?.abilities?.runImport ?? null;
+  const rerunHTML = group.offer(
+    canRerun,
+    'Run again',
+    '<button class="btn primary" id="rerun-import">Run again</button>',
+    { className: 'btn primary' },
+  );
+  const reuploadHTML = group.offer(
+    canRerun,
+    'Run again from a file',
+    '<button class="btn subtle" id="reupload-import">Run again from a file…</button>',
+    { className: 'btn subtle' },
+  );
+
+  const rows = items.map((i) => `
+    <tr class="import-row import-row-${esc(i.outcome)}">
+      <td>
+        <span class="import-file">${esc(i.file)}</span>
+        ${titles.get(i.file) ? `<div class="import-meta muted">${esc(titles.get(i.file))}</div>` : ''}
+      </td>
+      <td class="nowrap">${importOutcomeHTML(i.outcome)}</td>
+      <td>${i.reason ? esc(i.reason) : '<span class="muted">—</span>'}</td>
+      <td class="nowrap">${i.pageId
+        ? `<a href="#/pages/${esc(i.pageId)}">Open the page</a>`
+        : '<span class="muted">no page</span>'}</td>
+    </tr>`).join('');
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <div>
+          <h1>${esc(IMPORT_SOURCE_LABELS[run.source] ?? run.source)} into
+            ${esc(collection?.name ?? 'a collection')}</h1>
+          <p class="muted">Run by ${esc(actorName(run.actorId))} · started ${esc(fmtDateTime(run.startedAt))}${
+            run.finishedAt ? ` · finished ${esc(fmtDateTime(run.finishedAt))}` : ' · <strong>not finished</strong>'
+          }</p>
+        </div>
+        <div class="actions"><a class="btn subtle" href="#/imports">All imports</a>${rerunHTML}${reuploadHTML}</div>
+      </div>
+      ${group.noteHTML()}
+
+      <section class="import-summary">
+        <p class="import-counts">${importCountsHTML(run.counts)}
+          <span class="muted"> — ${Number(run.counts?.found ?? 0)} document${
+            Number(run.counts?.found ?? 0) === 1 ? '' : 's'} found</span></p>
+        <p class="muted">${esc(IMPORT_HIERARCHY_NOTES[run.hierarchy] ?? '')}</p>
+        <p class="muted import-path">Read from <code>${esc(run.path)}</code> · run id
+          <code>${esc(run.runId)}</code></p>
+      </section>
+
+      <section class="import-section">
+        <h2>What every page it landed carries</h2>
+        ${importFieldsHTML(run)}
+      </section>
+
+      <section class="import-section">
+        <h2>Every file</h2>
+        ${failed ? `<p class="import-failed-lede">${failed} file${failed === 1 ? '' : 's'} did not land. Running
+          this import again keeps everything that did and tries these once more.</p>` : ''}
+        ${items.length ? `
+          <div class="table-scroll"><table class="table import-files">
+            <thead><tr><th>File</th><th>Outcome</th><th>What happened</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table></div>` : `
+          <p class="muted">This run recorded no files. Either the export held no documents Canon could
+            recognise, or the run did not finish.</p>`}
+      </section>
+    </div>`;
+
+  app.querySelector('#rerun-import')?.addEventListener('click', () => confirmRerun(run, collection));
+  app.querySelector('#reupload-import')?.addEventListener('click', () =>
+    openImportModal(collection ? [collection] : [], { run }));
+}
+
+/**
+ * Running the same run again. Not a confirmation for ceremony's sake: what a
+ * re-run does is genuinely not obvious, and the wrong mental model ("it will
+ * import everything twice") is exactly what stopped the testers who had a
+ * failed file from trying it.
+ */
+function confirmRerun(run, collection) {
+  openModal({
+    title: 'Run this import again',
+    submitLabel: 'Run it again',
+    body: `
+      <p>Canon reads <code>${esc(run.path)}</code> again, under the same run id.</p>
+      <ul class="muted import-rerun-notes">
+        <li>A file whose content has not changed is skipped — no second page, no second version.</li>
+        <li>A file that changed becomes a new version of the page it already made.</li>
+        <li>A file that failed is tried again.</li>
+      </ul>
+      <p class="muted">Every page still lands as a draft, with the owner, approver and review date this run
+        recorded.</p>`,
+    onSubmit: async () => {
+      let summary;
+      try {
+        summary = await api('POST', '/imports', {
+          source: run.source,
+          path: run.path,
+          collectionId: run.collectionId,
+          type: run.type,
+          runId: run.runId,
+          fields: run.fields ?? undefined,
+        });
+      } catch (err) {
+        // The one refusal a reader cannot act on from the server's words
+        // alone. A run that arrived as an uploaded file recorded the folder
+        // the archive was unpacked into, and the server removed it the moment
+        // the run finished (import.ts clears the spool in a `finally`) — so
+        // "no such export directory" is true, expected, and says nothing about
+        // the way forward, which is on this screen beside this button.
+        if (err?.status === 404) {
+          throw {
+            ...err,
+            message: `${err.message} If this run came from a file somebody uploaded, Canon removed its copy ` +
+              'when the run finished — "Run again from a file…" takes the same export again, under this same run id.',
+          };
+        }
+        throw err;
+      }
+      state.lastImport = summary;
+      toast(`Run again: ${summary.counts.imported} imported, ${summary.counts.updated} updated, ` +
+        `${summary.counts.skipped} skipped, ${summary.counts.failed} failed.`, 'ok');
+      route();
+    },
+  });
+}
+
+/**
+ * The one dialog that starts a run, from either door.
+ *
+ * `opts.run` re-runs an existing run — same id, same collection, same type —
+ * which is how an import that arrived as an uploaded file is retried: the
+ * archive is gone from the server the moment the run finished (import.ts
+ * removes the spool in a `finally`), so "run again" from a path would send an
+ * operator to a folder that no longer exists. Uploading the same export under
+ * the same run id lands on the same idempotency.
+ */
+async function openImportModal(collections, opts = {}) {
+  const rerun = opts.run ?? null;
+  const people = await loadActors().catch(() => []);
+  const me = state.actor?.id ?? '';
+  const first = rerun ? collections.find((c) => c.id === rerun.collectionId) ?? collections[0] : collections[0];
+  if (!first) {
+    toast('Importing needs the admin role on the collection the pages land in.');
+    return;
+  }
+  const type = rerun?.type ?? 'note';
+  let approvers = await loadApproveHolders(first.id);
+
+  const sourceOptions = IMPORT_SOURCES.map((s) =>
+    `<option value="${esc(s)}" ${s === (rerun?.source ?? 'confluence') ? 'selected' : ''}>${esc(IMPORT_SOURCE_LABELS[s])}</option>`).join('');
+  const collectionOptions = collections.map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === first.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const typeOptions = Object.keys(TYPE_LABELS).map((t) =>
+    `<option value="${esc(t)}" ${t === type ? 'selected' : ''}>${esc(TYPE_LABELS[t])}</option>`).join('');
+  const ownerOptions = `<option value="">—</option>` + people.map((p) =>
+    `<option value="${esc(p.id)}" ${p.id === (rerun?.fields?.ownerId ?? me) ? 'selected' : ''}>${esc(p.name)}${
+      p.id === me ? ' (you)' : ''}</option>`).join('');
+
+  const dialog = openModal({
+    title: rerun ? 'Run this import again from a file' : 'Import an export',
+    submitLabel: rerun ? 'Upload and run again' : 'Import',
+    body: `
+      <label>What it came out of
+        <select name="source" ${rerun ? 'disabled' : ''}>${sourceOptions}</select></label>
+      <label>Which collection the pages land in
+        <select name="collectionId" ${rerun ? 'disabled' : ''}>${collectionOptions}</select></label>
+      <label>What each page becomes
+        <select name="type" ${rerun ? 'disabled' : ''}>${typeOptions}</select></label>
+      <p class="muted type-help" data-type-help></p>
+
+      ${rerun ? '' : `
+        <fieldset class="import-where">
+          <legend>Where the export is</legend>
+          <label class="check"><input type="radio" name="where" value="upload" checked>
+            A file I have here (a <code>.zip</code> export)</label>
+          <label class="check"><input type="radio" name="where" value="path">
+            A folder already on the Canon server</label>
+        </fieldset>`}
+      <label data-where="upload">The export file
+        <input type="file" name="archive" accept=".zip,application/zip"></label>
+      ${rerun ? '' : `
+        <label data-where="path">The folder on the server
+          <input type="text" name="path" placeholder="/srv/exports/confluence-space" autocomplete="off"></label>`}
+
+      <div data-owner-fields>
+        <label data-field="owner">Who owns these pages
+          <select name="ownerId">${ownerOptions}</select></label>
+        <label data-field="approver">Who will approve them
+          <select name="approverId">${approverOptionsHTML(approvers, rerun?.fields?.approverId ?? null)}</select></label>
+        <label data-field="reviewDate">When they should next be read
+          <input type="date" name="reviewDate" value="${esc(rerun?.fields?.reviewDate ?? '')}"></label>
+      </div>
+      <p class="muted import-fields-note" data-fields-note></p>
+      <p class="muted">Every page arrives as a draft. A large export takes a while, and this dialog stays
+        open until the run has finished and can tell you what happened to each file.</p>`,
+    onSubmit: async (form) => {
+      const chosenType = form.type.value;
+      const rules = TYPE_FIELDS[chosenType] ?? {};
+      const fields = {};
+      if (rules.owner && form.ownerId.value) fields.ownerId = form.ownerId.value;
+      if (rules.approver && form.approverId.value) fields.approverId = form.approverId.value;
+      if (rules.reviewDate && form.reviewDate.value) fields.reviewDate = form.reviewDate.value;
+      const collectionId = form.collectionId.value;
+      const where = rerun ? 'upload' : form.where.value;
+
+      let summary;
+      if (where === 'upload') {
+        const file = form.archive.files?.[0];
+        if (!file) throw { message: 'Choose the export file first.' };
+        const query = new URLSearchParams({ source: form.source.value, collectionId, type: chosenType });
+        if (rerun) query.set('runId', rerun.runId);
+        for (const [key, value] of Object.entries(fields)) query.set(key, value);
+        summary = await apiUpload(`/imports/upload?${query.toString()}`, file);
+      } else {
+        const path = form.path.value.trim();
+        if (!path) throw { message: 'Say which folder on the server holds the export.' };
+        summary = await api('POST', '/imports', {
+          source: form.source.value,
+          path,
+          collectionId,
+          type: chosenType,
+          fields,
+        });
+      }
+      state.lastImport = summary;
+      toast(`${summary.counts.imported} imported, ${summary.counts.updated} updated, ` +
+        `${summary.counts.skipped} skipped, ${summary.counts.failed} failed.`, 'ok');
+      location.hash = `#/imports/${summary.runId}`;
+      // Landing on the run's own screen is the point: the counts are the
+      // headline and the per-file reasons are the work.
+      route();
+    },
+  });
+
+  const form = dialog.form;
+  // Which of the three fields the chosen type actually carries. The editor
+  // follows TYPE_FIELDS for exactly this reason, and the importer refuses a
+  // field its type does not carry — so a form that offered all three would be
+  // collecting an answer the server is about to throw back.
+  const syncType = () => {
+    const chosen = form.type.value;
+    const rules = TYPE_FIELDS[chosen] ?? {};
+    for (const key of ['owner', 'approver', 'reviewDate']) {
+      const row = form.querySelector(`[data-field="${key}"]`);
+      if (row) row.hidden = !rules[key];
+    }
+    const help = form.querySelector('[data-type-help]');
+    if (help) help.textContent = TYPE_HELP[chosen] ?? '';
+    const note = form.querySelector('[data-fields-note]');
+    if (note) {
+      note.textContent = rules.owner
+        ? 'Asked once, and written onto every page this run lands.' + (
+          chosen === 'policy'
+            ? ' A Policy also needs the day it began to apply, which is a fact about each document — those' +
+              ' pages arrive with their text in the draft, and the run says so file by file.'
+            : '')
+        : `A ${TYPE_LABELS[chosen] ?? chosen} carries no owner, no approver and no review date: it never holds` +
+          ' the Canonical mark, so it has none of those to carry.';
+    }
+  };
+  const syncWhere = () => {
+    const where = rerun ? 'upload' : form.where.value;
+    for (const key of ['upload', 'path']) {
+      const row = form.querySelector(`[data-where="${key}"]`);
+      if (row) row.hidden = key !== where;
+    }
+  };
+  form.type.addEventListener('change', syncType);
+  form.querySelectorAll('[name="where"]').forEach((radio) => radio.addEventListener('change', syncWhere));
+  // The approver list belongs to the collection, so it is re-read when the
+  // collection changes: a picker left behind from another collection offers
+  // names the server will refuse (approverOptionsHTML, above).
+  form.collectionId.addEventListener('change', async () => {
+    approvers = await loadApproveHolders(form.collectionId.value);
+    form.approverId.innerHTML = approverOptionsHTML(approvers, null);
+  });
+  syncType();
+  syncWhere();
 }
 
 // ---------------------------------------------------------------------------
