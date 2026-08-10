@@ -198,3 +198,90 @@ test('a11y: no interactive control is nested inside another one in the tree', ()
   assert.match(fn, /aria-controls="\$\{kids\}"/);
   assert.match(fn, /aria-label="Pages under \$\{esc\(n\.title\)\}"/, 'the toggle names what it collapses');
 });
+
+// ---------------------------------------------------------------------------
+// Round seven, Phase 8: the phone, and the search box on it.
+
+test('mobile: no text field is under the 16px iOS zoom floor', () => {
+  // iOS Safari zooms the page in when it focuses a field whose text is under
+  // 16px, and does not zoom back out. One tap on the search box left a reader
+  // at 1.2× with the right-hand third of every line off screen.
+  assert.match(css, /^input, textarea, select \{ font-family: inherit; font-size: 16px; \}$/m);
+  // And the two rules that were setting 15px by inheriting the body.
+  const searchInput = /\.search-slot input \{[\s\S]*?\}/.exec(css)![0];
+  assert.match(searchInput, /font-size: 16px/);
+  assert.doesNotMatch(searchInput, /^\s*font: inherit;/m);
+  const labelled = /label input, label textarea, label select \{[\s\S]*?\n\}/.exec(css)![0];
+  assert.match(labelled, /font-size: 16px/);
+  assert.doesNotMatch(labelled, /^\s*font: inherit;/m);
+});
+
+test('mobile: the sticky header does not keep a third of the screen', () => {
+  // Four rows at 375×667 — brand, search, seven nav entries over three lines,
+  // identity chip — stuck to the top of every screen in the product. The nav
+  // is the bulk of it and it collapses behind one control; nothing is cut.
+  assert.match(html, /<button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="topnav" hidden>/);
+  const phone = css.slice(css.indexOf('/* A STICKY HEADER MAY NOT BE A THIRD OF THE SCREEN.'));
+  assert.match(phone, /\.topnav \{ display: none; \}/);
+  assert.match(phone, /\.topbar\.is-nav-open \.topnav:not\(\[hidden\]\)/);
+  // The reason to open it has to be visible from outside it.
+  assert.match(client, /getElementById\('nav-toggle-count'\)/);
+  // And it closes on every navigation: a menu standing over the page you just
+  // chose from it is a menu you have to dismiss before you can read anything.
+  assert.match(client, /function closeNavMenu\(\)/);
+  const route = client.slice(client.indexOf('async function route()'), client.indexOf('async function render(view)'));
+  assert.match(route, /closeNavMenu\(\);/);
+});
+
+test('mobile: the nav is not on screen for somebody who is not signed in', () => {
+  // An author `display` rule outranks the UA's `[hidden] { display: none }`,
+  // which .tree-toggle[hidden] already documents — and .topnav has
+  // `display: flex`, so `nav.hidden = true` was doing nothing at all and a
+  // signed-out visitor was offered links that bounce straight back.
+  assert.match(css, /\.topnav\[hidden\] \{ display: none; \}/);
+});
+
+// ---------------------------------------------------------------------------
+// Search as a surface
+
+test('search: Enter goes somewhere, and it is a route somebody can send', () => {
+  const wire = client.slice(client.indexOf('function wireSearch()'), client.indexOf('async function viewSearch('));
+  assert.match(wire, /if \(e\.key === 'Enter'\)/);
+  assert.match(wire, /location\.hash = searchRoute\(q\)/);
+  assert.match(client, /function searchRoute\(q\) \{\n\s*return `#\/search\?q=\$\{encodeURIComponent\(q\)\}`;/);
+  assert.match(client, /if \(parts\[0\] === 'search'\) return await render\(\(\) => viewSearch\(hashQuery\(\)\)\);/);
+});
+
+test('search: the dropdown says it is a dropdown, not the results', () => {
+  // Twelve hits were shown and the thirteenth was never mentioned, so a slice
+  // was read as the result set.
+  const wire = client.slice(client.indexOf('function wireSearch()'), client.indexOf('async function viewSearch('));
+  assert.match(wire, /More matches than fit here/);
+  assert.match(wire, /items\.slice\(0, SEARCH_DROPDOWN_CAP\)/);
+});
+
+test('search: a late answer never lands in a box that has moved on', () => {
+  // Two keystrokes, two requests, no ordering guarantee — an earlier slower
+  // answer arriving last leaves results for a query the box no longer holds.
+  // Same class as the audit log's stale count.
+  const wire = client.slice(client.indexOf('function wireSearch()'), client.indexOf('async function viewSearch('));
+  assert.match(wire, /const mine = \+\+seq;/);
+  assert.match(wire, /if \(mine !== seq\) return;/);
+});
+
+test('search: the results page scopes its emptiness to the reader, like every other empty state', () => {
+  const view = client.slice(client.indexOf('async function viewSearch('), client.indexOf('function wireSearchPageForm()'));
+  assert.match(view, /Nothing you can see matches/);
+  assert.doesNotMatch(view, /Nothing in the record matches/);
+  // And it never states a total: search takes an arbitrary term, so a
+  // hidden-match count is an oracle (policy question 1).
+  assert.doesNotMatch(view, /hidden|withheld/);
+});
+
+test('search: a suggestion is an offer, never an applied correction', () => {
+  const fn = /async function searchSuggestionHTML\(q\)[\s\S]*?\n\}/.exec(client)![0];
+  assert.match(fn, /Did you mean <a href/);
+  // Nothing re-runs the search with the suggested words behind the reader's
+  // back — the results on screen are always the results for what was typed.
+  assert.doesNotMatch(fn, /location\.hash/);
+});

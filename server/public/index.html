@@ -21,6 +21,13 @@
   <a class="skip-link" href="#main" id="skip-to-main">Skip to the page</a>
   <header class="topbar">
     <a class="brand" href="#/">Veryl Canon<span class="stage">alpha</span></a>
+    <!-- The nav is seven entries; wrapped onto a phone it was three of the four
+         rows that made this sticky bar 37.5% of the viewport. It collapses
+         behind this, and the queue count comes with it so the reason to open it
+         is visible while it is closed. Rendered only under 640px (styles.css);
+         `hidden` tracks the nav's own, so a signed-out visitor gets neither. -->
+    <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="topnav" hidden>Menu<span
+      class="nav-count" id="nav-toggle-count" hidden>0</span></button>
     <div class="search-slot" id="search-slot" hidden>
       <input id="search-input" type="search" placeholder="Search the record&hellip;" autocomplete="off" aria-label="Search the record">
       <div id="search-results" class="search-results" hidden></div>

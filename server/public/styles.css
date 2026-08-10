@@ -128,6 +128,20 @@ code {
 
 hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 
+/* SIXTEEN PIXELS IS NOT A DESIGN CHOICE, IT IS A FLOOR.
+   iOS Safari zooms the whole page in when it focuses a text field whose text
+   is under 16px, and it does not zoom back out afterwards — so one tap on the
+   search box left a compliance director reading a policy at 1.2× with the
+   right-hand third of every line off screen, and the only way back was a
+   pinch (round seven). Canon's body text is 15px and every field inherited
+   it; a bare <input> with no rule at all inherits nothing and takes the UA's
+   13.33px, which is worse.
+
+   The floor is set here, once, on the elements rather than per screen, so a
+   field added later is over the line by default. Anything that deliberately
+   wants larger says so with a heavier selector; nothing may go under. */
+input, textarea, select { font-family: inherit; font-size: 16px; }
+
 /* ---------- top bar -------------------------------------------------- */
 
 .topbar {
@@ -165,7 +179,17 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   vertical-align: 2px;
 }
 
+/* An author `display` rule outranks the UA's `[hidden] { display: none }` —
+   the same trap .tree-toggle[hidden] documents below — so the nav has to say
+   this itself. Without it the nav's links were on screen for somebody who is
+   not signed in, pointing at routes that bounce straight back to the sign-in
+   screen. */
+.topnav[hidden] { display: none; }
 .topnav { display: flex; gap: 0.25rem; margin-left: auto; }
+
+/* The phone-width disclosure for the nav. Not rendered at all above 640px,
+   where the nav fits on the bar beside everything else. */
+.nav-toggle { display: none; }
 .topnav a {
   color: var(--muted);
   padding: 0.35rem 0.7rem;
@@ -191,9 +215,33 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   border-radius: 8px;
   background: var(--bg);
   color: var(--text);
-  font: inherit;
+  /* Not `font: inherit` — that is where the 15px came from. */
+  font-family: inherit;
+  font-size: 16px;
 }
 .search-slot input:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
+/* The dropdown's foot: the way to a page that holds more than twelve hits and
+   can be linked to. Styled as a row of the list rather than as a button —
+   it is where the list continues. */
+.search-more {
+  display: block;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.86rem;
+  font-weight: 550;
+  color: var(--accent);
+}
+.search-more:hover { background: var(--surface-2); text-decoration: none; }
+/* "Did you mean" — an offer, never an applied correction. Quiet, and never
+   styled as a result: the results on screen are the results for what was
+   actually typed. */
+.search-suggest { margin: 0.6rem 0 0; padding: 0 0.75rem; font-size: 0.9rem; }
+.search-page-form { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 1rem; }
+.search-page-form label { flex: 1 1 20rem; margin: 0; }
+.search-count { margin: 0 0 0.6rem; }
+.search-results-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.search-results-list .search-hit { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+
 .search-results {
   position: absolute;
   top: calc(100% + 6px);
@@ -489,7 +537,10 @@ label input, label textarea, label select {
   display: block;
   width: 100%;
   margin-top: 0.3rem;
-  font: inherit;
+  /* `font: inherit` here put every form field in the product at the body's
+     15px, which is under the iOS zoom floor. See the rule near the top. */
+  font-family: inherit;
+  font-size: 16px;
   font-weight: 400;
   color: var(--text);
   background: var(--bg);
@@ -2403,6 +2454,58 @@ label.check input { width: auto; display: inline; margin: 0; }
   .map-scope select { max-width: 100%; }
   .map-legend-grid { gap: 0.7rem 1rem; }
 }
+
+/* A STICKY HEADER MAY NOT BE A THIRD OF THE SCREEN.
+   At 375×667 the bar wrapped into four rows — brand, search, seven nav entries
+   over three lines, identity chip — and measured 37.5% of the viewport, stuck
+   there, on every screen in the product (round seven). A reader approving a
+   policy on a phone was reading it through a letterbox.
+
+   The nav is the bulk of it, so the nav collapses behind one control. Nothing
+   is cut and nothing is moved off the bar: every entry is still there, one tap
+   away, and the count on My queue rides along on the toggle so the reason to
+   open it is visible while it is closed.
+
+   Deliberately NOT done with `order`: putting the identity chip up onto the
+   first row would have taken thirty pixels off and made the visual order
+   differ from the tab order, which is precisely the kind of thing the rest of
+   this round has been removing. The chip keeps its own line. The bar is about
+   21% now instead of 37.5%, and the sequence a keyboard reads is the sequence
+   an eye reads. */
+@media (max-width: 640px) {
+  .nav-toggle:not([hidden]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    /* 44px of tap target, which is the floor for a control on a phone. */
+    min-height: 44px;
+    padding: 0 0.7rem;
+    margin-left: auto;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 550;
+    cursor: pointer;
+  }
+  .topbar { padding: 0.4rem 0.9rem; gap: 0.4rem 0.6rem; }
+  /* Its own row, full width: a search box sharing a line with a brand and a
+     button is a search box nobody can read what they typed into. */
+  .search-slot { flex: 1 0 100%; margin-left: 0; }
+  .topnav { display: none; }
+  /* One tap opens it as a column. A column, not a wrapped row, because a
+     wrapped row of seven entries is the four-line bar this replaced. */
+  .topbar.is-nav-open .topnav:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex: 1 0 100%;
+    margin-left: 0;
+    gap: 0;
+  }
+  .topbar.is-nav-open .topnav a { padding: 0.6rem 0.7rem; min-height: 44px; display: flex; align-items: center; }
+}
+
 
 /* The stated basis for a backdated effective date, shown wherever the date is
    (USER-TESTING.md, second round). Quiet, because it is provenance rather than

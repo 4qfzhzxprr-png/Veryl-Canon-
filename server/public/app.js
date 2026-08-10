@@ -1055,8 +1055,13 @@ function diffTableHTML(rows, headA, headB) {
 function renderChrome() {
   const chip = document.getElementById('actor-chip');
   const nav = document.getElementById('topnav');
+  // The phone-width disclosure for the nav. It tracks the nav's own hidden
+  // state rather than having one of its own: a control that opens something
+  // nobody is allowed to see is worse than no control.
+  const navToggle = document.getElementById('nav-toggle');
   if (state.actor) {
     nav.hidden = false;
+    if (navToggle) navToggle.hidden = false;
     chip.innerHTML = `
       <span class="chip-name">${esc(state.actor.name)}</span>
       ${state.actor.kind === 'agent' ? '<span class="kind-tag agent">agent</span>' : ''}
@@ -1101,8 +1106,29 @@ function renderChrome() {
     refreshQueueNav({ force: true });
   } else {
     nav.hidden = true;
+    if (navToggle) navToggle.hidden = true;
+    closeNavMenu();
     chip.innerHTML = '';
   }
+}
+
+/** Shut the phone menu. Called on sign-out and on every navigation — a menu
+ *  left standing over the page you just chose from it is a menu you have to
+ *  dismiss before you can read what you asked for. */
+function closeNavMenu() {
+  document.querySelector('.topbar')?.classList.remove('is-nav-open');
+  document.getElementById('nav-toggle')?.setAttribute('aria-expanded', 'false');
+}
+
+function wireNavToggle() {
+  const toggle = document.getElementById('nav-toggle');
+  const bar = document.querySelector('.topbar');
+  if (!toggle || !bar) return;
+  toggle.addEventListener('click', () => {
+    const open = toggle.getAttribute('aria-expanded') !== 'true';
+    toggle.setAttribute('aria-expanded', String(open));
+    bar.classList.toggle('is-nav-open', open);
+  });
 }
 
 async function detectSearch() {
@@ -1313,53 +1339,211 @@ function searchScopeHTML(empty) {
       title alone${empty ? ' — if you are looking for words inside one, try its title' : ''}.</p>`;
 }
 
+/** One hit, drawn the same way in the dropdown and on the results page —
+ *  because two renderings of the same result set drift, and a reader who sees
+ *  a page in the dropdown and not on the page it links to has been lied to
+ *  by one of them. */
+function searchHitHTML(it, { withCollection = null } = {}) {
+  const id = it.pageId ?? it.id;
+  const title = it.title ?? '(untitled)';
+  const status = it.status ? badge(it.status, 'sm') : '';
+  const type = it.type ? `<span class="muted">${esc(TYPE_LABELS[it.type] ?? it.type)}</span>` : '';
+  const where = withCollection && it.collectionId && withCollection.get(it.collectionId)
+    ? `<span class="muted"> · ${esc(withCollection.get(it.collectionId))}</span>`
+    : '';
+  const snippet = it.snippet ?? it.excerpt ?? '';
+  return `<a class="search-hit" href="#/pages/${esc(id)}">
+    <span class="search-hit-title">${esc(title)}</span> ${status} ${type}${where}
+    ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
+  </a>`;
+}
+
+/** The results of a search, however the caller got them. `Array.isArray` first
+ *  because that is the shape /search has always returned. */
+function searchItemsOf(r) {
+  return Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
+}
+
+/** Where a submitted search goes. One place, so the box, the Enter key and any
+ *  future "see all" link cannot disagree about it. */
+function searchRoute(q) {
+  return `#/search?q=${encodeURIComponent(q)}`;
+}
+
+/**
+ * "Did you mean" — asked for only when a search found nothing, and rendered as
+ * an OFFER rather than applied. The server verifies that the alternative would
+ * actually find something this reader can open before it suggests it (see
+ * SearchIndex.suggest); a suggestion that silently re-ran the search would be
+ * answering a question nobody asked, which is the same failure as a record
+ * that quietly corrects what somebody wrote.
+ */
+async function searchSuggestionHTML(q) {
+  try {
+    const r = await api('GET', `/search/suggest?q=${encodeURIComponent(q)}`);
+    if (!r?.query) return '';
+    return `<p class="search-suggest">Did you mean <a href="${esc(searchRoute(r.query))}">${esc(r.query)}</a>?</p>`;
+  } catch {
+    // A server without the route says nothing rather than showing an error for
+    // a convenience.
+    return '';
+  }
+}
+
+const SEARCH_DROPDOWN_CAP = 12;
+
 function wireSearch() {
   const input = document.getElementById('search-input');
   const results = document.getElementById('search-results');
   let timer = null;
+  // Which request the box is waiting for. Two keystrokes produce two requests
+  // and nothing guarantees they come back in order — an earlier, slower answer
+  // landing last leaves the dropdown showing results for a query the box no
+  // longer contains, which is the same class of defect as the audit log's
+  // stale count: a listing from one source under a question from another.
+  let seq = 0;
   const hide = () => { results.hidden = true; };
-  input.addEventListener('input', () => {
-    clearTimeout(timer);
+  const run = async () => {
     const q = input.value.trim();
     if (q.length < 2) { hide(); return; }
-    timer = setTimeout(async () => {
-      try {
-        const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
-        const items = Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
-        if (!items.length) {
-          // This used to claim the RECORD held no match, from a result set
-          // that had already been narrowed to this reader's
-          // collections. Under the record's disclosure rule the fix is to stop
-          // overclaiming, NOT to report how many hidden pages matched: search
-          // takes an arbitrary term, so a hidden-match count is an oracle you
-          // could binary-search titles with. Existence is disclosed where the
-          // record states a relationship to a page you already hold; it is not
-          // disclosed in answer to any question anyone can type.
-          results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${searchScopeHTML(true)}`;
-        } else {
-          results.innerHTML = items.slice(0, 12).map((it) => {
-            const id = it.pageId ?? it.id;
-            const title = it.title ?? '(untitled)';
-            const status = it.status ? badge(it.status, 'sm') : '';
-            const type = it.type ? `<span class="muted">${esc(TYPE_LABELS[it.type] ?? it.type)}</span>` : '';
-            const snippet = it.snippet ?? it.excerpt ?? '';
-            return `<a class="search-hit" href="#/pages/${esc(id)}">
-              <span class="search-hit-title">${esc(title)}</span> ${status} ${type}
-              ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
-            </a>`;
-          }).join('') + searchScopeHTML(false);
-        }
+    const mine = ++seq;
+    try {
+      const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
+      if (mine !== seq) return; // a later keystroke owns the dropdown now
+      const items = searchItemsOf(r);
+      if (!items.length) {
+        // This used to claim the RECORD held no match, from a result set
+        // that had already been narrowed to this reader's
+        // collections. Under the record's disclosure rule the fix is to stop
+        // overclaiming, NOT to report how many hidden pages matched: search
+        // takes an arbitrary term, so a hidden-match count is an oracle you
+        // could binary-search titles with. Existence is disclosed where the
+        // record states a relationship to a page you already hold; it is not
+        // disclosed in answer to any question anyone can type.
+        results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${searchScopeHTML(true)}`;
         results.hidden = false;
-      } catch (err) {
-        if (err.status === 404) { state.features.search = false; document.getElementById('search-slot').hidden = true; }
-        else toastError(err);
+        const suggestion = await searchSuggestionHTML(q);
+        if (mine === seq && suggestion) {
+          results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${suggestion}${searchScopeHTML(true)}`;
+        }
+      } else {
+        // A dropdown holds twelve. It used to hold twelve and say nothing
+        // about the thirteenth, so the list a reader treated as "the results"
+        // was a slice of them with no mark on it.
+        const more = items.length > SEARCH_DROPDOWN_CAP
+          ? `<a class="search-more" href="${esc(searchRoute(q))}">More matches than fit here — see the results page</a>`
+          : `<a class="search-more" href="${esc(searchRoute(q))}">See these on a page you can read and link to</a>`;
+        results.innerHTML = items.slice(0, SEARCH_DROPDOWN_CAP).map((it) => searchHitHTML(it)).join('')
+          + more + searchScopeHTML(false);
+        results.hidden = false;
       }
-    }, 250);
+    } catch (err) {
+      if (err.status === 404) { state.features.search = false; document.getElementById('search-slot').hidden = true; }
+      else toastError(err);
+    }
+  };
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(run, 250);
   });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hide(); input.blur(); } });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { hide(); input.blur(); return; }
+    // ENTER DID NOTHING. The box is inside no form, so the key that everybody
+    // presses after typing a search fell on the floor — and there was nowhere
+    // for it to go, because the dropdown was the only surface search had
+    // (round seven). It goes to the results page now, which is a route, which
+    // means a search is a link somebody can send to a colleague.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const q = input.value.trim();
+      if (!q) return;
+      clearTimeout(timer);
+      hide();
+      location.hash = searchRoute(q);
+    }
+  });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.search-slot')) hide();
-    if (e.target.closest('.search-hit')) { hide(); input.value = ''; }
+    if (e.target.closest('.search-hit') || e.target.closest('.search-more')) { hide(); input.value = ''; }
+  });
+}
+
+/**
+ * The results page. Search had a dropdown and nothing else: no way to see past
+ * twelve hits, no way to keep a search, no way to send one to somebody, and
+ * nothing at all for the Enter key to do.
+ *
+ * It states the same boundary the dropdown states, in the same words, and it
+ * makes the same claim about emptiness — "nothing YOU CAN SEE matches" — for
+ * the same reason: the result set is permission-scoped and a screen that reads
+ * it as a fact about the record is stating something it cannot know.
+ */
+async function viewSearch(query = {}) {
+  const q = (query.q ?? '').trim();
+  const collections = await api('GET', '/collections').catch(() => []);
+  const names = new Map(collections.map((c) => [c.id, c.name]));
+
+  if (!q) {
+    app.innerHTML = `
+      <div class="page-narrow">
+        <div class="page-head"><h1>Search</h1></div>
+        <form class="search-page-form" id="search-page-form">
+          <label>What are you looking for?
+            <input name="q" type="search" autocomplete="off" placeholder="Search the record&hellip;"></label>
+          <button class="btn primary" type="submit">Search</button>
+        </form>
+        ${searchScopeHTML(false)}
+      </div>`;
+    wireSearchPageForm();
+    return;
+  }
+
+  let items = [];
+  try {
+    // 50, not the dropdown's twelve: this is the surface that exists to show
+    // more than a dropdown can. The server caps at 100 either way.
+    items = searchItemsOf(await api('GET', `/search?q=${encodeURIComponent(q)}&limit=50`));
+  } catch (err) {
+    renderErrorPage(err);
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="page-narrow">
+      <div class="page-head"><h1>Search</h1></div>
+      <form class="search-page-form" id="search-page-form">
+        <label>What are you looking for?
+          <input name="q" type="search" autocomplete="off" value="${esc(q)}"></label>
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      ${items.length
+        ? `<p class="muted search-count">${items.length} result${items.length === 1 ? '' : 's'} you can see${
+            items.length >= 50 ? ', the most relevant first — narrow the words if what you want is not here' : ''
+          }.</p>
+           <div class="search-results-list">${items.map((it) => searchHitHTML(it, { withCollection: names })).join('')}</div>`
+        : `<div class="empty-state">
+            <h2>Nothing you can see matches</h2>
+            <p>Searching finds pages in the collections you belong to. Somebody else may hold
+            material on this subject in a collection you are not a member of.</p>
+          </div>`}
+      <div id="search-suggest"></div>
+      ${searchScopeHTML(!items.length)}
+    </div>`;
+  wireSearchPageForm();
+  if (!items.length) {
+    const host = app.querySelector('#search-suggest');
+    const suggestion = await searchSuggestionHTML(q);
+    if (host?.isConnected) host.innerHTML = suggestion;
+  }
+}
+
+function wireSearchPageForm() {
+  const form = app.querySelector('#search-page-form');
+  if (!form) return;
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = form.q.value.trim();
+    if (q) location.hash = searchRoute(q);
   });
 }
 
@@ -1495,6 +1679,7 @@ async function route() {
     : parts[0] === 'queue' ? 'queue'
     : 'home';
   markNav(section);
+  closeNavMenu();
   // The badge is refreshed on every navigation, and cached for a few seconds
   // (loadQueue), so moving around the record does not re-run the queue. It is
   // deliberately NOT awaited: a number arriving a moment after the page is a
@@ -1507,6 +1692,7 @@ async function route() {
     if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
     if (parts[0] === 'gaps') return await render(() => viewGaps(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
+    if (parts[0] === 'search') return await render(() => viewSearch(hashQuery()));
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
     if (parts[0] === 'collections' && parts[1] && parts[2] === 'map') {
@@ -1807,6 +1993,16 @@ async function refreshQueueNav({ force = false } = {}) {
   count.textContent = total > 99 ? '99+' : String(total);
   // The number is announced, because it is the whole point of putting it here.
   link.setAttribute('aria-label', total ? `My queue, ${total} waiting` : 'My queue');
+  // The same number on the phone-width menu button. Behind a closed menu the
+  // badge is invisible, and a badge nobody sees is a badge that does not work
+  // — the reason to open the menu has to be on the outside of it.
+  const toggleCount = document.getElementById('nav-toggle-count');
+  const toggle = document.getElementById('nav-toggle');
+  if (toggleCount) {
+    toggleCount.hidden = total === 0;
+    toggleCount.textContent = count.textContent;
+  }
+  if (toggle) toggle.setAttribute('aria-label', total ? `Menu, ${total} waiting in your queue` : 'Menu');
 }
 
 /**
@@ -9162,5 +9358,6 @@ loadAuth().finally(() => {
   renderChrome();
   wireSearch();
   wireSkipLink();
+  wireNavToggle();
   route();
 });

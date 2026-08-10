@@ -1132,7 +1132,10 @@ export class CanonStore {
       // explain, that is a mistake worth naming; if the patch CLEARS the date,
       // the basis it explained goes with it rather than being left dangling.
       if (out.effectiveDateBasis) {
-        throw new CanonError('invalid', 'effectiveDateBasis explains an effective date; this page states none');
+        throw new CanonError(
+          'invalid',
+          '"Where the effective date comes from" explains an effective date; this page states none',
+        );
       }
       out.effectiveDateBasis = null;
     }
@@ -1215,7 +1218,7 @@ export class CanonStore {
       throw new CanonError(
         'workflow',
         `A ${type} requires an effective date before it can publish: the day what it says began to apply. ` +
-          'If it predates this record, say where the date comes from in `effectiveDateBasis`.',
+          'If it predates this record, fill in "Where the effective date comes from" as well.',
       );
     }
   }

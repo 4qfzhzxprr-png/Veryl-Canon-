@@ -578,7 +578,10 @@ export class ProposalService {
       out.effectiveDateBasis = basis;
     }
     if (!out.effectiveDate && out.effectiveDateBasis) {
-      throw new CanonError('invalid', 'effectiveDateBasis explains an effective date; this proposal states none');
+      throw new CanonError(
+        'invalid',
+        '"Where the effective date comes from" explains an effective date; this proposal states none',
+      );
     }
     requireBasisForBackdating({
       next: out.effectiveDate ?? null,

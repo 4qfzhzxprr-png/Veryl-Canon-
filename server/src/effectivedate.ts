@@ -121,6 +121,25 @@ export function isNotYetInForce(effectiveDate: string | null | undefined, on: st
 }
 
 /**
+ * THE FIELD, AS THE PERSON FILLING IT IN SEES IT.
+ *
+ * Every refusal about a backdated date named the field `effectiveDateBasis`,
+ * which is not a thing that exists anywhere a person can see: the editor's
+ * label reads "Where the effective date comes from", and a policy owner who
+ * had just been refused a save was being told to go and fill in a field by a
+ * name that appears on no screen (round seven). It is the standing
+ * non-technical-voice rule applied where it had been missed — refusal copy is
+ * user-facing copy, and this refusal is one a person meets on an ordinary day.
+ *
+ * The machine-readable half is untouched: these errors still carry
+ * `{ needs: 'effectiveDateBasis' }` in their details, because an API caller
+ * needs the field's real name and a structured field is not prose. The label
+ * below and the editor's <label> are the same words on purpose; if one moves,
+ * the other must.
+ */
+const BASIS_LABEL = 'Where the effective date comes from';
+
+/**
  * The shape rules: a real ISO date inside the window. Throws `invalid` with the
  * offending value in the message, in the style input.ts settled on — name the
  * field, quote what arrived, never coerce.
@@ -141,8 +160,8 @@ export function validateEffectiveDateShape(value: string, on: string = today()):
     throw new CanonError(
       'invalid',
       `An effective date more than ${MAX_EFFECTIVE_DATE_HORIZON_DAYS} days ahead is not a commitment anyone can ` +
-        `keep: '${value}' is past ${horizon}. A date in the past is allowed — say where it comes from in ` +
-        '`effectiveDateBasis` — but a date this far ahead is refused.',
+        `keep: '${value}' is past ${horizon}. A date in the past is allowed — fill in "${BASIS_LABEL}" — ` +
+        'but a date this far ahead is refused.',
       { field: 'effectiveDate', latest: horizon },
     );
   }
@@ -155,7 +174,7 @@ export function validateEffectiveDateShape(value: string, on: string = today()):
  */
 export function normalizeBasis(value: string | null | undefined): string | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== 'string') throw new CanonError('invalid', 'effectiveDateBasis is text');
+  if (typeof value !== 'string') throw new CanonError('invalid', `"${BASIS_LABEL}" is a sentence of text`);
   const trimmed = value.trim();
   if (!trimmed) return null;
   if (trimmed.length > MAX_EFFECTIVE_DATE_BASIS) {
@@ -199,8 +218,8 @@ export function backdatedWithoutBasisError(effectiveDate: string, anchor: string
     `This effective date (${effectiveDate}) is earlier than anything Canon holds about this page, whose record ` +
       `starts ${anchor}. That is usually legitimate — a policy adopted before Canon existed and migrated into it ` +
       'keeps its real date — but the record cannot corroborate it, so it must not be printed as though the record ' +
-      'could. Say where the date comes from in `effectiveDateBasis` (a committee minute, the prior system, the ' +
-      'import run) and it will be carried in the page history and in every attestation beside this date.',
+      `could. Fill in "${BASIS_LABEL}" — a committee minute, the prior system, the import run — and it will be ` +
+      'carried in the page history and in every attestation beside this date.',
     { field: 'effectiveDate', effectiveDate, recordStarts: anchor, needs: 'effectiveDateBasis' },
   );
 }
