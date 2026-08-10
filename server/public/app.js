@@ -1379,6 +1379,40 @@ function searchScopeHTML(empty) {
       title alone${empty ? ' — if you are looking for words inside one, try its title' : ''}.</p>`;
 }
 
+// SUPERSESSION, WHERE A READER MEETS THE PAGE.
+//
+// A page the record has moved on from used to look, in every list somebody
+// arrives through, exactly like a page it has not: one status chip, and the
+// supersession behind a click nobody had a reason to make. A reader searching
+// for the on-call runbook got DRAFT, which says "nobody approved this" and
+// does not say "and something replaces it" (REMEDIATION-PLAN.md 1.6).
+//
+// One chip, one function, used by the search hit and by the collection
+// contents table, because two renderings of the same fact drift.
+//
+// WHAT IT SAYS WHEN THE REPLACEMENT IS NOT SHOWABLE. The server sends
+// `{ withheld: true }` when the replacement sits in a collection this reader
+// holds no role in (src/supersession.ts). The chip is drawn all the same and
+// says only that the page is superseded: the record states that relationship
+// about a page this reader holds, and the page at the far end is not named,
+// not linked, and not described. Existence, never identity — the answered
+// policy question, and the same rule the Related panel already keeps.
+//
+// The three hovers are three different facts, and the middle one is the one
+// the banner on the page already spells out: a replacement Ask cannot draw on
+// means nothing has been approved on the subject and THIS page is still what
+// the record serves.
+function supersededChipHTML(mark) {
+  if (!mark) return '';
+  const withheld = mark.withheld === true;
+  const title = withheld
+    ? 'Superseded — the record names a replacement in a collection you do not have access to. Nothing about that page is shown here.'
+    : mark.answerable
+      ? `Superseded — the record names "${mark.title ?? 'another page'}" as its replacement.`
+      : `Superseded — the page named as its replacement is not part of the official record yet, so nothing has been approved on this subject and this page is still what the record serves.`;
+  return `<span class="badge badge-superseded sm" title="${esc(title)}">Superseded</span>`;
+}
+
 /** One hit, drawn the same way in the dropdown and on the results page —
  *  because two renderings of the same result set drift, and a reader who sees
  *  a page in the dropdown and not on the page it links to has been lied to
@@ -1387,13 +1421,16 @@ function searchHitHTML(it, { withCollection = null } = {}) {
   const id = it.pageId ?? it.id;
   const title = it.title ?? '(untitled)';
   const status = it.status ? badge(it.status, 'sm') : '';
+  // Beside the status and not instead of it: both are true, and a superseded
+  // Draft and a superseded Canonical page are different situations.
+  const superseded = supersededChipHTML(it.supersededBy);
   const type = it.type ? `<span class="muted">${esc(TYPE_LABELS[it.type] ?? it.type)}</span>` : '';
   const where = withCollection && it.collectionId && withCollection.get(it.collectionId)
     ? `<span class="muted"> · ${esc(withCollection.get(it.collectionId))}</span>`
     : '';
   const snippet = it.snippet ?? it.excerpt ?? '';
   return `<a class="search-hit" href="#/pages/${esc(id)}">
-    <span class="search-hit-title">${esc(title)}</span> ${status} ${type}${where}
+    <span class="search-hit-title">${esc(title)}</span> ${status} ${superseded} ${type}${where}
     ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
   </a>`;
 }
@@ -2820,7 +2857,11 @@ function collectionContentsHTML(tree) {
       <tr class="doc-row doc-d${Math.min(n.depth, 4)}">
         <td class="doc-title"><a href="#/pages/${esc(n.id)}">${esc(n.title)}</a></td>
         <td class="nowrap">${esc(TYPE_LABELS[n.type] ?? n.type)}</td>
-        <td class="nowrap">${badge(n.status, 'sm')}</td>
+        ${/* Supersession beside standing, for the reason the whole table is
+              here: this is the screen somebody chooses a page FROM, and a
+              chip that says only DRAFT over a page the record has replaced
+              sends them into it none the wiser. See supersededChipHTML. */ ''}
+        <td class="nowrap">${badge(n.status, 'sm')} ${supersededChipHTML(n.supersededBy)}</td>
         <td>${n.ownerId ? actorLabel(n.ownerId) : '<span class="muted">—</span>'}</td>
         ${/* For a page In Review this is the approver the server will accept —
               the draft's, the same one the queue is built on — so a queue can

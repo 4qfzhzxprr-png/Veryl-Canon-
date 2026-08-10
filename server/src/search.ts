@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
 import { indexableText } from './plaintext.js';
+import { SupersededBy, supersessionMarks } from './supersession.js';
 
 /** The stored JSON list of aliases, as the text the index holds for them. */
 function aliasText(aliasesJson: string): string {
@@ -155,6 +156,15 @@ export interface SearchResult {
   status: PageStatus;
   ownerId: string | null;
   snippet: string;
+  /**
+   * What the record says replaces this page, or null. A status chip alone said
+   * DRAFT over a page the record had already moved on from, to the reader who
+   * had not opened it yet — which is the surface a reader most often arrives
+   * through (REMEDIATION-PLAN.md 1.6). Withheld rather than absent when the
+   * replacement sits in a collection this asker holds no role in: see
+   * supersession.ts for why existence is disclosed and identity is not.
+   */
+  supersededBy: SupersededBy | null;
 }
 
 export interface SearchFilter {
@@ -554,6 +564,20 @@ export class SearchIndex {
         unknown
       >[];
 
+    // One lookup for the whole page of results, keyed on ids that have already
+    // been through the membership join above — so the disclosure is bounded to
+    // relations asserted against pages this asker may read (supersession.ts).
+    // Unconditional rather than a flag a caller can forget: every surface that
+    // lists pages is a surface a reader arrives through.
+    const superseded = supersessionMarks(
+      this.db,
+      actorId,
+      rows.map((r) => r.id as string),
+      // The Knowledge API's second reader travels here too: a result is
+      // visible to both actors, and so is the page named as its replacement.
+      { alsoVisibleTo: filter.alsoVisibleTo },
+    );
+
     return rows.map((r) => ({
       pageId: r.id as string,
       title: r.title as string,
@@ -562,6 +586,7 @@ export class SearchIndex {
       status: r.status as PageStatus,
       ownerId: (r.owner_id as string) ?? null,
       snippet: r.snip as string,
+      supersededBy: superseded.get(r.id as string) ?? null,
     }));
   }
 }

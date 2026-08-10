@@ -1,0 +1,18 @@
+{
+  "name": "@veryl/canon-browser-proof",
+  "version": "0.1.0",
+  "description": "Browser proof for Veryl Canon: starts the real server, drives the shipped client in Chromium, and asserts on what a person actually sees.",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "//pretest": "The proof drives the BUILT server (dist/server/src/index.js). Building it here means `npm test` can never run against a stale build, which is the one way a proof like this can be quietly wrong.",
+    "pretest": "npm --prefix ../server run build",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  },
+  "private": true,
+  "type": "module"
+}

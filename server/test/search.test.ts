@@ -330,10 +330,17 @@ test('API: GET /search returns permission-filtered, highlighted results', async 
     assert.equal(hits.json.length, 2);
     assert.equal(hits.json[0].status, 'canonical'); // canonical first
     assert.ok(hits.json[0].snippet.includes('<mark>'));
+    // `supersededBy` joined the shape when supersession reached the surfaces a
+    // reader arrives through (REMEDIATION-PLAN.md 1.6, and supersession.ts for
+    // what it carries and what it withholds). Null here: nothing replaces
+    // either of these pages, and the field is present and null rather than
+    // absent, so a client can tell "not superseded" from "this read does not
+    // say".
     assert.deepEqual(
       Object.keys(hits.json[0]).sort(),
-      ['collectionId', 'ownerId', 'pageId', 'snippet', 'status', 'title', 'type'],
+      ['collectionId', 'ownerId', 'pageId', 'snippet', 'status', 'supersededBy', 'title', 'type'],
     );
+    assert.equal(hits.json[0].supersededBy, null);
 
     const filtered = await call(`/search?q=vault&type=note&collection=${collection.id}`, dana.id);
     assert.equal(filtered.json.length, 1);

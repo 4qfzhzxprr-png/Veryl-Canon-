@@ -434,7 +434,13 @@ export const KNOWLEDGE_ROUTES: KnowledgeRouteSpec[] = [
   knowledge('GET', `${KNOWLEDGE_PREFIX}/collections/:id/tree`, 'tree', async (call) => {
     const collectionId = call.params.id!;
     requirePerson(call, collectionId, 'view');
-    const result = await asApp(call, () => call.store.tree(call.app.actorId, collectionId));
+    // The person in front of the app is the second gate, exactly as it is on
+    // `/knowledge/search`. It decides one field: whether a supersession's
+    // replacement may be named (supersession.ts) — the only thing on this read
+    // that comes from a collection the person was not just checked for.
+    const result = await asApp(call, () =>
+      call.store.tree(call.app.actorId, collectionId, { alsoVisibleTo: call.person.id }),
+    );
     return { result, collectionId };
   }),
 

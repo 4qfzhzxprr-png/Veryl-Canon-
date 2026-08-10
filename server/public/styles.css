@@ -427,6 +427,12 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
    has been flagged — so it must not read like a draft. */
 .badge-needs_update { color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber); }
 .badge-archived { color: var(--muted); background: var(--surface-2); border: 1px solid var(--surface-2); }
+/* Superseded is not a status — a superseded page keeps whichever of the five
+   it had — so it is drawn as a second chip beside the first, in the caution
+   colour the record already uses for "there is something here to know", and
+   outlined rather than filled so it never outweighs the standing it sits
+   next to. */
+.badge-superseded { color: var(--amber); border: 1px dashed var(--amber); background: transparent; }
 /* Federated values: stale is a caution, not an alarm — the same amber the
    record already uses for "waiting on someone". */
 .badge-stale { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
@@ -2257,6 +2263,15 @@ label.check input { width: auto; display: inline; margin: 0; }
    nobody was told that 25 drafts were waiting — so it reads as a number, not
    as decoration, and it disappears entirely at zero rather than showing a
    confident 0 somebody has to parse. */
+/* And it disappears by being TOLD to: `display: inline-block` below is an
+   author rule, and an author rule for `display` outranks the user agent's
+   `[hidden] { display: none }` — the same trap `label[hidden]`,
+   `.topnav[hidden]` and `.tree-toggle[hidden]` each document. Without this
+   line the badge the paragraph above promises to hide sat in the nav reading
+   a confident "0" for every reader with an empty queue, which is precisely
+   what it says it must not do. Found by the browser proof, on the first run:
+   `[hidden]` said so, `querySelector` agreed, and the pixels did not. */
+.nav-count[hidden] { display: none; }
 .nav-count {
   display: inline-block;
   margin-left: 0.4rem;

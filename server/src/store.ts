@@ -84,6 +84,7 @@ import {
   WORKFLOW_ACTIONS,
 } from './queries.js';
 import { QueueService, WorkQueue } from './queue.js';
+import { SupersededBy, supersessionMarks } from './supersession.js';
 import { GraphService, KnowledgeGraph, RecordGraph, RecordGraphOptions } from './graph.js';
 import { AuditChainVerification, verifyAuditChain } from './auditchain.js';
 import { refuseSystemActor, SYSTEM_ACTOR_ID, SYSTEM_ACTOR_NAME } from './system.js';
@@ -102,6 +103,14 @@ export interface TreeNode extends Page {
    * version. Null on every page that is not in review. See `tree`.
    */
   pendingApproverId?: string | null;
+  /**
+   * What the record says replaces this page, or null. The collection's front
+   * page IS its contents table, and a status chip alone told a reader nothing
+   * about a page the record had moved on from (REMEDIATION-PLAN.md 1.6).
+   * Withheld, never absent, when the replacement is outside what this asker
+   * may read — supersession.ts holds the reasoning.
+   */
+  supersededBy?: SupersededBy | null;
 }
 
 /**
@@ -810,7 +819,15 @@ export class CanonStore {
     };
   }
 
-  tree(actorId: string, collectionId: string): TreeNode[] {
+  /**
+   * `alsoVisibleTo` is the Knowledge API's second reader (STUDIO-CONTRACT.md
+   * §4): a Studio app reads as itself, bounded by the person in front of it.
+   * It narrows one thing on this read — whether the page named as a
+   * supersession's replacement may be NAMED — because that is the only field
+   * here that comes from outside the collection the person was just checked
+   * for. Everything else in a tree node is the collection's own.
+   */
+  tree(actorId: string, collectionId: string, options: { alsoVisibleTo?: string } = {}): TreeNode[] {
     this.requireRole(actorId, collectionId, 'view');
     // The pending approver rides along for pages In Review. A compliance
     // director could see his queue but not check it: to prove his sixteen items
@@ -833,11 +850,21 @@ export class CanonStore {
           ORDER BY p.position`,
       )
       .all(collectionId) as Record<string, unknown>[];
+    // Supersession rides along for the same reason the pending approver does:
+    // the alternative is opening every page to find out. One lookup for the
+    // whole collection, keyed on ids this asker has just been permitted.
+    const superseded = supersessionMarks(
+      this.db,
+      actorId,
+      rows.map((row) => row.id as string),
+      { alsoVisibleTo: options.alsoVisibleTo },
+    );
     const nodes = new Map<string, TreeNode>();
     for (const row of rows) {
       nodes.set(row.id as string, {
         ...this.toPage(row),
         pendingApproverId: (row.pending_approver_id as string) ?? null,
+        supersededBy: superseded.get(row.id as string) ?? null,
         children: [],
       });
     }

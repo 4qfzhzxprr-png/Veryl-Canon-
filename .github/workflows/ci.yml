@@ -50,6 +50,59 @@ jobs:
       # and studio-stub suites set CANON_DEV_AUTH themselves in their scripts.
       - run: npm test
 
+  # The suites above prove what the code returns. This one proves what a person
+  # SEES: it starts the real server over a small record, drives the shipped
+  # client in Chromium, and asserts on painted text and computed styles.
+  #
+  # It is a separate job rather than a sixth entry in the matrix above because
+  # it needs a browser, and installing one in all five matrix jobs to use it in
+  # none of them would slow every push for nothing.
+  #
+  # Why it exists: the last two defects found in Canon's client were found by
+  # driving a browser and could not have been found otherwise. `label { display:
+  # block }` outranked the user agent's `[hidden] { display: none }`, so every
+  # label the client hid from script stayed on screen — nothing threw, the DOM
+  # was exactly as intended, and only a computed style disagreed. The proof
+  # carries that as a rule over every route, and it found a second instance of
+  # the same bug (`.nav-count`) on its first run.
+  proof:
+    name: browser proof (chromium)
+    runs-on: ubuntu-latest
+    # A browser that hangs must cost ten minutes, not six hours. The whole suite
+    # runs in seconds.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            browser-proof/package-lock.json
+      # The proof drives the built server, so the server's own dependencies are
+      # installed first; `npm test` below builds it (see the package's pretest)
+      # so the proof can never run against a stale dist.
+      - name: Install the server
+        working-directory: server
+        run: npm ci
+      # The install script that ships with `playwright` downloads every browser
+      # it knows about. This proof launches one, so the download is turned off
+      # here and asked for by name in the next step — three times less waiting
+      # for the same answer.
+      - name: Install the proof
+        working-directory: browser-proof
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      # Chromium only, and its system libraries.
+      - name: Install Chromium
+        working-directory: browser-proof
+        run: npx playwright install --with-deps chromium
+      - name: Drive the browser
+        working-directory: browser-proof
+        run: npm test
+
   audit:
     name: dependency audit (server runtime)
     runs-on: ubuntu-latest
