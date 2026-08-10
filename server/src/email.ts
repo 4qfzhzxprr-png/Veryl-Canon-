@@ -294,6 +294,16 @@ const COPY: Record<NotificationKind, KindCopy> = {
     cta: 'Open the page',
     why: 'You are receiving this because you own a page whose sources disagree.',
   },
+  access_requested: {
+    cta: 'Open your queue',
+    why: 'You are receiving this because you administer the collection somebody is asking for access to.',
+  },
+  access_decided: {
+    // Deliberately not "open the collection": on a decline there is nothing to
+    // open, and a call to action that leads to a refusal is worse than none.
+    cta: 'Open your queue',
+    why: 'You are receiving this because you asked for access.',
+  },
 };
 
 // A mention carries the comment itself; a send-back carries the approver's

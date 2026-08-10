@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import type { AccessRequest, AskedAccessRequest } from './access.js';
 import type { Divergence, DivergenceFilter } from './divergence.js';
 import { today } from './freshness.js';
 import { Actor } from './model.js';
@@ -112,6 +113,13 @@ export interface WorkQueueCounts {
   myDrafts: number;
   conflictsOnMyPages: number;
   divergencesOnMyPages: number;
+  /**
+   * People asking for access to a collection this actor administers. Counted,
+   * unlike notices, because it is somebody waiting on a decision only this
+   * person can make — which is the definition this queue uses for everything
+   * it counts.
+   */
+  accessRequests: number;
   notices: number;
   total: number;
 }
@@ -140,6 +148,19 @@ export interface WorkQueue {
   conflictsOnMyPages: OwnedConflict[];
   /** Open source contradictions on a page this actor owns (divergence.ts, §7). */
   divergencesOnMyPages: QueuedDivergence[];
+  /**
+   * Open requests for access to a collection this actor administers (access.ts).
+   * THE ADMIN INBOX, and it is here rather than on a screen of its own for the
+   * reason the notices are: this is the screen people check, and a request
+   * nobody sees is worse than no request at all.
+   */
+  accessRequests: AccessRequest[];
+  /**
+   * What this actor has asked for and is still waiting on. Uncounted, exactly
+   * like `awaitingSomebodyElse` and for the same reason — it is waiting on
+   * somebody else, and a badge you cannot clear is ignored within a week.
+   */
+  accessAsked: AskedAccessRequest[];
   /** The outbox, at last rendered somewhere. See NOTICES below. */
   notices: Notification[];
   counts: WorkQueueCounts;
@@ -154,6 +175,8 @@ export interface QueueHost {
   listDivergences(actorId: string, filter: DivergenceFilter): Divergence[];
   listConflictsForOwner(actorId: string, ownerId: string, options: { limit?: number }): OwnedConflict[];
   listNotifications(actorId: string): Notification[];
+  listAccessRequests(actorId: string, opts?: { status?: 'open' | 'granted' | 'declined' | 'withdrawn' | 'all' }): AccessRequest[];
+  listMyAccessRequests(actorId: string): AskedAccessRequest[];
 }
 
 /** `/pages/<id>` and `/pages/<id>#comment-…`: the only shape a notice links to. */
@@ -290,6 +313,12 @@ export class QueueService {
     //
     // They are last, and they do not count toward the badge (see
     // WorkQueueCounts): the outbox has no read state to count against.
+    // THE ADMIN INBOX. Composed like everything else here: `listAccessRequests`
+    // returns only the collections this actor administers, and the queue adds
+    // no rule of its own to that.
+    const accessRequests = this.host.listAccessRequests(actorId, { status: 'open' }).slice(0, limit);
+    const accessAsked = this.host.listMyAccessRequests(actorId).filter((r) => r.status === 'open');
+
     const notices = this.visibleNotices(actorId);
 
     const counts: WorkQueueCounts = {
@@ -299,6 +328,7 @@ export class QueueService {
       myDrafts: myDrafts.length,
       conflictsOnMyPages: conflictsOnMyPages.length,
       divergencesOnMyPages: divergencesOnMyPages.length,
+      accessRequests: accessRequests.length,
       notices: notices.length,
       total:
         awaitingMyApproval.length +
@@ -306,7 +336,8 @@ export class QueueService {
         myPagesPastReview.length +
         myDrafts.length +
         conflictsOnMyPages.length +
-        divergencesOnMyPages.length,
+        divergencesOnMyPages.length +
+        accessRequests.length,
     };
 
     return {
@@ -319,6 +350,8 @@ export class QueueService {
       awaitingSomebodyElse,
       conflictsOnMyPages,
       divergencesOnMyPages,
+      accessRequests,
+      accessAsked,
       notices,
       counts,
       truncated: [

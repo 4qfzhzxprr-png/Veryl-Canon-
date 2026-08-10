@@ -92,6 +92,8 @@ const NOTIFICATION_LABELS = {
   proposal_superseded: 'Proposal superseded',
   review_due: 'Review due',
   divergence_opened: 'Sources disagree',
+  access_requested: 'Access requested',
+  access_decided: 'Access decision',
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +135,9 @@ const state = {
     // The queue (GET /queue). Not probed on its own: the first load of the nav
     // badge answers the question, and a 404 hides the entry.
     queue: null,
+    // Imports (GET /imports). Probed like sources, and then narrowed by what
+    // this reader has to do with them — see detectImports.
+    imports: null,
   },
   afterIdentity: null, // hash to return to after picking an identity
   ask: null, // last { question, collectionId, result } so back-navigation keeps it
@@ -141,15 +146,23 @@ const state = {
   // `at` when it arrived: the nav badge and the view share one fetch rather
   // than each asking, and a stale badge is refreshed on navigation.
   queue: { data: null, at: 0, loading: null },
+  // The summary the last run in THIS tab returned. The stored run record keeps
+  // a file, a page and an outcome per file and no title, so this is the only
+  // place a page's title can come from on the run screen — and it is never
+  // stood in for: a run somebody else made, or one from before this page was
+  // loaded, shows the file names the record actually holds.
+  lastImport: null,
 };
 
 function resetFeatures() {
   state.features = {
     search: null, comments: null, ask: null, related: null, references: null, sources: null,
     map: null, wholeGraph: null, attestation: null,
-    relations: null, divergences: null, queue: null, gaps: null,
+    relations: null, divergences: null, queue: null, gaps: null, imports: null,
   };
   gapsProbe = null;
+  importsProbe = null;
+  state.lastImport = null;
   askProbe = null;
   sourcesProbe = null;
   attestationProbe = null;
@@ -1102,13 +1115,18 @@ function renderChrome() {
       if (askLink) askLink.hidden = true;
       const sourcesLink = document.getElementById('nav-sources');
       if (sourcesLink) sourcesLink.hidden = true;
-      // Gaps is role-scoped harder than the other two — operators only — so a
-      // link left standing from the last identity is a claim about the NEXT
-      // one that has not been checked yet: a non-operator watched it flash
-      // and vanish (fourth round, Dana). Hidden until detectGaps answers for
-      // whoever signs in, same as the entries above.
+      // Gaps is role-scoped harder than the other two — an operator, or an
+      // administrator of some collection — so a link left standing from the
+      // last identity is a claim about the NEXT one that has not been checked
+      // yet: somebody who held neither watched it flash and vanish (fourth
+      // round, Dana). Hidden until detectGaps answers for whoever signs in,
+      // same as the entries above.
       const gapsLink = document.getElementById('nav-gaps');
       if (gapsLink) gapsLink.hidden = true;
+      // Same rule as Gaps: the entry is scoped to what the NEXT identity can
+      // do with it, and nothing may be left standing from the last one.
+      const importsLink = document.getElementById('nav-imports');
+      if (importsLink) importsLink.hidden = true;
       await loadAuth();
       renderChrome();
       location.hash = '#/identity';
@@ -1118,6 +1136,7 @@ function renderChrome() {
     detectAsk();
     detectSources();
     detectGaps();
+    detectImports();
     detectMap();
     detectFreshness();
     // The queue's badge is part of the chrome: the first thing somebody who
@@ -1287,9 +1306,11 @@ async function detectAsk() {
 // the Sources nav entry and the whole admin screen simply are not there.
 let sourcesProbe = null;
 
-// Gaps are operator-only, so the probe's 403 is an answer — "the endpoint is
-// there and it is not for you" — and the nav entry stays hidden without the
-// operator role rather than leading to a refusal.
+// Gaps are read by an operator (the whole record) or by a collection's
+// administrator (the gaps asked of their own collections) — see
+// CanonStore.listGaps. The probe's 403 is still an answer, "the endpoint is
+// there and it is not for you", and the nav entry stays hidden for anybody who
+// is neither rather than leading to a refusal.
 let gapsProbe = null;
 
 async function detectGaps() {
@@ -1695,6 +1716,7 @@ async function route() {
     : parts[0] === 'gaps' ? 'gaps'
     : parts[0] === 'ask' ? 'ask'
     : parts[0] === 'sources' ? 'sources'
+    : parts[0] === 'imports' ? 'imports'
     : parts[0] === 'queue' ? 'queue'
     : 'home';
   markNav(section);
@@ -1711,6 +1733,9 @@ async function route() {
     if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
     if (parts[0] === 'gaps') return await render(() => viewGaps(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
+    if (parts[0] === 'imports') {
+      return await render(() => (parts[1] ? viewImportRun(parts[1]) : viewImports()));
+    }
     if (parts[0] === 'search') return await render(() => viewSearch(hashQuery()));
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
@@ -1751,14 +1776,27 @@ async function render(view) {
 
 function renderErrorPage(err) {
   const msg = err?.message ?? 'Something went wrong.';
+  // THE WALL, AND SOMETHING TO DO AT IT. `forbiddenRole` already answers with
+  // the structured refusal beside its sentence — `{ collectionId, needed,
+  // held }` — so the one screen a refused person actually lands on can carry
+  // the ask. Only where they HOLD something there: access.ts refuses a ground
+  // on a collection somebody holds nothing in, because a refusal you have no
+  // standing over gives you nothing to carry, and accepting one would turn the
+  // request endpoint into a place to type ids at (policy question 1).
+  const d = err?.details ?? {};
+  const canAsk = err?.status === 403 && d.collectionId && d.held && d.held !== 'admin';
   app.innerHTML = `
     <div class="page-narrow">
       <div class="empty-state">
         <h2>${err?.status === 403 ? 'No access' : err?.status === 404 ? 'Not found' : 'Something went wrong'}</h2>
         <p>${esc(msg)}</p>
-        <p><a class="btn" href="#/">Back to collections</a></p>
+        <p><a class="btn" href="#/">Back to collections</a>${canAsk
+          ? ` <button type="button" class="btn primary ask-access" data-ask-access data-ground="collection"
+              data-collection="${esc(d.collectionId)}" data-held="${esc(d.held)}">Ask for access</button>`
+          : ''}</p>
       </div>
     </div>`;
+  if (canAsk) wireAskAccess();
 }
 
 // ---------------------------------------------------------------------------
@@ -2133,7 +2171,8 @@ async function viewQueue() {
   }
 
   const c = queue.counts ?? {};
-  const nothing = !c.total && !(queue.notices ?? []).length;
+  const nothing = !c.total && !(queue.notices ?? []).length && !(queue.accessRequests ?? []).length
+    && !(queue.accessAsked ?? []).length;
 
   const strands = [
     queueSection(
@@ -2235,6 +2274,14 @@ async function viewQueue() {
     p.approverId ? `Waiting on ${actorName(p.approverId)}.` : 'Waiting on anyone who can approve it.',
   ));
 
+  // THE ADMIN INBOX (access.ts). A strand rather than a screen of its own, for
+  // the reason the notices are one: this is the screen people check, and the
+  // whole finding was that a request went nowhere anybody looked. It IS
+  // counted, unlike the notices, because somebody is waiting on a decision
+  // only this person can make.
+  const accessRequests = (queue.accessRequests ?? []).map((r) => accessRequestCardHTML(r));
+  const accessAsked = (queue.accessAsked ?? []).map((r) => askedAccessRowHTML(r, collections));
+
   // Notices last, and outside the count. The outbox has no read state, so a
   // number counting these would never go down; what they add is the sentence —
   // who asked, who sent it back, what they said — beside the work itself.
@@ -2272,6 +2319,22 @@ async function viewQueue() {
           the record is waiting on <strong>you</strong> for, and these are waiting on someone else.</p>
           <table class="queue-table"><tbody>${submitted.join('')}</tbody></table>
         </section>` : ''}
+      ${accessRequests.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">People asking for access <span class="queue-strand-count">${
+            accessRequests.length}</span></h2>
+          <p class="muted queue-strand-blurb">Somebody was refused something and asked. Only an administrator of
+          the collection can decide, which is why this is here and not in a list somebody else could clear.</p>
+          ${accessRequests.join('')}
+        </section>` : ''}
+      ${accessAsked.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">Access you have asked for</h2>
+          <p class="muted queue-strand-blurb">Waiting on somebody else, so it is not counted above. You will be
+          told either way; a request about a page you cannot see does not name it here, which is the same rule
+          that withheld it.</p>
+          <ul class="asked-access-list">${accessAsked.join('')}</ul>
+        </section>` : ''}
       ${notices.length ? `
         <section class="queue-strand">
           <h2 class="queue-strand-head">Notices</h2>
@@ -2284,11 +2347,197 @@ async function viewQueue() {
         more; narrow it with a <a href="#/">collection</a> or a query.</p>` : ''}
     </div>`;
 
+  wireAccessRequests(() => route());
   app.querySelector('#queue-refresh')?.addEventListener('click', async () => {
     await refreshQueueNav({ force: true });
     route();
   });
   await refreshQueueNav();
+}
+
+// ---------------------------------------------------------------------------
+// Asking for access, from the refusal that made you want it
+//
+// Two testers, one sentence: "The wall already names who holds the role; it
+// should be able to ask for them. Administrators have no inbox of requests
+// either." Both halves are here — the control on the refusal, and the strand in
+// the queue where a request lands, because a request nobody can see is worse
+// than no request.
+//
+// WHAT THE CONTROL SENDS is the refusal's own context and never a page
+// somebody names (access.ts has the argument): a collection this reader already
+// holds a role on, or a RELATION whose far end they were shown as withheld.
+// There is deliberately no box to type an id into. The screen therefore only
+// ever offers this where a refusal is on the screen beside it.
+//
+// AND WHAT COMES BACK is thinner than what goes in. A request about a page the
+// asker cannot see names no collection and no page in their own listing —
+// a receipt for the asking must not hand over what the refusal withheld.
+
+const ROLE_HELP = {
+  view: 'read the pages here',
+  comment: 'read, and leave comments',
+  edit: 'write and edit drafts here',
+  approve: 'grant the Canonical mark',
+  admin: 'administer this collection',
+};
+
+/** The roles above one somebody already holds, weakest first. */
+function rolesAbove(held) {
+  const at = held ? ROLES.indexOf(held) : -1;
+  return ROLES.slice(at + 1);
+}
+
+function askAccessButtonHTML(label = 'Ask for access') {
+  return `<button type="button" class="btn subtle ask-access" data-ask-access>${esc(label)}</button>`;
+}
+
+/**
+ * The dialog. `ground` decides everything about it: what can be asked for, and
+ * — the part that matters — what the dialog is allowed to say about what is
+ * being asked for.
+ */
+function openAskAccessModal(context) {
+  const { ground, collectionId = null, collectionName = null, held = null, relationId = null } = context;
+  const options = ground === 'collection'
+    ? rolesAbove(held).map((r, i) =>
+        `<option value="${esc(r)}" ${i === 0 ? 'selected' : ''}>${esc(r)} — ${esc(ROLE_HELP[r] ?? '')}</option>`).join('')
+    : '';
+  openModal({
+    title: 'Ask for access',
+    submitLabel: 'Send the request',
+    body: ground === 'collection'
+      ? `
+        <p>This goes to the administrators of <strong>${esc(collectionName ?? 'this collection')}</strong>. They
+          see your name, what you are asking for, and the sentence you write here.</p>
+        <label>What you need to be able to do
+          <select name="role">${options}</select></label>
+        <label>Why you need it
+          <textarea name="note" rows="3" required maxlength="600"
+            placeholder="The one thing an administrator decides on. Say what you are trying to do."></textarea></label>
+        <p class="muted">You hold <strong>${esc(held ?? 'no role')}</strong> here now. Nothing changes until
+          somebody grants it, and you will be told either way.</p>`
+      : `
+        <p>Something the record says about this page points at a page you cannot see. This asks the
+          administrators of whichever collection holds it.</p>
+        <label>Why you need it
+          <textarea name="note" rows="3" required maxlength="600"
+            placeholder="They cannot see your page. Say what you are trying to settle."></textarea></label>
+        ${/* The non-disclosure rule, said out loud rather than merely obeyed.
+              A reader who does not know the request went somewhere specific
+              assumes it went nowhere. */ ''}
+        <p class="muted">Canon will not tell you which collection that is, or what the page is called — that is
+          the same rule that withheld it in the first place. It will tell you the decision.</p>`,
+    onSubmit: async (form) => {
+      const note = form.note.value.trim();
+      if (!note) throw { message: 'Say what you need to do and why; an administrator decides on that sentence.' };
+      await api('POST', '/access-requests', ground === 'collection'
+        ? { ground, collectionId, role: form.role.value, note }
+        : { ground, relationId, note });
+      toast('Asked. It is waiting with the administrators who can grant it.', 'ok');
+      await refreshQueueNav({ force: true });
+    },
+  });
+}
+
+/**
+ * Wire every `data-ask-access` control inside `host`. The context rides on the
+ * element, so one handler serves the page view, the relations panel and the
+ * refusal wall without any of them knowing about each other.
+ */
+function wireAskAccess(host = app) {
+  host.querySelectorAll('[data-ask-access]').forEach((btn) => {
+    btn.addEventListener('click', () => openAskAccessModal({
+      ground: btn.dataset.ground ?? 'collection',
+      collectionId: btn.dataset.collection ?? null,
+      collectionName: btn.dataset.collectionName ?? null,
+      held: btn.dataset.held || null,
+      relationId: btn.dataset.relation ?? null,
+    }));
+  });
+}
+
+/** What one request says to the administrator who can answer it. */
+function accessRequestCardHTML(r) {
+  const asked = r.ground === 'collection'
+    ? `for the <strong>${esc(r.requestedRole ?? 'view')}</strong> role here.`
+    : `to see <a href="#/pages/${esc(r.subjectPageId ?? '')}">${esc(r.subjectTitle ?? 'a page here')}</a>, which
+       one of their own pages is recorded as contradicting.`;
+  return `
+    <article class="access-card" data-request="${esc(r.id)}">
+      <p class="access-ask"><strong>${esc(r.askerName ?? actorName(r.askerId))}</strong> is asking ${asked}</p>
+      <p class="access-note">&ldquo;${esc(r.note ?? '')}&rdquo;</p>
+      <p class="muted access-meta">${esc(fmtAgo(r.createdAt) ?? '')} · they hold
+        ${esc(r.askerRole ?? 'no role')} here</p>
+      <div class="access-actions">
+        <select class="access-role" aria-label="Role to grant">
+          ${ROLES.map((role) => `<option value="${esc(role)}" ${
+            role === (r.requestedRole ?? 'view') ? 'selected' : ''}>${esc(role)}</option>`).join('')}
+        </select>
+        <button class="btn primary" data-decide="granted">Grant</button>
+        <button class="btn subtle" data-decide="declined">Decline</button>
+        ${/* Required for a decline and not for a grant, and the server keeps
+              that rule: a grant writes its own record — the membership, the
+              audit event, the access itself — while "no" tells somebody
+              nothing they can act on. Same asymmetry as approve and
+              send-back. */ ''}
+        <input type="text" class="access-decision-note" maxlength="400"
+          placeholder="Why not — required to decline, optional to grant">
+      </div>
+    </article>`;
+}
+
+/** And what it says to the person who asked, which is deliberately less. */
+function askedAccessRowHTML(r, collections = new Map()) {
+  const named = r.collectionId ? collections.get(r.collectionId)?.name : null;
+  const what = r.ground === 'collection'
+    ? `the ${esc(r.requestedRole ?? 'view')} role on ${r.collectionId
+        ? `<a href="#/collections/${esc(r.collectionId)}">${esc(named ?? 'that collection')}</a>`
+        : 'a collection'}`
+    : `a page ${r.fromPageId
+        ? `<a href="#/pages/${esc(r.fromPageId)}">one of your pages</a>`
+        : 'one of your pages'} is recorded as contradicting`;
+  return `
+    <li class="asked-access" data-asked="${esc(r.id)}">
+      <span>You asked for ${what}.</span>
+      <span class="muted"> ${esc(fmtAgo(r.createdAt) ?? '')} · waiting</span>
+      <button class="btn subtle" data-withdraw-access="${esc(r.id)}">Withdraw</button>
+    </li>`;
+}
+
+/** The inbox and the sent folder, wired. Called by the queue after it draws. */
+function wireAccessRequests(reload) {
+  app.querySelectorAll('[data-request]').forEach((card) => {
+    card.querySelectorAll('[data-decide]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const outcome = btn.dataset.decide;
+        const note = card.querySelector('.access-decision-note').value.trim();
+        if (outcome === 'declined' && !note) {
+          toast('Declining records why, in a sentence the person who asked will read.');
+          card.querySelector('.access-decision-note').focus();
+          return;
+        }
+        try {
+          await api('POST', `/access-requests/${card.dataset.request}/decide`, {
+            outcome,
+            role: card.querySelector('.access-role').value,
+            note,
+          });
+          toast(outcome === 'granted' ? 'Granted, and they have been told.' : 'Declined, with your reason.', 'ok');
+          reload();
+        } catch (err) { toastError(err); }
+      });
+    });
+  });
+  app.querySelectorAll('[data-withdraw-access]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('POST', `/access-requests/${btn.dataset.withdrawAccess}/withdraw`);
+        toast('Withdrawn.', 'ok');
+        reload();
+      } catch (err) { toastError(err); }
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3405,6 +3654,18 @@ async function viewPage(id) {
   // things. One reason is one line; three become one line and a "Why?", so the
   // page opens on the page rather than on an apology for it.
   const refusalNote = group.noteHTML();
+  // AND SOMETHING TO DO ABOUT IT. The wall already named who holds the role;
+  // two testers asked why it could not ask them. It is offered only where the
+  // reader holds a role here — a refusal about a collection you hold nothing
+  // in gives you no context to carry, and access.ts refuses that ground rather
+  // than turning the request endpoint into a place to type ids (policy
+  // question 1). `admin` is the top of the ladder, so there is nothing above
+  // it to ask for.
+  const askAccess = group.count && can?.role && can.role !== 'admin'
+    ? `<span class="ask-access-slot"><button type="button" class="btn subtle ask-access" data-ask-access
+         data-ground="collection" data-collection="${esc(collection.id)}"
+         data-collection-name="${esc(collection.name)}" data-held="${esc(can.role)}">Ask for access</button></span>`
+    : '';
 
   app.innerHTML = `
     <div class="layout">
@@ -3415,7 +3676,7 @@ async function viewPage(id) {
           <h1 class="doc-title">${esc(page.title)} ${badge(page.status)}</h1>
           <div class="actions">${actions.join('')}</div>
         </div>
-        ${refusalNote}
+        ${refusalNote}${askAccess}
         ${sentBackNoticeHTML(page.sentBack)}
         ${draftBanner}
         ${/* Everything this page's standing consists of, in one block, before
@@ -3487,6 +3748,7 @@ async function viewPage(id) {
     </div>`;
 
   wireSidebar(collection, tree);
+  wireAskAccess();
   renderAskAffordance('ask-affordance', page.collectionId);
   renderAttestationAffordance('attestation-affordance', { kind: 'page', id, title: page.title });
 
@@ -4228,8 +4490,18 @@ function relationEntryHTML(rel) {
         // No note, and it is not that none was written: the reason for a
         // conflict describes the other page, which is the thing being withheld.
         // Saying "no note was recorded" here would be false.
+        //
+        // "Or the collection's administrators" used to be the end of the
+        // sentence and nothing more: a reader who could not name the collection
+        // had no way to reach anybody in it. The control carries the RELATION,
+        // which is the only thing this reader legitimately holds — the server
+        // resolves which collection that is and never says (access.ts).
         ? `<p class="rel-note muted">The reason recorded with this assertion describes that page, so it is
-            not shown here. Ask ${esc(actorName(rel.assertedBy))} or the collection's administrators.</p>`
+            not shown here. Ask ${esc(actorName(rel.assertedBy))}, or ask the administrators of whichever
+            collection holds it.${rel.id
+              ? ` <button type="button" class="btn subtle ask-access" data-ask-access data-ground="relation"
+                  data-relation="${esc(rel.id)}">Ask for access</button>`
+              : ''}</p>`
         : rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
         <p class="rel-note muted">No note was recorded with this assertion.</p>`}
       ${supersededByUnanswerableHTML(rel)}
@@ -4304,6 +4576,7 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
     </section>`;
 
   host.querySelector('#rel-assert')?.addEventListener('click', () => openRelationModal(pageId, page));
+  wireAskAccess(host);
   host.querySelectorAll('[data-withdraw]').forEach((btn) => {
     btn.addEventListener('click', () => openModal({
       title: 'Withdraw this relation',
@@ -5886,7 +6159,10 @@ function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
 }
 
 // The refused-questions view: what people asked and the record could not
-// answer, for the operators who close the loop. Each row is a decision —
+// answer, for the people who close the loop — an operator over the whole
+// record, and a collection's administrator over their own, which is where the
+// remedy actually lives: "the gaps list and the fix live with different
+// people" (round seven). Each row is a decision —
 // teach the record a word (the nearest page's "Also known as" field), write
 // the missing page, or record that the record owes no answer. No asker is
 // shown here and none is stored in this list; the audit log can join a gap
@@ -5895,13 +6171,20 @@ function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
 // not have (third round, finding 3).
 async function viewGaps(query = {}) {
   const status = query.status ?? 'open';
-  let gaps;
+  let answer;
   try {
-    gaps = await api('GET', `/gaps?status=${encodeURIComponent(status)}`);
+    answer = await api('GET', `/gaps?status=${encodeURIComponent(status)}`);
   } catch (err) {
     renderErrorPage(err);
     return;
   }
+  const gaps = answer.gaps ?? [];
+  // WHOSE LIST THIS IS, from the server rather than guessed. An operator holds
+  // the whole record's refusals; a collection's administrator holds the ones
+  // asked of their own collections, and a page that described the second as
+  // the first would be making the claim Phase 5 removed from four screens.
+  const steward = answer.scope === 'steward';
+  const covers = answer.collections ?? [];
   const tabs = ['open', 'resolved', 'dismissed']
     .map((t) => `<a class="btn ${t === status ? 'primary' : ''}" href="#/gaps${t === 'open' ? '' : `?status=${t}`}">${t[0].toUpperCase()}${t.slice(1)}</a>`)
     .join(' ');
@@ -5942,6 +6225,12 @@ async function viewGaps(query = {}) {
         asker&rsquo;s word (its &ldquo;Also known as&rdquo; field), write the missing page, or record that this
         record owes no answer. No asker is shown here, and none is stored in this list; operators can
         read who asked what in the audit log, which has its own rule.</p>
+      ${steward ? `
+        <p class="muted gap-scope">You are reading the gaps asked of ${covers.length
+          ? covers.map((c) => `<a href="#/collections/${esc(c.id)}">${esc(c.name)}</a>`).join(', ')
+          : 'the collections you administer'} — the collections you administer. Questions asked across the
+          whole record, and questions asked of collections you do not administer, are not in this list.</p>`
+        : ''}
       ${/* One sentence used to serve all three tabs: "No <status> gaps. Every
             question the record refused has been looked at." True on the OPEN
             tab and false on the other two — an empty Resolved tab means
@@ -5950,7 +6239,9 @@ async function viewGaps(query = {}) {
             one list, and only one of them can say anything about the whole of
             it (round seven, Phase 5). */ ''}
       ${gaps.length ? rows : `<div class="empty-state"><p>${status === 'open'
-        ? 'No open gaps. Every question the record refused has been looked at.'
+        ? (steward
+          ? 'No open gaps in the collections you administer. This says nothing about the rest of the record.'
+          : 'No open gaps. Every question the record refused has been looked at.')
         : status === 'resolved'
           ? 'No gap has been resolved yet. Open gaps, if there are any, are on the Open tab.'
           : 'No gap has been dismissed. Open gaps, if there are any, are on the Open tab.'}</p></div>`}
@@ -6690,6 +6981,574 @@ async function viewSources() {
       });
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Imports (CORE-PLAN.md Epic E, M4) — the screen for a server that was
+// finished and unreachable
+//
+// Round seven, tester 25, a migration engineer: "There is no import UI at all
+// — verified as both member and administrator." Everything underneath was
+// already built. `POST /imports`, `POST /imports/upload`, `GET /imports` and
+// `GET /imports/:id` are wired over a complete importer with Confluence and
+// Google Docs discovery, a file cap, per-file outcomes, run records and
+// idempotent re-runs — and `app.js` contained zero references to any of it.
+// The one failed file in that tester's corpus was discoverable only by
+// filtering the audit log to `import.page` and reading a details blob.
+//
+// So this is a renderer, and deliberately little else. Everything it shows was
+// in `ImportFileResult` and `ImportRunRecord` before it existed:
+//
+//   * THE RUN LIST, which is what "did the migration happen, and what came of
+//     it" looks like when it is a screen instead of a log query.
+//   * THE PER-FILE OUTCOME TABLE, with the reason each file gives — including
+//     the truncation cause (`html.ts::truncationNote`), which is the
+//     difference between "the file parsed to an empty document" and "the
+//     export ends inside an unclosed comment, so re-export this page". One
+//     sends an operator back to the source system looking for a page that is
+//     not empty; the other tells them what to do.
+//   * A RE-RUN, which needs no new server anything: a run id re-used skips
+//     files whose content is unchanged and retries the ones that failed. That
+//     IS the retry three testers asked for, and it has existed all along.
+//
+// WHAT THE SCREEN MAY OFFER is `collectionAbilities.runImport` — `admin` on
+// the collection the pages land in, and nothing else (import.ts: "ADMIN, NOT
+// EDIT"). The picker is built from it rather than from membership, so the
+// collections on offer are exactly the ones the server would accept a run for,
+// and the refusal a reader meets is the sentence the server would have thrown.
+
+const IMPORT_SOURCE_LABELS = { confluence: 'Confluence', 'google-docs': 'Google Docs' };
+const IMPORT_SOURCES = ['confluence', 'google-docs'];
+const IMPORT_OUTCOME_LABELS = { imported: 'Imported', updated: 'Updated', skipped: 'Skipped', failed: 'Failed' };
+// How a run recovered the page tree, in the words of somebody who has to
+// decide whether the result is good enough to keep.
+const IMPORT_HIERARCHY_NOTES = {
+  tree: 'The export listed its own page tree, and the pages nest the way they did in the source system.',
+  breadcrumbs: 'The export carried no index, so the nesting was recovered from each page’s own breadcrumbs.',
+  flat: 'Nothing in the export described a page tree, so every page arrived at the top level.',
+};
+
+let importsProbe = null;
+
+/**
+ * Whether this Canon serves imports AND this reader has anything to do with
+ * them. Two questions, because the nav is seven entries already and an eighth
+ * that opens onto an empty screen somebody may never be able to use is worse
+ * than no entry: it is offered to anyone who can START a run, and to anyone
+ * with a run to read, and to nobody else.
+ */
+async function detectImports() {
+  if (state.features.imports === null) {
+    importsProbe ??= (async () => {
+      let runs;
+      try {
+        runs = await api('GET', '/imports');
+      } catch (err) {
+        // 404/405 is a server without the route; anything else means the route
+        // is there and something else went wrong, which is not this probe's
+        // business to hide.
+        return err.status !== 404 && err.status !== 405 && err.status !== 0;
+      }
+      if (Array.isArray(runs) && runs.length) return true;
+      try {
+        const collections = await api('GET', '/collections');
+        return collections.some((c) => c.abilities?.runImport?.can === true);
+      } catch {
+        return false;
+      }
+    })();
+    const found = await importsProbe;
+    importsProbe = null;
+    if (state.features.imports === null) state.features.imports = found;
+  }
+  const link = document.getElementById('nav-imports');
+  if (link) link.hidden = state.features.imports !== true;
+  return state.features.imports === true;
+}
+
+/**
+ * The uploaded-archive door. Everything about it is `api()` except the body,
+ * which is the file itself rather than JSON — the run's parameters ride the
+ * query string precisely because the body is a corpus.
+ */
+async function apiUpload(path, file) {
+  const headers = { 'Content-Type': 'application/zip' };
+  const cookieSession = state.auth?.viaCookie === true;
+  const actorId = cookieSession ? null : state.actor?.id;
+  if (actorId) headers['X-Actor-Id'] = actorId;
+  if (cookieSession && state.auth?.csrfToken) {
+    headers[state.auth.csrfHeader ?? 'X-Canon-CSRF'] = state.auth.csrfToken;
+  }
+  let res;
+  try {
+    res = await fetch(path, { method: 'POST', headers, credentials: 'same-origin', body: file });
+  } catch {
+    throw { status: 0, code: 'network', message: 'Cannot reach the Canon server.', details: {} };
+  }
+  // A run lands pages, which changes what is waiting on people; the cached
+  // queue is dropped exactly as `api()` drops it after any write.
+  state.queue.at = 0;
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON body */ }
+  if (!res.ok) {
+    throw {
+      status: res.status,
+      code: data?.error ?? 'error',
+      message: data?.message ?? `The upload failed (${res.status})`,
+      details: data ?? {},
+    };
+  }
+  return data;
+}
+
+function importOutcomeHTML(outcome) {
+  const label = IMPORT_OUTCOME_LABELS[outcome] ?? outcome;
+  return `<span class="import-outcome import-outcome-${esc(outcome)}">${esc(label)}</span>`;
+}
+
+/** "6 imported · 1 failed" — the counts that are not zero, and never "0 failed". */
+function importCountsHTML(counts = {}) {
+  const parts = ['imported', 'updated', 'skipped', 'failed']
+    .filter((k) => Number(counts[k]) > 0)
+    .map((k) => `<span class="import-count import-count-${k}">${Number(counts[k])} ${k}</span>`);
+  if (!parts.length) return '<span class="muted">nothing to import</span>';
+  return parts.join(' · ');
+}
+
+/**
+ * What a run put on every page it landed. The importer asks once per run
+ * (import.ts, ImportRunFields) and this is where the answer is READ BACK —
+ * "Owner —, Approver —, Review due —" across nine pages was the finding, and
+ * a run that names nobody must say so here rather than showing an empty row.
+ */
+function importFieldsHTML(run) {
+  const fields = run?.fields ?? {};
+  const rules = TYPE_FIELDS[run?.type] ?? {};
+  const rows = [];
+  if (rules.owner) rows.push(['Owner', fields.ownerId ? esc(actorName(fields.ownerId)) : '<span class="muted">nobody named</span>']);
+  if (rules.approver) {
+    rows.push(['Approver', fields.approverId ? esc(actorName(fields.approverId)) : '<span class="muted">nobody named</span>']);
+  }
+  if (rules.reviewDate) {
+    rows.push(['Review date', fields.reviewDate ? esc(fmtDate(fields.reviewDate)) : '<span class="muted">none set</span>']);
+  }
+  if (!rows.length) {
+    return `<p class="muted">A ${esc(TYPE_LABELS[run?.type] ?? run?.type)} carries no owner, no approver and no
+      review date — it never holds the Canonical mark, so it has none of those to carry.</p>`;
+  }
+  return `<dl class="field-block import-fields">${rows
+    .map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${value}</dd></div>`)
+    .join('')}</dl>`;
+}
+
+function importsUnavailableHTML() {
+  return `
+    <div class="empty-state">
+      <h2>Imports are not available on this server</h2>
+      <p>This Canon server does not serve <code>/imports</code>. Pages arrive by being written here.</p>
+      <p><a class="btn" href="#/">Back to collections</a></p>
+    </div>`;
+}
+
+/**
+ * Why the "Import an export" control is refused, in the server's own words
+ * where there is exactly one sentence to quote.
+ *
+ * With several collections there is no single server sentence — the reader
+ * holds a different role on each — so what is said instead DESCRIBES THE
+ * LISTING rather than making a claim about the record (the rule Phase 1.1 and
+ * 1.5 established). It never says "you cannot import", which would be a claim
+ * about collections this reader may not even be a member of.
+ */
+function importRefusalWhy(collections) {
+  if (!collections.length) {
+    return 'Importing needs the admin role on the collection the pages land in, and you belong to no ' +
+      'collection yet. An administrator of a collection can grant it.';
+  }
+  if (collections.length === 1) {
+    return collections[0].abilities?.runImport?.why ??
+      'Importing needs the admin role on the collection the pages land in.';
+  }
+  return `Importing needs the admin role on the collection the pages land in; you administer none of the ` +
+    `${collections.length} collections you belong to. An administrator of a collection can grant it.`;
+}
+
+async function viewImports() {
+  markNav('imports');
+  let runs = [];
+  try {
+    runs = await api('GET', '/imports');
+  } catch (err) {
+    if (err.status === 404 || err.status === 405) {
+      state.features.imports = false;
+      const link = document.getElementById('nav-imports');
+      if (link) link.hidden = true;
+      app.innerHTML = `<div class="page-wide">${importsUnavailableHTML()}</div>`;
+      return;
+    }
+    throw err;
+  }
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { /* names and abilities are both nice-to-have */ }
+  await loadActors().catch(() => null);
+  const byId = new Map(collections.map((c) => [c.id, c]));
+  const importable = collections.filter((c) => c.abilities?.runImport?.can === true);
+
+  const group = refusalGroup('these controls');
+  const startHTML = importable.length
+    ? '<button class="btn primary" id="new-import">Import an export</button>'
+    : group.refuse('Import an export', importRefusalWhy(collections), { className: 'btn primary' });
+
+  const rows = runs.map((r) => `
+    <tr>
+      <td>
+        <a href="#/imports/${esc(r.runId)}">${esc(IMPORT_SOURCE_LABELS[r.source] ?? r.source)} into
+          ${esc(byId.get(r.collectionId)?.name ?? 'a collection')}</a>
+        <div class="import-meta muted">${esc(TYPE_LABELS[r.type] ?? r.type)} pages · run by
+          ${esc(actorName(r.actorId))}</div>
+      </td>
+      <td class="import-counts">${importCountsHTML(r.counts)}</td>
+      <td class="nowrap">${esc(fmtAgo(r.startedAt) ?? '')}
+        <div class="import-meta muted">${esc(fmtDateTime(r.startedAt))}</div></td>
+    </tr>`).join('');
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <div>
+          <h1>Imports</h1>
+          <p class="muted imports-lede">Everything Canon has brought in from another system, and what became
+            of every file. Imported pages arrive as drafts — nothing an import lands carries the Canonical
+            mark, whoever ran it.</p>
+        </div>
+        <div class="actions">${startHTML}</div>
+      </div>
+      ${group.noteHTML()}
+      ${runs.length ? `
+        <div class="table-scroll"><table class="table imports-table">
+          <thead><tr><th>Run</th><th>Outcome</th><th>Started</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+        <p class="muted">Open a run to see every file it read, why any of them failed, and to run it again —
+          a re-run skips the files that have not changed and retries the ones that did not land.</p>` : `
+        <div class="empty-state">
+          <h2>No import has been run${collections.length ? ' in a collection you belong to' : ''}</h2>
+          <p>A Confluence space export or a folder of Google Docs exports arrives as draft pages, keeping the
+            page tree where the export describes one. Every file gets an outcome you can read, and nothing
+            becomes Canonical without passing through review.</p>
+        </div>`}
+    </div>`;
+
+  app.querySelector('#new-import')?.addEventListener('click', () => openImportModal(importable));
+}
+
+async function viewImportRun(runId) {
+  markNav('imports');
+  let run;
+  try {
+    run = await api('GET', `/imports/${encodeURIComponent(runId)}`);
+  } catch (err) {
+    renderErrorPage(err);
+    return;
+  }
+  let collections = [];
+  try { collections = await api('GET', '/collections'); } catch { /* as above */ }
+  await loadActors().catch(() => null);
+  const collection = collections.find((c) => c.id === run.collectionId) ?? null;
+
+  // The titles a run reported for its files are not on the stored record —
+  // `import_items` keeps the file, the page and the outcome. Where this is the
+  // run that has just finished in this tab, its own summary fills them in;
+  // otherwise the file name stands, which is what the record actually holds.
+  const titles = new Map(
+    state.lastImport?.runId === run.runId
+      ? (state.lastImport.files ?? []).filter((f) => f.title).map((f) => [f.file, f.title])
+      : [],
+  );
+  const items = run.items ?? [];
+  const failed = items.filter((i) => i.outcome === 'failed').length;
+
+  const group = refusalGroup('these controls');
+  const canRerun = collection?.abilities?.runImport ?? null;
+  const rerunHTML = group.offer(
+    canRerun,
+    'Run again',
+    '<button class="btn primary" id="rerun-import">Run again</button>',
+    { className: 'btn primary' },
+  );
+  const reuploadHTML = group.offer(
+    canRerun,
+    'Run again from a file',
+    '<button class="btn subtle" id="reupload-import">Run again from a file…</button>',
+    { className: 'btn subtle' },
+  );
+
+  const rows = items.map((i) => `
+    <tr class="import-row import-row-${esc(i.outcome)}">
+      <td>
+        <span class="import-file">${esc(i.file)}</span>
+        ${titles.get(i.file) ? `<div class="import-meta muted">${esc(titles.get(i.file))}</div>` : ''}
+      </td>
+      <td class="nowrap">${importOutcomeHTML(i.outcome)}</td>
+      <td>${i.reason ? esc(i.reason) : '<span class="muted">—</span>'}</td>
+      <td class="nowrap">${i.pageId
+        ? `<a href="#/pages/${esc(i.pageId)}">Open the page</a>`
+        : '<span class="muted">no page</span>'}</td>
+    </tr>`).join('');
+
+  app.innerHTML = `
+    <div class="page-wide">
+      <div class="page-head">
+        <div>
+          <h1>${esc(IMPORT_SOURCE_LABELS[run.source] ?? run.source)} into
+            ${esc(collection?.name ?? 'a collection')}</h1>
+          <p class="muted">Run by ${esc(actorName(run.actorId))} · started ${esc(fmtDateTime(run.startedAt))}${
+            run.finishedAt ? ` · finished ${esc(fmtDateTime(run.finishedAt))}` : ' · <strong>not finished</strong>'
+          }</p>
+        </div>
+        <div class="actions"><a class="btn subtle" href="#/imports">All imports</a>${rerunHTML}${reuploadHTML}</div>
+      </div>
+      ${group.noteHTML()}
+
+      <section class="import-summary">
+        <p class="import-counts">${importCountsHTML(run.counts)}
+          <span class="muted"> — ${Number(run.counts?.found ?? 0)} document${
+            Number(run.counts?.found ?? 0) === 1 ? '' : 's'} found</span></p>
+        <p class="muted">${esc(IMPORT_HIERARCHY_NOTES[run.hierarchy] ?? '')}</p>
+        <p class="muted import-path">Read from <code>${esc(run.path)}</code> · run id
+          <code>${esc(run.runId)}</code></p>
+      </section>
+
+      <section class="import-section">
+        <h2>What every page it landed carries</h2>
+        ${importFieldsHTML(run)}
+      </section>
+
+      <section class="import-section">
+        <h2>Every file</h2>
+        ${failed ? `<p class="import-failed-lede">${failed} file${failed === 1 ? '' : 's'} did not land. Running
+          this import again keeps everything that did and tries these once more.</p>` : ''}
+        ${items.length ? `
+          <div class="table-scroll"><table class="table import-files">
+            <thead><tr><th>File</th><th>Outcome</th><th>What happened</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table></div>` : `
+          <p class="muted">This run recorded no files. Either the export held no documents Canon could
+            recognise, or the run did not finish.</p>`}
+      </section>
+    </div>`;
+
+  app.querySelector('#rerun-import')?.addEventListener('click', () => confirmRerun(run, collection));
+  app.querySelector('#reupload-import')?.addEventListener('click', () =>
+    openImportModal(collection ? [collection] : [], { run }));
+}
+
+/**
+ * Running the same run again. Not a confirmation for ceremony's sake: what a
+ * re-run does is genuinely not obvious, and the wrong mental model ("it will
+ * import everything twice") is exactly what stopped the testers who had a
+ * failed file from trying it.
+ */
+function confirmRerun(run, collection) {
+  openModal({
+    title: 'Run this import again',
+    submitLabel: 'Run it again',
+    body: `
+      <p>Canon reads <code>${esc(run.path)}</code> again, under the same run id.</p>
+      <ul class="muted import-rerun-notes">
+        <li>A file whose content has not changed is skipped — no second page, no second version.</li>
+        <li>A file that changed becomes a new version of the page it already made.</li>
+        <li>A file that failed is tried again.</li>
+      </ul>
+      <p class="muted">Every page still lands as a draft, with the owner, approver and review date this run
+        recorded.</p>`,
+    onSubmit: async () => {
+      let summary;
+      try {
+        summary = await api('POST', '/imports', {
+          source: run.source,
+          path: run.path,
+          collectionId: run.collectionId,
+          type: run.type,
+          runId: run.runId,
+          fields: run.fields ?? undefined,
+        });
+      } catch (err) {
+        // The one refusal a reader cannot act on from the server's words
+        // alone. A run that arrived as an uploaded file recorded the folder
+        // the archive was unpacked into, and the server removed it the moment
+        // the run finished (import.ts clears the spool in a `finally`) — so
+        // "no such export directory" is true, expected, and says nothing about
+        // the way forward, which is on this screen beside this button.
+        if (err?.status === 404) {
+          throw {
+            ...err,
+            message: `${err.message} If this run came from a file somebody uploaded, Canon removed its copy ` +
+              'when the run finished — "Run again from a file…" takes the same export again, under this same run id.',
+          };
+        }
+        throw err;
+      }
+      state.lastImport = summary;
+      toast(`Run again: ${summary.counts.imported} imported, ${summary.counts.updated} updated, ` +
+        `${summary.counts.skipped} skipped, ${summary.counts.failed} failed.`, 'ok');
+      route();
+    },
+  });
+}
+
+/**
+ * The one dialog that starts a run, from either door.
+ *
+ * `opts.run` re-runs an existing run — same id, same collection, same type —
+ * which is how an import that arrived as an uploaded file is retried: the
+ * archive is gone from the server the moment the run finished (import.ts
+ * removes the spool in a `finally`), so "run again" from a path would send an
+ * operator to a folder that no longer exists. Uploading the same export under
+ * the same run id lands on the same idempotency.
+ */
+async function openImportModal(collections, opts = {}) {
+  const rerun = opts.run ?? null;
+  const people = await loadActors().catch(() => []);
+  const me = state.actor?.id ?? '';
+  const first = rerun ? collections.find((c) => c.id === rerun.collectionId) ?? collections[0] : collections[0];
+  if (!first) {
+    toast('Importing needs the admin role on the collection the pages land in.');
+    return;
+  }
+  const type = rerun?.type ?? 'note';
+  let approvers = await loadApproveHolders(first.id);
+
+  const sourceOptions = IMPORT_SOURCES.map((s) =>
+    `<option value="${esc(s)}" ${s === (rerun?.source ?? 'confluence') ? 'selected' : ''}>${esc(IMPORT_SOURCE_LABELS[s])}</option>`).join('');
+  const collectionOptions = collections.map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === first.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const typeOptions = Object.keys(TYPE_LABELS).map((t) =>
+    `<option value="${esc(t)}" ${t === type ? 'selected' : ''}>${esc(TYPE_LABELS[t])}</option>`).join('');
+  const ownerOptions = `<option value="">—</option>` + people.map((p) =>
+    `<option value="${esc(p.id)}" ${p.id === (rerun?.fields?.ownerId ?? me) ? 'selected' : ''}>${esc(p.name)}${
+      p.id === me ? ' (you)' : ''}</option>`).join('');
+
+  const dialog = openModal({
+    title: rerun ? 'Run this import again from a file' : 'Import an export',
+    submitLabel: rerun ? 'Upload and run again' : 'Import',
+    body: `
+      <label>What it came out of
+        <select name="source" ${rerun ? 'disabled' : ''}>${sourceOptions}</select></label>
+      <label>Which collection the pages land in
+        <select name="collectionId" ${rerun ? 'disabled' : ''}>${collectionOptions}</select></label>
+      <label>What each page becomes
+        <select name="type" ${rerun ? 'disabled' : ''}>${typeOptions}</select></label>
+      <p class="muted type-help" data-type-help></p>
+
+      ${rerun ? '' : `
+        <fieldset class="import-where">
+          <legend>Where the export is</legend>
+          <label class="check"><input type="radio" name="where" value="upload" checked>
+            A file I have here (a <code>.zip</code> export)</label>
+          <label class="check"><input type="radio" name="where" value="path">
+            A folder already on the Canon server</label>
+        </fieldset>`}
+      <label data-where="upload">The export file
+        <input type="file" name="archive" accept=".zip,application/zip"></label>
+      ${rerun ? '' : `
+        <label data-where="path">The folder on the server
+          <input type="text" name="path" placeholder="/srv/exports/confluence-space" autocomplete="off"></label>`}
+
+      <div data-owner-fields>
+        <label data-field="owner">Who owns these pages
+          <select name="ownerId">${ownerOptions}</select></label>
+        <label data-field="approver">Who will approve them
+          <select name="approverId">${approverOptionsHTML(approvers, rerun?.fields?.approverId ?? null)}</select></label>
+        <label data-field="reviewDate">When they should next be read
+          <input type="date" name="reviewDate" value="${esc(rerun?.fields?.reviewDate ?? '')}"></label>
+      </div>
+      <p class="muted import-fields-note" data-fields-note></p>
+      <p class="muted">Every page arrives as a draft. A large export takes a while, and this dialog stays
+        open until the run has finished and can tell you what happened to each file.</p>`,
+    onSubmit: async (form) => {
+      const chosenType = form.type.value;
+      const rules = TYPE_FIELDS[chosenType] ?? {};
+      const fields = {};
+      if (rules.owner && form.ownerId.value) fields.ownerId = form.ownerId.value;
+      if (rules.approver && form.approverId.value) fields.approverId = form.approverId.value;
+      if (rules.reviewDate && form.reviewDate.value) fields.reviewDate = form.reviewDate.value;
+      const collectionId = form.collectionId.value;
+      const where = rerun ? 'upload' : form.where.value;
+
+      let summary;
+      if (where === 'upload') {
+        const file = form.archive.files?.[0];
+        if (!file) throw { message: 'Choose the export file first.' };
+        const query = new URLSearchParams({ source: form.source.value, collectionId, type: chosenType });
+        if (rerun) query.set('runId', rerun.runId);
+        for (const [key, value] of Object.entries(fields)) query.set(key, value);
+        summary = await apiUpload(`/imports/upload?${query.toString()}`, file);
+      } else {
+        const path = form.path.value.trim();
+        if (!path) throw { message: 'Say which folder on the server holds the export.' };
+        summary = await api('POST', '/imports', {
+          source: form.source.value,
+          path,
+          collectionId,
+          type: chosenType,
+          fields,
+        });
+      }
+      state.lastImport = summary;
+      toast(`${summary.counts.imported} imported, ${summary.counts.updated} updated, ` +
+        `${summary.counts.skipped} skipped, ${summary.counts.failed} failed.`, 'ok');
+      location.hash = `#/imports/${summary.runId}`;
+      // Landing on the run's own screen is the point: the counts are the
+      // headline and the per-file reasons are the work.
+      route();
+    },
+  });
+
+  const form = dialog.form;
+  // Which of the three fields the chosen type actually carries. The editor
+  // follows TYPE_FIELDS for exactly this reason, and the importer refuses a
+  // field its type does not carry — so a form that offered all three would be
+  // collecting an answer the server is about to throw back.
+  const syncType = () => {
+    const chosen = form.type.value;
+    const rules = TYPE_FIELDS[chosen] ?? {};
+    for (const key of ['owner', 'approver', 'reviewDate']) {
+      const row = form.querySelector(`[data-field="${key}"]`);
+      if (row) row.hidden = !rules[key];
+    }
+    const help = form.querySelector('[data-type-help]');
+    if (help) help.textContent = TYPE_HELP[chosen] ?? '';
+    const note = form.querySelector('[data-fields-note]');
+    if (note) {
+      note.textContent = rules.owner
+        ? 'Asked once, and written onto every page this run lands.' + (
+          chosen === 'policy'
+            ? ' A Policy also needs the day it began to apply, which is a fact about each document — those' +
+              ' pages arrive with their text in the draft, and the run says so file by file.'
+            : '')
+        : `A ${TYPE_LABELS[chosen] ?? chosen} carries no owner, no approver and no review date: it never holds` +
+          ' the Canonical mark, so it has none of those to carry.';
+    }
+  };
+  const syncWhere = () => {
+    const where = rerun ? 'upload' : form.where.value;
+    for (const key of ['upload', 'path']) {
+      const row = form.querySelector(`[data-where="${key}"]`);
+      if (row) row.hidden = key !== where;
+    }
+  };
+  form.type.addEventListener('change', syncType);
+  form.querySelectorAll('[name="where"]').forEach((radio) => radio.addEventListener('change', syncWhere));
+  // The approver list belongs to the collection, so it is re-read when the
+  // collection changes: a picker left behind from another collection offers
+  // names the server will refuse (approverOptionsHTML, above).
+  form.collectionId.addEventListener('change', async () => {
+    approvers = await loadApproveHolders(form.collectionId.value);
+    form.approverId.innerHTML = approverOptionsHTML(approvers, null);
+  });
+  syncType();
+  syncWhere();
 }
 
 // ---------------------------------------------------------------------------

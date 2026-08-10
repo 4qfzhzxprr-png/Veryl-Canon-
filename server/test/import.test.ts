@@ -410,3 +410,196 @@ test('API: POST /imports returns the run summary and GET /imports/:id recalls it
     server.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// The carry-in: who owns what an import lands (USER-TESTING-ROUND-7.md,
+// "Migration"). "All 9 imported pages landed with Owner —, Approver —, Review
+// due — in nobody's queue. A migration silently produces unowned content,
+// which is how a source of record decays."
+//
+// The answer is a per-RUN question asked once, and the half a run may not
+// answer — an effective date, which is a fact about each document — left blank
+// and NAMED per file, rather than filled in with a plausible guess.
+
+test('import: a run names an owner, an approver and a review date once, and every page carries them', () => {
+  const { store, dana, marc, collection } = setup();
+  const summary = store.runImport(marc.id, {
+    source: 'confluence',
+    path: CONFLUENCE_FLAT,
+    collectionId: collection.id,
+    type: 'spec',
+    fields: { ownerId: dana.id, approverId: marc.id, reviewDate: '2099-03-01' },
+  });
+
+  assert.deepEqual(summary.fields, { ownerId: dana.id, approverId: marc.id, reviewDate: '2099-03-01' });
+  const imported = summary.files.filter((f) => f.outcome === 'imported');
+  assert.equal(imported.length, 2);
+  for (const file of imported) {
+    // A Spec needs an owner and a named approver and nothing else, so a run
+    // that supplies both PUBLISHES — which is the behaviour the old
+    // `requiresApprover` shortcut could never reach, whatever it was told.
+    assert.equal(file.published, true, `${file.file} should have published`);
+    assert.equal(file.reason, null);
+    const page = store.getPage(marc.id, file.pageId!);
+    assert.equal(page.status, 'draft', 'an import never grants the Canonical mark');
+    assert.equal(page.ownerId, dana.id, 'the owner the run named, not the importer');
+    assert.equal(page.approverId, marc.id);
+    assert.equal(page.reviewDate, '2099-03-01');
+  }
+});
+
+test('import: a policy run says which field is still missing, and keeps the body in the draft', () => {
+  const { store, dana, marc, collection } = setup();
+  const summary = store.runImport(marc.id, {
+    source: 'confluence',
+    path: CONFLUENCE_FLAT,
+    collectionId: collection.id,
+    type: 'policy',
+    fields: { ownerId: dana.id, approverId: marc.id, reviewDate: '2099-03-01' },
+  });
+
+  const imported = summary.files.filter((f) => f.outcome === 'imported');
+  assert.equal(imported.length, 2);
+  for (const file of imported) {
+    assert.equal(file.published, false);
+    // Named, and only the one that is actually absent. The effective date is
+    // the day a policy began to apply — a fact about the document, which no
+    // run may state for two hundred of them at once.
+    assert.match(file.reason ?? '', /needs an effective date before it can publish/);
+    assert.doesNotMatch(file.reason ?? '', /named approver/, 'the run supplied one; it must not be reported missing');
+    const page = store.getPage(marc.id, file.pageId!);
+    assert.equal(page.currentVersion, null);
+    const draft = store.getDraft(marc.id, page.id)!;
+    assert.equal(draft.fields.ownerId, dana.id);
+    assert.equal(draft.fields.approverId, marc.id);
+    assert.equal(draft.fields.reviewDate, '2099-03-01');
+    assert.ok(draft.body.length > 0, 'the body waits in the draft where a person can finish it');
+  }
+});
+
+test('import: a run cannot name a field the type does not carry', () => {
+  const { store, dana, marc, collection } = setup();
+  const note = expectCode(
+    () =>
+      store.runImport(marc.id, {
+        source: 'confluence',
+        path: CONFLUENCE_FLAT,
+        collectionId: collection.id,
+        type: 'note',
+        fields: { ownerId: dana.id },
+      }),
+    'invalid',
+  );
+  assert.match(note.message, /A note carries no owner/);
+
+  const approver = expectCode(
+    () =>
+      store.runImport(marc.id, {
+        source: 'confluence',
+        path: CONFLUENCE_FLAT,
+        collectionId: collection.id,
+        type: 'plan',
+        fields: { approverId: dana.id },
+      }),
+    'invalid',
+  );
+  assert.match(approver.message, /A plan names no approver/);
+
+  const shape = expectCode(
+    () =>
+      store.runImport(marc.id, {
+        source: 'confluence',
+        path: CONFLUENCE_FLAT,
+        collectionId: collection.id,
+        type: 'spec',
+        fields: { reviewDate: 'next March' },
+      }),
+    'invalid',
+  );
+  assert.match(shape.message, /ISO date/);
+});
+
+test('import: an owner who does not exist refuses the run before a single page is created', () => {
+  const { store, marc, collection } = setup();
+  expectCode(
+    () =>
+      store.runImport(marc.id, {
+        source: 'confluence',
+        path: CONFLUENCE_FLAT,
+        collectionId: collection.id,
+        type: 'spec',
+        fields: { ownerId: 'nobody-at-all' },
+      }),
+    'not_found',
+  );
+  // Nothing landed, and no run record was opened: a mistyped id costs the
+  // operator a retry, not two hundred half-imported pages.
+  assert.equal(store.tree(marc.id, collection.id).length, 0);
+  assert.equal(store.listImportRuns(marc.id).length, 0);
+});
+
+test('import: the run record keeps the fields it applied, so a re-run can repeat them', () => {
+  const { store, dana, marc, collection } = setup();
+  const summary = store.runImport(marc.id, {
+    source: 'confluence',
+    path: CONFLUENCE_FLAT,
+    collectionId: collection.id,
+    type: 'spec',
+    fields: { ownerId: dana.id, approverId: marc.id, reviewDate: '2099-03-01' },
+  });
+
+  const recalled = store.getImportRun(marc.id, summary.runId);
+  assert.deepEqual(recalled.fields, summary.fields);
+  const listed = store.listImportRuns(marc.id).find((r) => r.runId === summary.runId)!;
+  assert.deepEqual(listed.fields, summary.fields);
+});
+
+test('import: the run’s ownership decision is on the audit log, once, before the work', () => {
+  const { store, dana, marc, collection } = setup();
+  store.runImport(marc.id, {
+    source: 'confluence',
+    path: CONFLUENCE_FLAT,
+    collectionId: collection.id,
+    type: 'spec',
+    fields: { ownerId: dana.id, approverId: marc.id, reviewDate: '2099-03-01' },
+  });
+  const start = store.queryAudit(marc.id, { action: 'import.start' });
+  assert.equal(start.length, 1);
+  assert.equal(start[0]!.details.ownerId, dana.id);
+  assert.equal(start[0]!.details.approverId, marc.id);
+  assert.equal(start[0]!.details.reviewDate, '2099-03-01');
+});
+
+test('abilities: aiming an import is `admin` on the collection, and the screen is told so', () => {
+  const { store, dana, marc, collection } = setup();
+  // Marc administers this collection (see `setup`), Dana created it.
+  assert.equal(store.collectionAbilities(marc.id, collection.id).runImport.can, true);
+
+  const kit = store.createActor({ kind: 'person', name: 'Kit', email: 'kit@example.com' });
+  store.setMember(dana.id, collection.id, kit.id, 'edit');
+  const hers = store.collectionAbilities(kit.id, collection.id).runImport;
+  assert.equal(hers.can, false, 'edit is not enough to aim an import');
+  assert.match(hers.why!, /Importing needs the admin role on Member Benefits/);
+  assert.match(hers.why!, /you hold edit there/);
+
+  // A mirror, not a second rule: what it reports refused, the server refuses,
+  // in the same words.
+  const refused = expectCode(
+    () => store.runImport(kit.id, { source: 'confluence', path: CONFLUENCE_FLAT, collectionId: collection.id }),
+    'forbidden',
+  );
+  assert.equal(refused.message, hers.why);
+
+  // And an org administrator holding no role here is refused too — the ability
+  // must not borrow `addMember`'s break-glass, which the importer does not have.
+  const ade = store.createActor({ kind: 'person', name: 'Ade', email: 'ade@example.com' });
+  store.setMember(dana.id, collection.id, ade.id, 'view');
+  store.bootstrapAdministrator(ade.id);
+  const theirs = store.collectionAbilities(ade.id, collection.id);
+  assert.equal(theirs.addMember.can, true, 'the break-glass path for membership is unchanged');
+  assert.equal(theirs.runImport.can, false);
+  expectCode(
+    () => store.runImport(ade.id, { source: 'confluence', path: CONFLUENCE_FLAT, collectionId: collection.id }),
+    'forbidden',
+  );
+});

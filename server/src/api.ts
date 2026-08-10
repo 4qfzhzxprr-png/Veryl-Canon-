@@ -330,13 +330,59 @@ const routes: Route[] = [
 
   route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
 
+  // Asking for access, from the refusal that made you want it (access.ts).
+  //
+  // The body names a REFUSAL — a collection this actor already holds a role on,
+  // or a relation whose far end they were shown as withheld — and never a page
+  // id. That is not a convenience: an endpoint taking any id somebody typed and
+  // answering differently for "no such thing" and "sent" would be the existence
+  // oracle the search boundary was drawn to prevent (policy question 1).
+  //
+  // The response is the ASKER'S view, which is thinner than the row: a request
+  // about a page they cannot see names no collection and no page, because a
+  // receipt for the asking must not disclose what the refusal withheld.
+  route('POST', '/access-requests', ({ store, actorId, body }) => store.requestAccess(actorId, objectBody(body))),
+  // Two listings, and they are two different views of the same table. `mine` is
+  // what this actor asked for; the default is the INBOX — what is waiting on
+  // them as an administrator, which is the half without which a request is a
+  // form that goes nowhere.
+  route('GET', '/access-requests', ({ store, actorId, query }) =>
+    query.get('mine') === 'true'
+      ? store.listMyAccessRequests(actorId)
+      : store.listAccessRequests(actorId, { status: (query.get('status') as never) ?? undefined }),
+  ),
+  route('POST', '/access-requests/:id/decide', ({ store, actorId, params, body }) =>
+    store.decideAccessRequest(actorId, params.id!, {
+      outcome: optionalString(body?.outcome, 'outcome'),
+      role: optionalString(body?.role, 'role') as never,
+      note: optionalString(body?.note, 'note') ?? null,
+    }),
+  ),
+  route('POST', '/access-requests/:id/withdraw', ({ store, actorId, params }) =>
+    store.withdrawAccessRequest(actorId, params.id!),
+  ),
+
   // The refused-questions loop (gaps.ts): operator-only, because a gap is a
   // question's text and question text is operators' to read — the same rule
   // the audit log applies. The asker is never in the payload; the table that
   // feeds this has no column for one.
-  route('GET', '/gaps', ({ store, actorId, query }) =>
-    store.listGaps(actorId, { status: query.get('status') ?? undefined }),
-  ),
+  // The answer carries WHOSE LIST IT IS, and that is not decoration. An
+  // operator reads every gap; a collection's administrator reads the gaps
+  // asked of the collections they administer (store.listGaps). A screen that
+  // did not know which it was holding would have to describe a scoped listing
+  // as though it were the record's whole answer — the exact claim Phase 5
+  // spent a round removing from four other screens.
+  route('GET', '/gaps', async ({ store, actorId, query }) => {
+    const scope = store.gapScopeOf(actorId);
+    return {
+      scope: scope.scope,
+      collections: store
+        .listCollections(actorId)
+        .filter((c) => scope.collectionIds.includes(c.id))
+        .map((c) => ({ id: c.id, name: c.name })),
+      gaps: await store.listGaps(actorId, { status: query.get('status') ?? undefined }),
+    };
+  }),
   route('POST', '/gaps/:id/close', ({ store, actorId, params, body }) =>
     store.closeGap(actorId, params.id!, {
       outcome: optionalString(body?.outcome, 'outcome'),
@@ -380,6 +426,14 @@ const routes: Route[] = [
         collectionId: query.get('collectionId') ?? '',
         type: (query.get('type') ?? undefined) as never,
         runId: query.get('runId') ?? undefined,
+        // Who will own what this archive lands, asked once, exactly as the
+        // path-based run asks it — the body is the corpus, so these ride the
+        // query string with everything else the run needs to know.
+        fields: {
+          ownerId: query.get('ownerId') ?? undefined,
+          approverId: query.get('approverId') ?? undefined,
+          reviewDate: query.get('reviewDate') ?? undefined,
+        },
         archivePath: body.archivePath,
       }),
     ),

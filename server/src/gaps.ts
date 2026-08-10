@@ -27,6 +27,22 @@
 // What the missing column buys is that the join takes that deliberate act on
 // that governed surface, rather than being one SELECT on this one.
 //
+// WHO READS THEM, AND THE ONE WIDENING THIS RULE HAS TAKEN. "Nobody below
+// operator" was the original line and it had a cost the seventh round measured:
+// `#/gaps` opened for no collection role, not even `admin`, while the
+// prescribed remedy — the "Also known as" alias field — lives in the STEWARD's
+// editor. The person whose job the fix is could not see the finding, and a
+// blocked member-services rep's query failed on exactly that.
+//
+// So a collection's administrator now reads the gaps RECORDED AGAINST THAT
+// COLLECTION, and nothing else. What makes that safe is the missing column
+// rather than a new check: the harmful disclosure was never the question, it
+// was the LINK between a person and what they did not know, and this table
+// cannot make that link for anybody, at any role, because it has no asker in
+// it. A gap with no collection — asked across the whole record — stays
+// operator-only, because nothing about it says whose material it was and
+// guessing would put one team's question in front of another team's steward.
+//
 // WHAT A GAP IS NOT. It is not a queue item with an SLA and not a support
 // ticket. Resolving one records a sentence about what was done ("added
 // 'urgent' as an alias on Claims Processing Standard"); dismissing one records
@@ -146,16 +162,43 @@ export class GapService {
       .run(randomUUID(), question, normalized, collectionId, at, at, nearestJson);
   }
 
-  list(filter: { status?: string } = {}): Gap[] {
+  /**
+   * `collectionIds` narrows the list to gaps recorded against those
+   * collections — the STEWARD's view (see CanonStore.listGaps for who gets it
+   * and why). A gap with no collection is one asked across the whole record;
+   * it is never in a narrowed list, because nothing about it says whose
+   * material it was, and guessing would put one team's question in front of
+   * another team's steward.
+   */
+  list(filter: { status?: string; collectionIds?: readonly string[] } = {}): Gap[] {
     const status = filter.status ?? 'open';
     if (!['open', 'resolved', 'dismissed', 'all'].includes(status)) {
       throw new CanonError('invalid', `Unknown gap status: ${status}`);
     }
-    const rows =
-      status === 'all'
-        ? this.db.prepare('SELECT * FROM gaps ORDER BY last_asked_at DESC').all()
-        : this.db.prepare('SELECT * FROM gaps WHERE status = ? ORDER BY last_asked_at DESC').all(status);
+    const scoped = filter.collectionIds;
+    if (scoped && !scoped.length) return [];
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (status !== 'all') {
+      where.push('status = ?');
+      params.push(status);
+    }
+    if (scoped) {
+      where.push(`collection_id IN (${scoped.map(() => '?').join(', ')})`);
+      params.push(...scoped);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM gaps${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY last_asked_at DESC`,
+      )
+      .all(...(params as never[]));
     return (rows as Record<string, unknown>[]).map(toGap);
+  }
+
+  /** One gap by id, or null. Used by the store to decide who may close it. */
+  get(gapId: string): Gap | null {
+    const row = this.db.prepare('SELECT * FROM gaps WHERE id = ?').get(gapId) as Record<string, unknown> | undefined;
+    return row ? toGap(row) : null;
   }
 
   /**
