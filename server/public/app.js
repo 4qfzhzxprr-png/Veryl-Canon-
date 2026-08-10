@@ -427,6 +427,19 @@ function kindTag(kind) {
   return '<span class="kind-tag">person</span>';
 }
 
+// The `restricted` chip, and what it is allowed to claim.
+//
+// It used to say "Views are logged to the audit log" on two of its three
+// renderings and nothing at all on the third. Beside a word as loaded as
+// "restricted" that reads as an aside to the real point — and the real point
+// was untrue: `restricted` is read by no permission check anywhere in the
+// server. Membership decides who may open a collection, restricted or not
+// (round seven, tester 47, who proved it against two collections). So the chip
+// says the two things the flag DOES do, and says the thing it does not.
+function restrictedTagHTML() {
+  return `<span class="restricted-tag" title="Reads of these pages are recorded in the audit log, refusals included, and they are kept from any outside AI service. Who may open the collection is decided by its members, here as everywhere.">restricted</span>`;
+}
+
 function actorLabel(id) {
   if (isSystemActor(id)) return `${esc(SYSTEM_ACTOR_NAME)} ${kindTag('system')}`;
   const a = actorById(id);
@@ -1889,7 +1902,7 @@ async function viewHome() {
         <div class="card-grid">
           ${collections.map((c) => `
             <a class="card collection-card" href="#/collections/${esc(c.id)}">
-              <h3>${esc(c.name)} ${c.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h3>
+              <h3>${esc(c.name)} ${c.restricted ? restrictedTagHTML() : ''}</h3>
               <p class="muted">${esc(c.description || 'No description.')}</p>
               <p class="card-foot muted">Created ${fmtDateTime(c.createdAt)}</p>
             </a>`).join('')}
@@ -1909,8 +1922,25 @@ async function viewHome() {
     body: `
       <label>Name <input name="name" required maxlength="120" placeholder="e.g. Compliance"></label>
       <label>Description <textarea name="description" rows="2" placeholder="What this collection holds (optional)"></textarea></label>
+      ${/* WHAT "RESTRICTED" ACTUALLY DOES, because the word promises the one
+            thing it does not do.
+
+            Round seven, tester 47: a restricted and an unrestricted collection
+            are IDENTICALLY invisible to a non-member — membership is the whole
+            of access control, on every collection. A department head reading
+            "Restricted" beside a checkbox reasonably concludes it is what keeps
+            people out, and the only helper text under it talked about the audit
+            log. Two of the three sentences below were nowhere in the product:
+            that this grants no access control (store.ts: no permission check
+            reads the flag), and that it holds these pages back from an outside
+            model (answers.ts `egressWithheld`, embeddings.ts `enqueue`, both
+            keyed on the same column). */ ''}
       <label class="check"><input type="checkbox" name="restricted"> Restricted
-        <span class="muted">page views are recorded in the audit log</span></label>`,
+        <span class="muted">extra scrutiny, not extra access control</span></label>
+      <p class="muted type-help">Who can open a collection is decided by its members, restricted or
+        not. Ticking this records every read of a page here in the audit log — including reads that
+        were refused — and keeps these pages from being sent to an outside AI service, unless this
+        Canon has been set up to allow that.</p>`,
     onSubmit: async (form) => {
       const c = await api('POST', '/collections', {
         name: form.name.value.trim(),
@@ -2352,7 +2382,7 @@ function sidebarHTML(collection, tree, currentPageId) {
   return `
     <aside class="sidebar" data-refusal-host>
       <a class="sidebar-collection" href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a>
-      ${collection.restricted ? '<span class="restricted-tag">restricted</span>' : ''}
+      ${collection.restricted ? restrictedTagHTML() : ''}
       <button class="btn subtle tree-toggle" id="tree-toggle" type="button" hidden
         aria-expanded="true" aria-controls="sidebar-tools"></button>
       <div id="sidebar-tools">
@@ -2614,7 +2644,7 @@ async function viewCollection(id) {
         <div class="page-head">
           <div>
             <h1>${esc(collection.name)}
-              ${collection.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h1>
+              ${collection.restricted ? restrictedTagHTML() : ''}</h1>
             <p class="muted">${esc(collection.description || 'No description.')}</p>
           </div>
           <div class="actions">

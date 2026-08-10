@@ -788,3 +788,30 @@ test('bylines: who wrote a version is drawn with its actor kind, not as a bare n
   const review = source.slice(source.indexOf('function reviewBannerHTML('), source.indexOf('async function viewPage('));
   assert.match(review, /Submitted by \$\{actorLabel\(review\.submittedById\)\}/);
 });
+// ---------------------------------------------------------------------------
+// "Restricted" says what it does, and what it does not (Phase 9)
+//
+// Round seven, tester 47, proved against two collections: a restricted and an
+// unrestricted collection are IDENTICALLY invisible to a non-member, because
+// membership is the whole of access control and no permission check anywhere
+// in the server reads the `restricted` column. Beside a word that loaded, the
+// only helper text in the product was "page views are recorded in the audit
+// log" — an aside, under a checkbox whose name makes a promise it does not
+// keep.
+
+test('restricted: the checkbox says it is not access control, and names both things it is', () => {
+  const dialog = source.slice(source.indexOf("<label class=\"check\"><input type=\"checkbox\" name=\"restricted\">"), source.indexOf('onSubmit: async (form) => {'));
+  assert.match(dialog, /decided by its members/, 'says what actually keeps people out');
+  assert.match(dialog, /audit log/, 'the half that was already stated');
+  assert.match(dialog, /outside AI service/, 'the half that was stated nowhere');
+});
+
+test('restricted: the chip makes the same claim everywhere it is drawn', () => {
+  // Three renderings, one of which used to carry no explanation at all.
+  const uses = source.match(/restrictedTagHTML\(\)/g) ?? [];
+  assert.ok(uses.length >= 4, `expected the helper and its call sites, found ${uses.length}`);
+  const fn = source.slice(source.indexOf('function restrictedTagHTML('), source.indexOf('function actorLabel('));
+  assert.match(fn, /refusals included/);
+  assert.match(fn, /decided by its members/);
+  assert.ok(!/title="Views are logged to the audit log"/.test(source), 'the old aside is gone from every site');
+});
