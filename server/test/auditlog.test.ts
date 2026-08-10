@@ -383,3 +383,75 @@ test('gaps: an empty tab describes that tab, never the whole record', () => {
   assert.match(view, /No gap has been dismissed/);
   assert.doesNotMatch(view, /No \$\{esc\(status\)\} gaps/, 'the status is no longer interpolated into a claim about the record');
 });
+
+// ---------------------------------------------------------------------------
+// The one claim Canon made without showing its evidence (Phase 9)
+//
+// Round seven, tester 13, who credited Canon for volunteering the attack that
+// defeats its own hash chain and for shipping twelve numbered self-disclosed
+// limits: "the single place it asserts without evidence is the word
+// 'Append-only.' at the top of the audit page."
+//
+// The evidence was built. `GET /audit/verify` walks the chain, names the first
+// break, and carries `proves` and `limits` in the same object as its verdict —
+// and its only caller in the browser was a FEATURE PROBE (`?limit=1`, one
+// link, thrown away) used to decide whether to draw the Attestation button.
+// The check ran on that screen; nobody was ever shown what it said. That is
+// the shape this remediation keeps finding: a mechanism that reads correctly
+// and never reaches a reader.
+
+test('audit: "Append-only" is a button, and the walk it runs is not the probe’s', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const view = source.slice(source.indexOf('async function viewAudit('), source.indexOf('// Sources — registered external systems'));
+  assert.match(view, /id="audit-verify"/, 'the claim carries an affordance');
+  assert.match(view, /verifyBtn\?\.addEventListener\('click'/, 'and the affordance is wired in the same function');
+  // The full walk. `?limit=1` is the probe's question ("does this endpoint
+  // exist"); a reader pressing this is asking a different one, and `partial`
+  // would otherwise be true on every answer.
+  assert.match(view, /api\('GET', '\/audit\/verify'\)/);
+  assert.ok(!/audit\/verify\?limit=1'\)\)/.test(view), 'the audit screen never renders the probe’s answer as a verdict');
+});
+
+test('audit: a clean chain is never rendered as proof the log is genuine', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const fn = source.slice(source.indexOf('function chainVerdictHTML('), source.indexOf('async function viewAudit('));
+  // auditchain.ts is explicit that a forged log — an event deleted, every
+  // later link recomputed — answers this check ok:true, and that this was
+  // actually done to a Canon record during review. So the caveats travel with
+  // the verdict, printed as the server wrote them rather than paraphrased in
+  // a client, which is where a caveat goes quietly missing.
+  assert.match(fn, /r\.proves \?/);
+  assert.match(fn, /r\.limits \?/);
+  assert.match(fn, /What it does not:/);
+  // And a limited walk is a weaker sentence than a whole one, drawn as its
+  // own verdict rather than folded into "the chain joins up".
+  assert.match(fn, /r\.partial/);
+  assert.match(fn, /says nothing about the events beyond it/);
+});
+
+test('audit: refusing the chain check speaks the product’s one vocabulary for no', () => {
+  // The second round removed a second vocabulary — "Requires edit access to
+  // this collection": no act, nothing about what the caller holds, nobody to
+  // ask. This check kept one of the last survivors, because it is about no
+  // collection in particular and `forbiddenRole` had nothing to name.
+  const store = new CanonStore(openDb(':memory:'));
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const collection = store.createCollection(dana.id, { name: 'Compliance' });
+  const vera = store.createActor({ kind: 'person', name: 'Vera' });
+  store.setMember(dana.id, collection.id, vera.id, 'view');
+
+  assert.equal(store.verifyAuditChain(dana.id).ok, true, 'an admin gets the walk');
+  try {
+    store.verifyAuditChain(vera.id);
+    assert.fail('a view role may not walk the chain');
+  } catch (err) {
+    const message = (err as Error).message;
+    assert.match(message, /Checking the audit chain needs the admin role/, 'names the act and what it needs');
+    assert.match(message, /You hold it on none/, 'and what the caller holds');
+    assert.match(message, /can grant it/, 'and the way to get it');
+    // Deliberately no list of names: that list would be assembled across every
+    // collection, including ones this caller holds no role in, and a refusal
+    // is not a place to hand out a membership they were just refused.
+    assert.ok(!message.includes('Dana'), 'a refusal is not a directory of other collections');
+  }
+});

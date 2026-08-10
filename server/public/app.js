@@ -6019,6 +6019,61 @@ function auditEmptyHeading(matching) {
   return Number(matching) > 0 ? 'These events did not load' : 'No matching events';
 }
 
+/**
+ * What `GET /audit/verify` came back with, said to a person.
+ *
+ * TWO RULES, both taken from the response itself rather than invented here.
+ *
+ * A CLEAN RESULT IS NOT A CLAIM OF AUTHENTICITY. `auditchain.ts` is explicit
+ * that a competently forged log — an event deleted and every later link
+ * recomputed — answers this check `ok: true`, and that this was actually done
+ * to a Canon record during review. So the verdict line never stands alone: the
+ * response's own `proves` and `limits` sentences travel with it, and they are
+ * printed as the server wrote them rather than paraphrased, because a
+ * paraphrase in a client is exactly where a caveat goes quietly missing.
+ *
+ * A PARTIAL WALK SAYS NOTHING ABOUT THE REST. `partial` means a limit stopped
+ * the walk, and "no break in what was walked" is a weaker sentence than "no
+ * break". They are drawn as two different verdicts.
+ */
+function chainVerdictHTML(r) {
+  const n = (v) => Number(v ?? 0).toLocaleString();
+  const unchained = Number(r.unchained ?? 0);
+  const before = unchained
+    ? ` ${n(unchained)} event${unchained === 1 ? '' : 's'} ${unchained === 1 ? 'was' : 'were'} written before the
+        chain existed, so the chain has never covered ${unchained === 1 ? 'it' : 'them'} and never will.`
+    : '';
+  const head = r.head
+    ? `<p class="muted chain-head">The chain's head is event ${n(r.head.eventId)}. Compare it against a copy kept
+        outside Canon — that comparison, and nothing on this screen, is what turns this into a statement about
+        whether the log is genuine.</p>`
+    : '';
+  const verdict = r.ok
+    ? r.partial
+      ? `<p class="chain-verdict chain-partial"><strong>No break in the part that was walked.</strong>
+          The walk stopped before the end of the log, so this says nothing about the events beyond it.</p>`
+      : `<p class="chain-verdict chain-ok"><strong>The chain joins up.</strong> ${n(r.verified)} of
+          ${n(r.events)} event${Number(r.events) === 1 ? '' : 's'} were re-hashed and every link still
+          matches.${before}</p>`
+    : `<p class="chain-verdict chain-broken"><strong>The chain is broken.</strong>
+        ${r.firstBreak ? `First at event ${n(r.firstBreak.eventId)}${
+            r.firstBreak.at ? ` (${esc(fmtDateTime(r.firstBreak.at))})` : ''
+          }${r.firstBreak.action ? `, <code class="action-code">${esc(r.firstBreak.action)}</code>` : ''}.
+          ${esc(r.firstBreak.explanation ?? '')}` : ''}
+        Only the first break is reported: after one, every later link is computed against a hash that is
+        already wrong.</p>`;
+  return `
+    <section class="panel chain-check">
+      ${verdict}
+      ${r.proves ? `<p class="muted">What a clean walk proves: ${esc(r.proves)}</p>` : ''}
+      ${r.limits ? `<p class="muted"><strong>What it does not:</strong> ${esc(r.limits)}</p>` : ''}
+      ${head}
+      ${r.externalAnchor ? `<details class="chain-anchor"><summary>Keeping the head where Canon cannot rewrite it</summary>
+        <p class="muted">${esc(r.externalAnchor)}</p></details>` : ''}
+      <p class="muted chain-when">Checked ${esc(fmtDateTime(r.checkedAt))}.</p>
+    </section>`;
+}
+
 async function viewAudit(query = {}) {
   await loadActors().catch(() => null);
   let collections = [];
@@ -6055,8 +6110,24 @@ async function viewAudit(query = {}) {
         <div class="actions"><button class="btn" id="audit-export" type="button" disabled
           title="Enables when the log has loaded.">Export CSV</button></div>
       </div>
+      ${/* THE ONE CLAIM CANON MAKES WITHOUT SHOWING ITS EVIDENCE.
+            Round seven, tester 13, who credited the product for volunteering
+            the attack that defeats its own chain and for shipping twelve
+            numbered self-disclosed limits: "the single place it asserts
+            without evidence is the word 'Append-only.' at the top of the audit
+            page."
+
+            The evidence was already built and already refused to overclaim —
+            `GET /audit/verify` walks the chain, names the first break, and
+            carries `proves` and `limits` in the same object as its verdict. It
+            had one caller in this client and it was a FEATURE PROBE:
+            `?limit=1`, one link, thrown away, used only to decide whether to
+            draw the Attestation button. So the check ran on this screen and
+            nobody was ever shown what it said. */ ''}
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
-      material, attributed to its actor.</p>
+      material, attributed to its actor.
+      <button class="btn subtle" id="audit-verify" type="button">Check the chain</button></p>
+      <div id="audit-verdict" aria-live="polite"></div>
       <form id="audit-filters" class="inline-form">
         <label>Action <select name="action"><option value="">All actions</option></select></label>
         <label>Actor
@@ -6089,6 +6160,26 @@ async function viewAudit(query = {}) {
   const tableHost = app.querySelector('#audit-table');
   const countHost = app.querySelector('#audit-count');
   const moreHost = app.querySelector('#audit-more');
+
+  // The evidence behind "Append-only." A full walk, not the probe's single
+  // link: the probe answers "does this endpoint exist", and the reader is
+  // asking a different question. The refusal is drawn IN PLACE rather than
+  // toasted, because the sentence names who can check and that is worth
+  // reading twice, not for three seconds in a corner.
+  const verifyBtn = app.querySelector('#audit-verify');
+  const verdictHost = app.querySelector('#audit-verdict');
+  verifyBtn?.addEventListener('click', async () => {
+    verifyBtn.disabled = true;
+    verdictHost.innerHTML = '<div class="loading">Walking the chain…</div>';
+    try {
+      verdictHost.innerHTML = chainVerdictHTML(await api('GET', '/audit/verify'));
+    } catch (err) {
+      verdictHost.innerHTML = `<div class="panel chain-check"><p class="chain-verdict chain-refused">${
+        esc(err?.message ?? 'The chain could not be checked.')}</p></div>`;
+    } finally {
+      verifyBtn.disabled = false;
+    }
+  });
 
   const current = () => ({
     action: form.action.value,
