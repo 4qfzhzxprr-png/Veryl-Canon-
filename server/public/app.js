@@ -92,6 +92,8 @@ const NOTIFICATION_LABELS = {
   proposal_superseded: 'Proposal superseded',
   review_due: 'Review due',
   divergence_opened: 'Sources disagree',
+  access_requested: 'Access requested',
+  access_decided: 'Access decision',
 };
 
 // ---------------------------------------------------------------------------
@@ -1771,14 +1773,27 @@ async function render(view) {
 
 function renderErrorPage(err) {
   const msg = err?.message ?? 'Something went wrong.';
+  // THE WALL, AND SOMETHING TO DO AT IT. `forbiddenRole` already answers with
+  // the structured refusal beside its sentence — `{ collectionId, needed,
+  // held }` — so the one screen a refused person actually lands on can carry
+  // the ask. Only where they HOLD something there: access.ts refuses a ground
+  // on a collection somebody holds nothing in, because a refusal you have no
+  // standing over gives you nothing to carry, and accepting one would turn the
+  // request endpoint into a place to type ids at (policy question 1).
+  const d = err?.details ?? {};
+  const canAsk = err?.status === 403 && d.collectionId && d.held && d.held !== 'admin';
   app.innerHTML = `
     <div class="page-narrow">
       <div class="empty-state">
         <h2>${err?.status === 403 ? 'No access' : err?.status === 404 ? 'Not found' : 'Something went wrong'}</h2>
         <p>${esc(msg)}</p>
-        <p><a class="btn" href="#/">Back to collections</a></p>
+        <p><a class="btn" href="#/">Back to collections</a>${canAsk
+          ? ` <button type="button" class="btn primary ask-access" data-ask-access data-ground="collection"
+              data-collection="${esc(d.collectionId)}" data-held="${esc(d.held)}">Ask for access</button>`
+          : ''}</p>
       </div>
     </div>`;
+  if (canAsk) wireAskAccess();
 }
 
 // ---------------------------------------------------------------------------
@@ -2153,7 +2168,8 @@ async function viewQueue() {
   }
 
   const c = queue.counts ?? {};
-  const nothing = !c.total && !(queue.notices ?? []).length;
+  const nothing = !c.total && !(queue.notices ?? []).length && !(queue.accessRequests ?? []).length
+    && !(queue.accessAsked ?? []).length;
 
   const strands = [
     queueSection(
@@ -2255,6 +2271,14 @@ async function viewQueue() {
     p.approverId ? `Waiting on ${actorName(p.approverId)}.` : 'Waiting on anyone who can approve it.',
   ));
 
+  // THE ADMIN INBOX (access.ts). A strand rather than a screen of its own, for
+  // the reason the notices are one: this is the screen people check, and the
+  // whole finding was that a request went nowhere anybody looked. It IS
+  // counted, unlike the notices, because somebody is waiting on a decision
+  // only this person can make.
+  const accessRequests = (queue.accessRequests ?? []).map((r) => accessRequestCardHTML(r));
+  const accessAsked = (queue.accessAsked ?? []).map((r) => askedAccessRowHTML(r, collections));
+
   // Notices last, and outside the count. The outbox has no read state, so a
   // number counting these would never go down; what they add is the sentence —
   // who asked, who sent it back, what they said — beside the work itself.
@@ -2292,6 +2316,22 @@ async function viewQueue() {
           the record is waiting on <strong>you</strong> for, and these are waiting on someone else.</p>
           <table class="queue-table"><tbody>${submitted.join('')}</tbody></table>
         </section>` : ''}
+      ${accessRequests.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">People asking for access <span class="queue-strand-count">${
+            accessRequests.length}</span></h2>
+          <p class="muted queue-strand-blurb">Somebody was refused something and asked. Only an administrator of
+          the collection can decide, which is why this is here and not in a list somebody else could clear.</p>
+          ${accessRequests.join('')}
+        </section>` : ''}
+      ${accessAsked.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">Access you have asked for</h2>
+          <p class="muted queue-strand-blurb">Waiting on somebody else, so it is not counted above. You will be
+          told either way; a request about a page you cannot see does not name it here, which is the same rule
+          that withheld it.</p>
+          <ul class="asked-access-list">${accessAsked.join('')}</ul>
+        </section>` : ''}
       ${notices.length ? `
         <section class="queue-strand">
           <h2 class="queue-strand-head">Notices</h2>
@@ -2304,11 +2344,197 @@ async function viewQueue() {
         more; narrow it with a <a href="#/">collection</a> or a query.</p>` : ''}
     </div>`;
 
+  wireAccessRequests(() => route());
   app.querySelector('#queue-refresh')?.addEventListener('click', async () => {
     await refreshQueueNav({ force: true });
     route();
   });
   await refreshQueueNav();
+}
+
+// ---------------------------------------------------------------------------
+// Asking for access, from the refusal that made you want it
+//
+// Two testers, one sentence: "The wall already names who holds the role; it
+// should be able to ask for them. Administrators have no inbox of requests
+// either." Both halves are here — the control on the refusal, and the strand in
+// the queue where a request lands, because a request nobody can see is worse
+// than no request.
+//
+// WHAT THE CONTROL SENDS is the refusal's own context and never a page
+// somebody names (access.ts has the argument): a collection this reader already
+// holds a role on, or a RELATION whose far end they were shown as withheld.
+// There is deliberately no box to type an id into. The screen therefore only
+// ever offers this where a refusal is on the screen beside it.
+//
+// AND WHAT COMES BACK is thinner than what goes in. A request about a page the
+// asker cannot see names no collection and no page in their own listing —
+// a receipt for the asking must not hand over what the refusal withheld.
+
+const ROLE_HELP = {
+  view: 'read the pages here',
+  comment: 'read, and leave comments',
+  edit: 'write and edit drafts here',
+  approve: 'grant the Canonical mark',
+  admin: 'administer this collection',
+};
+
+/** The roles above one somebody already holds, weakest first. */
+function rolesAbove(held) {
+  const at = held ? ROLES.indexOf(held) : -1;
+  return ROLES.slice(at + 1);
+}
+
+function askAccessButtonHTML(label = 'Ask for access') {
+  return `<button type="button" class="btn subtle ask-access" data-ask-access>${esc(label)}</button>`;
+}
+
+/**
+ * The dialog. `ground` decides everything about it: what can be asked for, and
+ * — the part that matters — what the dialog is allowed to say about what is
+ * being asked for.
+ */
+function openAskAccessModal(context) {
+  const { ground, collectionId = null, collectionName = null, held = null, relationId = null } = context;
+  const options = ground === 'collection'
+    ? rolesAbove(held).map((r, i) =>
+        `<option value="${esc(r)}" ${i === 0 ? 'selected' : ''}>${esc(r)} — ${esc(ROLE_HELP[r] ?? '')}</option>`).join('')
+    : '';
+  openModal({
+    title: 'Ask for access',
+    submitLabel: 'Send the request',
+    body: ground === 'collection'
+      ? `
+        <p>This goes to the administrators of <strong>${esc(collectionName ?? 'this collection')}</strong>. They
+          see your name, what you are asking for, and the sentence you write here.</p>
+        <label>What you need to be able to do
+          <select name="role">${options}</select></label>
+        <label>Why you need it
+          <textarea name="note" rows="3" required maxlength="600"
+            placeholder="The one thing an administrator decides on. Say what you are trying to do."></textarea></label>
+        <p class="muted">You hold <strong>${esc(held ?? 'no role')}</strong> here now. Nothing changes until
+          somebody grants it, and you will be told either way.</p>`
+      : `
+        <p>Something the record says about this page points at a page you cannot see. This asks the
+          administrators of whichever collection holds it.</p>
+        <label>Why you need it
+          <textarea name="note" rows="3" required maxlength="600"
+            placeholder="They cannot see your page. Say what you are trying to settle."></textarea></label>
+        ${/* The non-disclosure rule, said out loud rather than merely obeyed.
+              A reader who does not know the request went somewhere specific
+              assumes it went nowhere. */ ''}
+        <p class="muted">Canon will not tell you which collection that is, or what the page is called — that is
+          the same rule that withheld it in the first place. It will tell you the decision.</p>`,
+    onSubmit: async (form) => {
+      const note = form.note.value.trim();
+      if (!note) throw { message: 'Say what you need to do and why; an administrator decides on that sentence.' };
+      await api('POST', '/access-requests', ground === 'collection'
+        ? { ground, collectionId, role: form.role.value, note }
+        : { ground, relationId, note });
+      toast('Asked. It is waiting with the administrators who can grant it.', 'ok');
+      await refreshQueueNav({ force: true });
+    },
+  });
+}
+
+/**
+ * Wire every `data-ask-access` control inside `host`. The context rides on the
+ * element, so one handler serves the page view, the relations panel and the
+ * refusal wall without any of them knowing about each other.
+ */
+function wireAskAccess(host = app) {
+  host.querySelectorAll('[data-ask-access]').forEach((btn) => {
+    btn.addEventListener('click', () => openAskAccessModal({
+      ground: btn.dataset.ground ?? 'collection',
+      collectionId: btn.dataset.collection ?? null,
+      collectionName: btn.dataset.collectionName ?? null,
+      held: btn.dataset.held || null,
+      relationId: btn.dataset.relation ?? null,
+    }));
+  });
+}
+
+/** What one request says to the administrator who can answer it. */
+function accessRequestCardHTML(r) {
+  const asked = r.ground === 'collection'
+    ? `for the <strong>${esc(r.requestedRole ?? 'view')}</strong> role here.`
+    : `to see <a href="#/pages/${esc(r.subjectPageId ?? '')}">${esc(r.subjectTitle ?? 'a page here')}</a>, which
+       one of their own pages is recorded as contradicting.`;
+  return `
+    <article class="access-card" data-request="${esc(r.id)}">
+      <p class="access-ask"><strong>${esc(r.askerName ?? actorName(r.askerId))}</strong> is asking ${asked}</p>
+      <p class="access-note">&ldquo;${esc(r.note ?? '')}&rdquo;</p>
+      <p class="muted access-meta">${esc(fmtAgo(r.createdAt) ?? '')} · they hold
+        ${esc(r.askerRole ?? 'no role')} here</p>
+      <div class="access-actions">
+        <select class="access-role" aria-label="Role to grant">
+          ${ROLES.map((role) => `<option value="${esc(role)}" ${
+            role === (r.requestedRole ?? 'view') ? 'selected' : ''}>${esc(role)}</option>`).join('')}
+        </select>
+        <button class="btn primary" data-decide="granted">Grant</button>
+        <button class="btn subtle" data-decide="declined">Decline</button>
+        ${/* Required for a decline and not for a grant, and the server keeps
+              that rule: a grant writes its own record — the membership, the
+              audit event, the access itself — while "no" tells somebody
+              nothing they can act on. Same asymmetry as approve and
+              send-back. */ ''}
+        <input type="text" class="access-decision-note" maxlength="400"
+          placeholder="Why not — required to decline, optional to grant">
+      </div>
+    </article>`;
+}
+
+/** And what it says to the person who asked, which is deliberately less. */
+function askedAccessRowHTML(r, collections = new Map()) {
+  const named = r.collectionId ? collections.get(r.collectionId)?.name : null;
+  const what = r.ground === 'collection'
+    ? `the ${esc(r.requestedRole ?? 'view')} role on ${r.collectionId
+        ? `<a href="#/collections/${esc(r.collectionId)}">${esc(named ?? 'that collection')}</a>`
+        : 'a collection'}`
+    : `a page ${r.fromPageId
+        ? `<a href="#/pages/${esc(r.fromPageId)}">one of your pages</a>`
+        : 'one of your pages'} is recorded as contradicting`;
+  return `
+    <li class="asked-access" data-asked="${esc(r.id)}">
+      <span>You asked for ${what}.</span>
+      <span class="muted"> ${esc(fmtAgo(r.createdAt) ?? '')} · waiting</span>
+      <button class="btn subtle" data-withdraw-access="${esc(r.id)}">Withdraw</button>
+    </li>`;
+}
+
+/** The inbox and the sent folder, wired. Called by the queue after it draws. */
+function wireAccessRequests(reload) {
+  app.querySelectorAll('[data-request]').forEach((card) => {
+    card.querySelectorAll('[data-decide]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const outcome = btn.dataset.decide;
+        const note = card.querySelector('.access-decision-note').value.trim();
+        if (outcome === 'declined' && !note) {
+          toast('Declining records why, in a sentence the person who asked will read.');
+          card.querySelector('.access-decision-note').focus();
+          return;
+        }
+        try {
+          await api('POST', `/access-requests/${card.dataset.request}/decide`, {
+            outcome,
+            role: card.querySelector('.access-role').value,
+            note,
+          });
+          toast(outcome === 'granted' ? 'Granted, and they have been told.' : 'Declined, with your reason.', 'ok');
+          reload();
+        } catch (err) { toastError(err); }
+      });
+    });
+  });
+  app.querySelectorAll('[data-withdraw-access]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await api('POST', `/access-requests/${btn.dataset.withdrawAccess}/withdraw`);
+        toast('Withdrawn.', 'ok');
+        reload();
+      } catch (err) { toastError(err); }
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3425,6 +3651,18 @@ async function viewPage(id) {
   // things. One reason is one line; three become one line and a "Why?", so the
   // page opens on the page rather than on an apology for it.
   const refusalNote = group.noteHTML();
+  // AND SOMETHING TO DO ABOUT IT. The wall already named who holds the role;
+  // two testers asked why it could not ask them. It is offered only where the
+  // reader holds a role here — a refusal about a collection you hold nothing
+  // in gives you no context to carry, and access.ts refuses that ground rather
+  // than turning the request endpoint into a place to type ids (policy
+  // question 1). `admin` is the top of the ladder, so there is nothing above
+  // it to ask for.
+  const askAccess = group.count && can?.role && can.role !== 'admin'
+    ? `<span class="ask-access-slot"><button type="button" class="btn subtle ask-access" data-ask-access
+         data-ground="collection" data-collection="${esc(collection.id)}"
+         data-collection-name="${esc(collection.name)}" data-held="${esc(can.role)}">Ask for access</button></span>`
+    : '';
 
   app.innerHTML = `
     <div class="layout">
@@ -3435,7 +3673,7 @@ async function viewPage(id) {
           <h1 class="doc-title">${esc(page.title)} ${badge(page.status)}</h1>
           <div class="actions">${actions.join('')}</div>
         </div>
-        ${refusalNote}
+        ${refusalNote}${askAccess}
         ${sentBackNoticeHTML(page.sentBack)}
         ${draftBanner}
         ${/* Everything this page's standing consists of, in one block, before
@@ -3507,6 +3745,7 @@ async function viewPage(id) {
     </div>`;
 
   wireSidebar(collection, tree);
+  wireAskAccess();
   renderAskAffordance('ask-affordance', page.collectionId);
   renderAttestationAffordance('attestation-affordance', { kind: 'page', id, title: page.title });
 
@@ -4248,8 +4487,18 @@ function relationEntryHTML(rel) {
         // No note, and it is not that none was written: the reason for a
         // conflict describes the other page, which is the thing being withheld.
         // Saying "no note was recorded" here would be false.
+        //
+        // "Or the collection's administrators" used to be the end of the
+        // sentence and nothing more: a reader who could not name the collection
+        // had no way to reach anybody in it. The control carries the RELATION,
+        // which is the only thing this reader legitimately holds — the server
+        // resolves which collection that is and never says (access.ts).
         ? `<p class="rel-note muted">The reason recorded with this assertion describes that page, so it is
-            not shown here. Ask ${esc(actorName(rel.assertedBy))} or the collection's administrators.</p>`
+            not shown here. Ask ${esc(actorName(rel.assertedBy))}, or ask the administrators of whichever
+            collection holds it.${rel.id
+              ? ` <button type="button" class="btn subtle ask-access" data-ask-access data-ground="relation"
+                  data-relation="${esc(rel.id)}">Ask for access</button>`
+              : ''}</p>`
         : rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
         <p class="rel-note muted">No note was recorded with this assertion.</p>`}
       ${supersededByUnanswerableHTML(rel)}
@@ -4324,6 +4573,7 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
     </section>`;
 
   host.querySelector('#rel-assert')?.addEventListener('click', () => openRelationModal(pageId, page));
+  wireAskAccess(host);
   host.querySelectorAll('[data-withdraw]').forEach((btn) => {
     btn.addEventListener('click', () => openModal({
       title: 'Withdraw this relation',

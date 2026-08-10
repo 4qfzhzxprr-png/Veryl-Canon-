@@ -2623,3 +2623,23 @@ label.check input { width: auto; display: inline; margin: 0; }
 /* The iOS zoom guard: a text field under 16px makes Safari zoom the whole
    dialog on focus, and this one is full of them. */
 .import-where input, [data-where] input { font-size: max(16px, 1rem); }
+
+/* ---------- asking for access ------------------------------------------ */
+/* The control sits with the refusal it follows, not in a menu: a person who
+   has just been told no is looking at the sentence that told them. */
+.ask-access-slot { display: inline-block; margin: 0 0 0.6rem; }
+.access-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin: 0.7rem 0;
+  background: var(--surface);
+}
+.access-ask { margin: 0 0 0.35rem; }
+.access-note { margin: 0.2rem 0 0.35rem; font-family: var(--serif); }
+.access-meta { margin: 0; font-size: 0.85rem; }
+.access-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; align-items: center; }
+.access-actions .access-decision-note { flex: 1 1 16rem; font-size: max(16px, 1rem); }
+.access-actions .access-role { width: auto; }
+.asked-access-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.asked-access { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; margin: 0.35rem 0; }

@@ -330,6 +330,38 @@ const routes: Route[] = [
 
   route('POST', '/ask', ({ store, actorId, body }) => store.ask(actorId, body ?? {})),
 
+  // Asking for access, from the refusal that made you want it (access.ts).
+  //
+  // The body names a REFUSAL — a collection this actor already holds a role on,
+  // or a relation whose far end they were shown as withheld — and never a page
+  // id. That is not a convenience: an endpoint taking any id somebody typed and
+  // answering differently for "no such thing" and "sent" would be the existence
+  // oracle the search boundary was drawn to prevent (policy question 1).
+  //
+  // The response is the ASKER'S view, which is thinner than the row: a request
+  // about a page they cannot see names no collection and no page, because a
+  // receipt for the asking must not disclose what the refusal withheld.
+  route('POST', '/access-requests', ({ store, actorId, body }) => store.requestAccess(actorId, objectBody(body))),
+  // Two listings, and they are two different views of the same table. `mine` is
+  // what this actor asked for; the default is the INBOX — what is waiting on
+  // them as an administrator, which is the half without which a request is a
+  // form that goes nowhere.
+  route('GET', '/access-requests', ({ store, actorId, query }) =>
+    query.get('mine') === 'true'
+      ? store.listMyAccessRequests(actorId)
+      : store.listAccessRequests(actorId, { status: (query.get('status') as never) ?? undefined }),
+  ),
+  route('POST', '/access-requests/:id/decide', ({ store, actorId, params, body }) =>
+    store.decideAccessRequest(actorId, params.id!, {
+      outcome: optionalString(body?.outcome, 'outcome'),
+      role: optionalString(body?.role, 'role') as never,
+      note: optionalString(body?.note, 'note') ?? null,
+    }),
+  ),
+  route('POST', '/access-requests/:id/withdraw', ({ store, actorId, params }) =>
+    store.withdrawAccessRequest(actorId, params.id!),
+  ),
+
   // The refused-questions loop (gaps.ts): operator-only, because a gap is a
   // question's text and question text is operators' to read — the same rule
   // the audit log applies. The asker is never in the payload; the table that

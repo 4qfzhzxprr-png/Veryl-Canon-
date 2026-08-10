@@ -86,6 +86,14 @@ export type NotificationKind =
   | 'proposal_rejected'
   | 'proposal_superseded'
   | 'review_due'
+  // Somebody was refused something and asked for it (access.ts). It goes to the
+  // administrators of the collection that must decide — the only people who
+  // can — and it carries the ASKER'S OWN SENTENCE, because that sentence is
+  // what the decision is made on. Its counterpart goes back the other way:
+  // `access_decided` reaches the person who asked, and it is the whole reason
+  // this is a request rather than a form that disappears.
+  | 'access_requested'
+  | 'access_decided'
   // `divergence_opened` is §7's voice (divergence.ts): a corroborating source
   // has disagreed with the system that owns the fact, and the owner of the
   // page displaying it is told once, when it is first observed. Following

@@ -55,6 +55,13 @@ import { RetrievalCandidate, RetrievalService, RetrieveRequest, parsePageLinks }
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 import { AUDIT_CSV_MAX_ROWS, AUDIT_CSV_PAGE_ROWS, RawResponse, auditCsvResponse } from './csv.js';
 import { ImportInput, ImportRunRecord, ImportService, ImportSummary, ImportUploadInput } from './import.js';
+import {
+  AccessRequest,
+  AccessRequestInput,
+  AccessRequestService,
+  AccessRequestStatus,
+  AskedAccessRequest,
+} from './access.js';
 import { ConnectorRegistry, defaultConnectorRegistry } from './connectors.js';
 import { Source, SourceAbilities, SourceInput, SourceService } from './sources.js';
 import { PageReference, ReferenceInput, ReferenceService, ResolvedReference } from './references.js';
@@ -213,6 +220,11 @@ export class CanonStore {
   // The queue (USER-TESTING.md T2.1) lives in queue.ts. It writes no query of
   // its own: it composes the permission-filtered reads above for one actor.
   private readonly queue: QueueService;
+  // Asking for access from the refusal that made you want it (access.ts). It
+  // resolves a REFUSAL rather than a page id, and it never performs a grant
+  // itself — `decideAccessRequest` hands the grant back through `setMember`,
+  // so membership keeps one road in.
+  private readonly accessRequests: AccessRequestService;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -247,6 +259,7 @@ export class CanonStore {
     this.freshness = new FreshnessService(db, this, this.notifier);
     this.queries = new QueryService(db, this);
     this.queue = new QueueService(db, this);
+    this.accessRequests = new AccessRequestService(db);
   }
 
   // ---- actors ----------------------------------------------------------
@@ -2636,6 +2649,96 @@ export class CanonStore {
 
   listImportRuns(actorId: string): Omit<ImportRunRecord, 'items' | 'files'>[] {
     return new ImportService(this.db, this).listRuns(actorId);
+  }
+
+  // ---- asking for access (access.ts) -----------------------------------
+  //
+  // The service resolves the REFUSAL and never a page id; what the store adds
+  // is the two things a service with no notifier and no audit cannot do —
+  // telling the people who can decide, and putting the decision on the record.
+
+  requestAccess(actorId: string, input: AccessRequestInput): AskedAccessRequest {
+    // The row exists first; telling people is a consequence of it, exactly as
+    // it is for every other notification in this record. `collectionId` is the
+    // half of the answer the ASKER may not have (access.ts, `ask`) — it is used
+    // here and never returned.
+    const { request, collectionId } = this.accessRequests.ask(this, actorId, input);
+    const asker = this.getActor(actorId);
+    const name = this.accessRequests.collectionNameFor(collectionId);
+    for (const deciderId of this.accessRequests.decidersOf(collectionId)) {
+      if (deciderId === actorId) continue;
+      this.notifier.send(deciderId, {
+        kind: 'access_requested',
+        subject: `${asker.name} is asking for access to ${name}`,
+        // The asker's own sentence, which is what the decision is made on.
+        body: request.note ?? '',
+        link: '/queue',
+      });
+    }
+    // Audited on the collection it is about, so the log reads "who asked for
+    // what, and when" beside the grant that may follow it.
+    this.audit(actorId, 'access.requested', {
+      collectionId,
+      details: {
+        requestId: request.id,
+        ground: request.ground,
+        ...(request.requestedRole ? { requestedRole: request.requestedRole } : {}),
+      },
+    });
+    return request;
+  }
+
+  /** The inbox: open requests waiting on this actor as an administrator. */
+  listAccessRequests(actorId: string, opts: { status?: AccessRequestStatus | 'all' } = {}): AccessRequest[] {
+    return this.accessRequests.listForDecider(this, actorId, opts);
+  }
+
+  /** What this actor has asked for, in the thinner view their own refusal earned. */
+  listMyAccessRequests(actorId: string): AskedAccessRequest[] {
+    return this.accessRequests.listForAsker(this, actorId);
+  }
+
+  /**
+   * Grant or decline. The grant goes through `setMember` — one road into
+   * membership, so the system actor, the last-administrator rule, group grants
+   * and the audit event all apply exactly as they do on the Members screen.
+   */
+  decideAccessRequest(
+    actorId: string,
+    requestId: string,
+    input: { outcome?: string; role?: Role; note?: string | null },
+  ): AccessRequest {
+    const { request, grant } = this.accessRequests.decide(this, actorId, requestId, input);
+    if (grant) this.setMember(actorId, request.collectionId, grant.memberId, grant.role);
+    const decider = this.getActor(actorId);
+    const name = this.accessRequests.collectionNameFor(request.collectionId);
+    this.notifier.send(request.askerId, {
+      kind: 'access_decided',
+      // A GRANT may name the collection: the asker can see it now, so the name
+      // is the answer rather than a disclosure. A DECLINE may not — they were
+      // refused, and a notice that names what they were refused would hand over
+      // exactly what the refusal withheld.
+      subject:
+        request.status === 'granted'
+          ? `${decider.name} gave you ${request.grantedRole} on ${name}`
+          : 'Your request for access was declined',
+      body: request.decisionNote ?? '',
+      link: request.status === 'granted' && request.ground === 'collection' ? `/collections/${request.collectionId}` : '/queue',
+    });
+    this.audit(actorId, `access.${request.status}`, {
+      collectionId: request.collectionId,
+      details: {
+        requestId: request.id,
+        askerId: request.askerId,
+        ...(request.grantedRole ? { grantedRole: request.grantedRole } : {}),
+        ...(request.decisionNote ? { note: request.decisionNote } : {}),
+      },
+    });
+    return request;
+  }
+
+  withdrawAccessRequest(actorId: string, requestId: string): AskedAccessRequest {
+    return this.accessRequests.withdraw(this, actorId, requestId);
   }
 
   // ---- federation: sources and reference fields (DATA-BACKBONE.md §6) ---
