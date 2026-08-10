@@ -314,3 +314,119 @@ test('gaps view: the laundering guard stands beside the resolve input', () => {
     'the guard is in the card with the input, where the operator acts',
   );
 });
+
+// ---------------------------------------------------------------------------
+// The steward's half of the loop (Phase 7).
+//
+// Round seven, tester 24: "`#/gaps` is operator-only — no collection role opens
+// it, not even `admin`. The refusal is well written, but the person whose job
+// is record health cannot see the record's holes. Worse, the gaps list and the
+// fix live with different people" — the prescribed remedy is the "Also known
+// as" alias field, which lives in the steward's editor.
+//
+// So the same list, narrowed, and the narrowing is what these pin.
+
+function twoCollections() {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, { deliver() {} });
+  const dana = store.createActor({ kind: 'person', name: 'Dana', email: 'dana@example.com' });
+  const kit = store.createActor({ kind: 'person', name: 'Kit', email: 'kit@example.com' });
+  const lena = store.createActor({ kind: 'person', name: 'Lena', email: 'lena@example.com' });
+  store.bootstrapAdministrator(dana.id);
+  const benefits = store.createCollection(dana.id, { name: 'Member Benefits' });
+  const legal = store.createCollection(dana.id, { name: 'Legal Hold' });
+  // Kit administers one collection; Lena the other. Neither is an operator.
+  store.setMember(dana.id, benefits.id, kit.id, 'admin');
+  store.setMember(dana.id, legal.id, lena.id, 'admin');
+  return { db, store, dana, kit, lena, benefits, legal };
+}
+
+test('gaps: a collection’s administrator reads the gaps asked of that collection, and no others', async () => {
+  const { store, dana, kit, lena, benefits, legal } = twoCollections();
+  await store.ask(kit.id, { question: 'How long do we keep denied claims?', collectionId: benefits.id });
+  await store.ask(lena.id, { question: 'When does a hold expire?', collectionId: legal.id });
+  await store.ask(dana.id, { question: 'What is the office dress code?' });
+
+  // The operator's list is unchanged: everything, including the question asked
+  // of no collection at all.
+  const all = await store.listGaps(dana.id);
+  assert.equal(all.length, 3);
+
+  const kits = await store.listGaps(kit.id);
+  assert.deepEqual(kits.map((g) => g.question), ['How long do we keep denied claims?']);
+  const lenas = await store.listGaps(lena.id);
+  assert.deepEqual(lenas.map((g) => g.question), ['When does a hold expire?']);
+
+  // A gap asked across the WHOLE record belongs to neither steward: nothing
+  // about it says whose material it was, and guessing would put one team's
+  // question in front of another team's steward.
+  assert.equal(kits.some((g) => g.collectionId === null), false);
+  assert.equal(lenas.some((g) => g.collectionId === null), false);
+
+  // And the screen can say which of the two lists it is holding.
+  assert.deepEqual(store.gapScopeOf(dana.id), { scope: 'operator', collectionIds: [] });
+  assert.deepEqual(store.gapScopeOf(kit.id), { scope: 'steward', collectionIds: [benefits.id] });
+});
+
+test('gaps: a steward closes a gap of their own, and cannot touch anybody else’s', async () => {
+  const { store, dana, kit, lena, benefits, legal } = twoCollections();
+  await store.ask(kit.id, { question: 'How long do we keep denied claims?', collectionId: benefits.id });
+  await store.ask(lena.id, { question: 'When does a hold expire?', collectionId: legal.id });
+
+  const mine = (await store.listGaps(kit.id))[0]!;
+  const theirs = (await store.listGaps(lena.id))[0]!;
+
+  // Closing follows reading: the steward who added the alias is the person
+  // with the sentence worth keeping.
+  const closed = store.closeGap(kit.id, mine.id, {
+    outcome: 'resolved',
+    note: 'Added "denied claims" as an alias on Claims Retention Standard.',
+  });
+  assert.equal(closed.status, 'resolved');
+  assert.equal(store.queryAudit(dana.id, { action: 'gap.resolved' }).length, 1);
+
+  // Somebody else's gap reads as no such gap — the same answer an invented id
+  // gets, so trying ids tells a steward nothing about what other collections
+  // are being asked.
+  const other = expectCode(() => store.closeGap(kit.id, theirs.id, { outcome: 'dismissed', note: 'no' }), 'not_found');
+  const invented = expectCode(() => store.closeGap(kit.id, 'no-such-gap', { outcome: 'dismissed', note: 'no' }), 'not_found');
+  assert.equal(other.message.replace(theirs.id, 'ID'), invented.message.replace('no-such-gap', 'ID'));
+  assert.equal((await store.listGaps(lena.id))[0]!.status, 'open', 'their gap is untouched');
+
+  // A member who administers nothing is still refused, in the same words.
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  store.setMember(dana.id, benefits.id, marc.id, 'edit');
+  await expectCodeAsync(() => store.listGaps(marc.id), 'forbidden');
+});
+
+test('gaps: a steward’s pointers never name a page they cannot open', async () => {
+  const { db, store, dana, kit, benefits, legal } = twoCollections();
+  // A gap recorded against the steward's collection whose `nearest` pointers
+  // were captured from somebody with wider access. It should not happen —
+  // pointers come from the asker's own permission-filtered results — but "very
+  // unlikely" is not a rule, and a page title is identity.
+  const hidden = store.createPage(dana.id, { collectionId: legal.id, type: 'note', title: 'Litigation hold — Redwood' });
+  await store.ask(kit.id, { question: 'What must we preserve?', collectionId: benefits.id });
+  const gap = (await store.listGaps(dana.id))[0]!;
+  db.prepare('UPDATE gaps SET nearest_json = ? WHERE id = ?')
+    .run(JSON.stringify([{ pageId: hidden.id, title: 'Litigation hold — Redwood' }]), gap.id);
+
+  const operatorSees = (await store.listGaps(dana.id))[0]!;
+  assert.equal(operatorSees.nearest.length, 1, 'an operator’s list is unchanged');
+  const stewardSees = (await store.listGaps(kit.id))[0]!;
+  assert.deepEqual(stewardSees.nearest, [], 'a title of a page they cannot open is not a pointer, it is a leak');
+});
+
+test('gaps view: a narrowed list says it is narrowed, and its empty state claims nothing wider', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const view = source.slice(source.indexOf('async function viewGaps('), source.indexOf('async function viewAudit('));
+  // The scope comes from the server rather than being inferred, because an
+  // empty list is exactly the case where inference is impossible and exactly
+  // the case where the wrong sentence does the most harm.
+  assert.match(view, /answer\.scope === 'steward'/);
+  assert.match(view, /the collections you administer/);
+  // Phase 5's rule, applied to the screen this phase widened: "No open gaps.
+  // Every question the record refused has been looked at" is true for an
+  // operator and false for a steward reading one collection's worth.
+  assert.match(view, /This says nothing about the rest of the record\./);
+});

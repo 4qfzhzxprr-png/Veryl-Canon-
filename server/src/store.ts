@@ -2508,18 +2508,39 @@ export class CanonStore {
   }
 
   /**
-   * The open gaps — questions the record refused — for the people who triage
-   * them. OPERATORS ONLY, and this is the redaction rule from
-   * `redactAuditDetails` carried forward rather than a new decision: question
-   * text is private to the asker and to operators, and a gap IS question
-   * text. It arrives here with no asker attached — the gaps table has no such
-   * column — so this list itself never says by whom; an operator who needs
-   * that joins the gap to its ask in the audit log, deliberately, under that
-   * log's own rule (see the header of gaps.ts).
+   * WHO A GAP IS FOR, and this is the one rule in gaps.ts that has moved.
+   *
+   * It was operators only, carried forward from `redactAuditDetails`: question
+   * text is private to the asker and to operators. Round seven measured what
+   * that cost. `#/gaps` opened for no collection role, not even `admin`, while
+   * the remedy a gap usually needs — teaching a page the asker's word, in the
+   * "Also known as" field — lives in the STEWARD's editor. "The gaps list and
+   * the fix live with different people."
+   *
+   * So there are two scopes and they are the same list, narrowed:
+   *
+   *   * an OPERATOR reads every gap, as before, including the ones asked
+   *     across the whole record with no collection attached;
+   *   * an ADMINISTRATOR OF A COLLECTION reads the gaps recorded against the
+   *     collections they administer, and nothing else.
+   *
+   * The redaction rule is not weakened by this, and the reason is structural
+   * rather than a promise: the harmful disclosure was never the question, it
+   * was the LINK between a person and what they did not know, and the gaps
+   * table has no asker column for anybody at any role to join on. What a
+   * steward gains is a question asked of their own material.
+   *
+   * `nearest` is filtered to what THIS reader may see. It was recorded from
+   * the asker's own permission-filtered results, so it is very unlikely to
+   * hold anything a steward of that collection cannot open — but "very
+   * unlikely" is not a rule, and a page title is identity.
    */
   async listGaps(actorId: string, filter: { status?: string } = {}): Promise<Gap[]> {
-    requireOrgRole(this.db, actorId, 'operator', 'Reading the record’s gaps');
-    const gaps = this.gapService.list(filter);
+    const scope = this.gapScope(actorId);
+    const gaps = this.gapService.list(
+      scope.scope === 'operator' ? filter : { ...filter, collectionIds: scope.collectionIds },
+    );
+    if (scope.scope === 'steward') for (const gap of gaps) gap.nearest = this.visibleNearest(actorId, gap.nearest);
     // Which open gaps the record has since learned to answer (`wouldAnswer`).
     // Capped at the first 50 open gaps — the list is ordered by last asking,
     // so the cap lands on the gaps nobody has touched in longest, and a
@@ -2540,12 +2561,67 @@ export class CanonStore {
     return gaps;
   }
 
+  /**
+   * Which gaps this actor may read, and under which of the two rules above.
+   * Refuses in `requireOrgRole`'s own words when the answer is neither — the
+   * sentence that names the role, says where to ask, and (still correctly)
+   * distinguishes administering ONE collection from running the Canon: a
+   * steward now reads that collection's gaps, and the whole record's gaps
+   * remain the operator's.
+   */
+  private gapScope(actorId: string): { scope: 'operator' | 'steward'; collectionIds: string[] } {
+    if (this.isOperator(actorId)) return { scope: 'operator', collectionIds: [] };
+    const collectionIds = (
+      this.db
+        .prepare("SELECT collection_id FROM collection_members WHERE actor_id = ? AND role = 'admin'")
+        .all(actorId) as { collection_id: string }[]
+    ).map((row) => row.collection_id);
+    if (!collectionIds.length) requireOrgRole(this.db, actorId, 'operator', 'Reading the record’s gaps');
+    return { scope: 'steward', collectionIds };
+  }
+
+  /** The scope this actor reads gaps under, for a screen that must say so. */
+  gapScopeOf(actorId: string): { scope: 'operator' | 'steward'; collectionIds: string[] } {
+    return this.gapScope(actorId);
+  }
+
+  /** Gap pointers narrowed to pages this actor may open. See `listGaps`. */
+  private visibleNearest(actorId: string, nearest: { pageId: string; title: string }[]): { pageId: string; title: string }[] {
+    if (!nearest.length) return nearest;
+    const ids = nearest.map((n) => n.pageId);
+    const visible = new Set(
+      (
+        this.db
+          .prepare(
+            `SELECT p.id FROM pages p
+               JOIN collection_members m ON m.collection_id = p.collection_id AND m.actor_id = ?
+              WHERE p.id IN (${ids.map(() => '?').join(', ')})`,
+          )
+          .all(actorId, ...ids) as { id: string }[]
+      ).map((row) => row.id),
+    );
+    return nearest.filter((n) => visible.has(n.pageId));
+  }
+
   closeGap(
     actorId: string,
     gapId: string,
     input: { outcome?: string; note?: string | null } = {},
   ): Gap {
-    requireOrgRole(this.db, actorId, 'operator', 'Closing a gap');
+    // Closing follows reading: whoever the gap is FOR is who records what was
+    // done about it. A steward who added the alias is the person with the
+    // sentence worth keeping, and making them ask an operator to type it is
+    // how a loop stops being a loop.
+    const scope = this.gapScope(actorId);
+    if (scope.scope === 'steward') {
+      const gap = this.gapService.get(gapId);
+      // A gap outside their collections reads as no such gap: the same answer
+      // an invented id gets, so a steward cannot learn what other collections
+      // are being asked about by trying ids.
+      if (!gap || !gap.collectionId || !scope.collectionIds.includes(gap.collectionId)) {
+        throw new CanonError('not_found', `No such gap: ${gapId}`);
+      }
+    }
     const outcome = input.outcome === 'dismissed' ? 'dismissed' : input.outcome === 'resolved' ? 'resolved' : null;
     if (!outcome) throw new CanonError('invalid', "Closing a gap is 'resolved' or 'dismissed'");
     const gap = this.gapService.close(actorId, gapId, outcome, input.note ?? null);

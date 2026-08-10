@@ -366,9 +366,23 @@ const routes: Route[] = [
   // question's text and question text is operators' to read — the same rule
   // the audit log applies. The asker is never in the payload; the table that
   // feeds this has no column for one.
-  route('GET', '/gaps', ({ store, actorId, query }) =>
-    store.listGaps(actorId, { status: query.get('status') ?? undefined }),
-  ),
+  // The answer carries WHOSE LIST IT IS, and that is not decoration. An
+  // operator reads every gap; a collection's administrator reads the gaps
+  // asked of the collections they administer (store.listGaps). A screen that
+  // did not know which it was holding would have to describe a scoped listing
+  // as though it were the record's whole answer — the exact claim Phase 5
+  // spent a round removing from four other screens.
+  route('GET', '/gaps', async ({ store, actorId, query }) => {
+    const scope = store.gapScopeOf(actorId);
+    return {
+      scope: scope.scope,
+      collections: store
+        .listCollections(actorId)
+        .filter((c) => scope.collectionIds.includes(c.id))
+        .map((c) => ({ id: c.id, name: c.name })),
+      gaps: await store.listGaps(actorId, { status: query.get('status') ?? undefined }),
+    };
+  }),
   route('POST', '/gaps/:id/close', ({ store, actorId, params, body }) =>
     store.closeGap(actorId, params.id!, {
       outcome: optionalString(body?.outcome, 'outcome'),

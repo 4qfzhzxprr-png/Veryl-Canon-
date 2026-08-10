@@ -1115,11 +1115,12 @@ function renderChrome() {
       if (askLink) askLink.hidden = true;
       const sourcesLink = document.getElementById('nav-sources');
       if (sourcesLink) sourcesLink.hidden = true;
-      // Gaps is role-scoped harder than the other two — operators only — so a
-      // link left standing from the last identity is a claim about the NEXT
-      // one that has not been checked yet: a non-operator watched it flash
-      // and vanish (fourth round, Dana). Hidden until detectGaps answers for
-      // whoever signs in, same as the entries above.
+      // Gaps is role-scoped harder than the other two — an operator, or an
+      // administrator of some collection — so a link left standing from the
+      // last identity is a claim about the NEXT one that has not been checked
+      // yet: somebody who held neither watched it flash and vanish (fourth
+      // round, Dana). Hidden until detectGaps answers for whoever signs in,
+      // same as the entries above.
       const gapsLink = document.getElementById('nav-gaps');
       if (gapsLink) gapsLink.hidden = true;
       // Same rule as Gaps: the entry is scoped to what the NEXT identity can
@@ -1305,9 +1306,11 @@ async function detectAsk() {
 // the Sources nav entry and the whole admin screen simply are not there.
 let sourcesProbe = null;
 
-// Gaps are operator-only, so the probe's 403 is an answer — "the endpoint is
-// there and it is not for you" — and the nav entry stays hidden without the
-// operator role rather than leading to a refusal.
+// Gaps are read by an operator (the whole record) or by a collection's
+// administrator (the gaps asked of their own collections) — see
+// CanonStore.listGaps. The probe's 403 is still an answer, "the endpoint is
+// there and it is not for you", and the nav entry stays hidden for anybody who
+// is neither rather than leading to a refusal.
 let gapsProbe = null;
 
 async function detectGaps() {
@@ -6156,7 +6159,10 @@ function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
 }
 
 // The refused-questions view: what people asked and the record could not
-// answer, for the operators who close the loop. Each row is a decision —
+// answer, for the people who close the loop — an operator over the whole
+// record, and a collection's administrator over their own, which is where the
+// remedy actually lives: "the gaps list and the fix live with different
+// people" (round seven). Each row is a decision —
 // teach the record a word (the nearest page's "Also known as" field), write
 // the missing page, or record that the record owes no answer. No asker is
 // shown here and none is stored in this list; the audit log can join a gap
@@ -6165,13 +6171,20 @@ function auditDetailValueHTML(key, value, pageTitles, collectionNames) {
 // not have (third round, finding 3).
 async function viewGaps(query = {}) {
   const status = query.status ?? 'open';
-  let gaps;
+  let answer;
   try {
-    gaps = await api('GET', `/gaps?status=${encodeURIComponent(status)}`);
+    answer = await api('GET', `/gaps?status=${encodeURIComponent(status)}`);
   } catch (err) {
     renderErrorPage(err);
     return;
   }
+  const gaps = answer.gaps ?? [];
+  // WHOSE LIST THIS IS, from the server rather than guessed. An operator holds
+  // the whole record's refusals; a collection's administrator holds the ones
+  // asked of their own collections, and a page that described the second as
+  // the first would be making the claim Phase 5 removed from four screens.
+  const steward = answer.scope === 'steward';
+  const covers = answer.collections ?? [];
   const tabs = ['open', 'resolved', 'dismissed']
     .map((t) => `<a class="btn ${t === status ? 'primary' : ''}" href="#/gaps${t === 'open' ? '' : `?status=${t}`}">${t[0].toUpperCase()}${t.slice(1)}</a>`)
     .join(' ');
@@ -6212,6 +6225,12 @@ async function viewGaps(query = {}) {
         asker&rsquo;s word (its &ldquo;Also known as&rdquo; field), write the missing page, or record that this
         record owes no answer. No asker is shown here, and none is stored in this list; operators can
         read who asked what in the audit log, which has its own rule.</p>
+      ${steward ? `
+        <p class="muted gap-scope">You are reading the gaps asked of ${covers.length
+          ? covers.map((c) => `<a href="#/collections/${esc(c.id)}">${esc(c.name)}</a>`).join(', ')
+          : 'the collections you administer'} — the collections you administer. Questions asked across the
+          whole record, and questions asked of collections you do not administer, are not in this list.</p>`
+        : ''}
       ${/* One sentence used to serve all three tabs: "No <status> gaps. Every
             question the record refused has been looked at." True on the OPEN
             tab and false on the other two — an empty Resolved tab means
@@ -6220,7 +6239,9 @@ async function viewGaps(query = {}) {
             one list, and only one of them can say anything about the whole of
             it (round seven, Phase 5). */ ''}
       ${gaps.length ? rows : `<div class="empty-state"><p>${status === 'open'
-        ? 'No open gaps. Every question the record refused has been looked at.'
+        ? (steward
+          ? 'No open gaps in the collections you administer. This says nothing about the rest of the record.'
+          : 'No open gaps. Every question the record refused has been looked at.')
         : status === 'resolved'
           ? 'No gap has been resolved yet. Open gaps, if there are any, are on the Open tab.'
           : 'No gap has been dismissed. Open gaps, if there are any, are on the Open tab.'}</p></div>`}
