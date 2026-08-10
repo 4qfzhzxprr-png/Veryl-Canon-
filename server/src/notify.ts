@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { Actor, CanonError } from './model.js';
+import { Actor, actorNameForMessage, CanonError } from './model.js';
 import { requireOrgRole } from './orgrole.js';
 
 // Notifications (CORE-PLAN.md Epic C, M2) follow an outbox pattern, not live
@@ -388,7 +388,7 @@ export class Notifier {
     this.fanOut(byId, this.reviewRecipients(pageId, page.collectionId), {
       kind: 'review_requested',
       subject: `Review requested: ${page.title}`,
-      body: `${by.name} submitted "${page.title}" for review.`,
+      body: `${actorNameForMessage(by)} submitted "${page.title}" for review.`,
       link: `/pages/${pageId}`,
     });
   }
@@ -407,7 +407,7 @@ export class Notifier {
       // leaves it Canonical (store.ts, statusAfterReview), so "a draft again"
       // is only sometimes true and the constant fact is who holds it now.
       body:
-        `${by.name} withdrew "${page.title}" from review; it is back with its author.` +
+        `${actorNameForMessage(by)} withdrew "${page.title}" from review; it is back with its author.` +
         (reason ? ` Reason: ${reason}` : ''),
       link: `/pages/${pageId}`,
     });
@@ -438,7 +438,7 @@ export class Notifier {
     this.fanOut(byId, [editorId, page.ownerId], {
       kind: 'draft_approved',
       subject: `Approved as Canonical: ${page.title}`,
-      body: `${by.name} approved "${page.title}" as Canonical.`,
+      body: `${actorNameForMessage(by)} approved "${page.title}" as Canonical.`,
       link: `/pages/${pageId}`,
     });
   }
@@ -456,7 +456,7 @@ export class Notifier {
     this.fanOut(byId, [draft?.editor_id ?? null, fields.ownerId ?? page.ownerId], {
       kind: 'draft_sent_back',
       subject: `Sent back: ${page.title}`,
-      body: `${by.name} sent "${page.title}" back: ${comment}`,
+      body: `${actorNameForMessage(by)} sent "${page.title}" back: ${comment}`,
       link: `/pages/${pageId}`,
     });
   }

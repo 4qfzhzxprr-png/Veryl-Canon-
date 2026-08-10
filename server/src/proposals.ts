@@ -1,7 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { forbiddenRole } from './abilities.js';
-import { Actor, ActorKind, CanonError, DocType, Page, PageFields, Role, ROLE_RANK, TYPE_RULES } from './model.js';
+import {
+  Actor,
+  ActorKind,
+  actorNameForMessage,
+  CanonError,
+  DocType,
+  Page,
+  PageFields,
+  Role,
+  ROLE_RANK,
+  TYPE_RULES,
+} from './model.js';
 import type { Notifier } from './notify.js';
 import {
   normalizeBasis,
@@ -274,7 +285,7 @@ export class ProposalService {
     this.fanOut(actorId, recipients, {
       kind: 'proposal_opened',
       subject: `Proposed change to "${page.title}"`,
-      body: `${author.name} proposed a change to "${page.title}": ${rationale}`,
+      body: `${actorNameForMessage(author)} proposed a change to "${page.title}": ${rationale}`,
       link: `/pages/${page.id}#proposal-${id}`,
     });
 
@@ -383,7 +394,7 @@ export class ProposalService {
     this.fanOut(actorId, [author.id], {
       kind: 'proposal_accepted',
       subject: `Proposal accepted: ${page.title}`,
-      body: `${actor.name} accepted your proposed change to "${page.title}" as version ${published.currentVersion}.`,
+      body: `${actorNameForMessage(actor)} accepted your proposed change to "${page.title}" as version ${published.currentVersion}.`,
       link: `/pages/${page.id}`,
     });
 
@@ -425,7 +436,7 @@ export class ProposalService {
     this.fanOut(actorId, [proposal.authorId], {
       kind: 'proposal_rejected',
       subject: `Proposal rejected: ${page.title}`,
-      body: `${actor.name} rejected your proposed change to "${page.title}": ${comment}`,
+      body: `${actorNameForMessage(actor)} rejected your proposed change to "${page.title}": ${comment}`,
       link: `/pages/${page.id}`,
     });
 

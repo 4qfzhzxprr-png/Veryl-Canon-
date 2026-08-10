@@ -471,3 +471,38 @@ test('comments: a page with no owner has nobody to tell, and that is not a failu
   assert.ok(result.id);
   assert.equal(ofKind(store, marc.id, 'comment_added').length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// A comment from an agent says so in the line that arrives (Phase 9)
+//
+// The comment ROW already carries `authorKind` and the panel already draws the
+// tag; what did not was the message that reaches somebody who is not looking
+// at the page. Round seven: the tag is "present where an auditor looks, absent
+// from every line a busy reader reads." A notification subject is the extreme
+// case — it is the only part of a comment some people ever see, and it goes
+// out through the outbox as plain text with no chip to render.
+test('comments: a notification about an agent’s comment names it as an agent’s', () => {
+  const { store, dana, marc, collection } = setup();
+  const bot = store.createActor({ kind: 'agent', name: 'ClauseBot', registryRef: 'passport:clause-1' });
+  store.setMember(dana.id, collection.id, bot.id, 'comment');
+  // A Policy, because only a type that requires an owner has one to notify —
+  // and the owner is the person §3 makes accountable for the page.
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Q2 figures' });
+  assert.equal(page.ownerId, marc.id);
+
+  store.createComment(bot.id, page.id, { body: 'This figure disagrees with the source.' });
+  const owner = ofKind(store, marc.id, 'comment_added');
+  assert.equal(owner.length, 1);
+  assert.equal(owner[0]!.subject, 'ClauseBot (agent) commented on "Q2 figures"');
+
+  store.createComment(bot.id, page.id, { body: `@${dana.id} please look.` });
+  const mention = ofKind(store, dana.id, 'mention');
+  assert.equal(mention.length, 1);
+  assert.equal(mention[0]!.subject, 'ClauseBot (agent) mentioned you on "Q2 figures"');
+
+  // A person's subject is unchanged, byte for byte.
+  store.createComment(marc.id, page.id, { body: `@${dana.id} and yours.` });
+  const fromPerson = ofKind(store, dana.id, 'mention');
+  assert.equal(fromPerson.length, 2);
+  assert.ok(fromPerson.some((n) => n.subject === 'Marc mentioned you on "Q2 figures"'));
+});

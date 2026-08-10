@@ -3244,7 +3244,7 @@ function reviewBannerHTML(review, typeNamesApprover) {
     waiting = `Waiting on the named approver, <strong>${esc(actorName(review.approverId))}</strong>.`;
   } else waiting = 'Waiting on an approver: this draft names none.';
   const submitted = review.submittedById
-    ? ` Submitted by ${esc(actorName(review.submittedById))}${
+    ? ` Submitted by ${actorLabel(review.submittedById)}${
         review.submittedAt ? ` on ${fmtDateTime(review.submittedAt)}` : ''
       }.`
     : '';
@@ -3418,7 +3418,12 @@ async function viewPage(id) {
                 so here is what makes the warning true in the window before the
                 sweep reaches it (USER-TESTING.md T1.4). */ ''}
           ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${pendingFieldCell(page.reviewDate, pendingOf('reviewDate'), fmtDate, hasPublished)}${isPastReview(page.reviewDate) ? ' · <span class="past-review">past review</span>' : ''}</dd></div>` : ''}
-          <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
+          ${/* actorLabel, not the bare name: the `agent` and `system` tags were
+                on Owner, on Approver and on every audit row — everywhere an
+                auditor looks — and missing from the bylines a reader passes on
+                the way to the text (round seven). Who wrote a version is
+                exactly where the distinction matters. */ ''}
+          <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${actorLabel(current.authorId)}` : 'Never published'}</dd></div>
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
 
@@ -5641,7 +5646,7 @@ async function viewVersion(id, n) {
       <p class="breadcrumb"><a href="#/pages/${esc(id)}/history">← Version history</a></p>
       <div class="notice ${isCurrent ? '' : 'notice-version'}">
         Viewing <strong>v${n}</strong> of <strong>${esc(page.title)}</strong>,
-        published ${fmtDateTime(version.createdAt)} by ${esc(actorName(version.authorId))}.
+        published ${fmtDateTime(version.createdAt)} by ${actorLabel(version.authorId)}.
         ${isCurrent ? 'This is the current version.' : `The current version is v${page.currentVersion ?? '—'}.
           ${page.status !== 'archived' ? `<button class="btn subtle" id="restore-here">Restore this version</button>` : ''}`}
       </div>
@@ -5711,8 +5716,8 @@ async function viewCompare(id, a, b) {
       ${fieldRowsHTML(fieldRows)}
       ${diffTableHTML(
         rows,
-        `v${a} · ${fmtDateTime(va.createdAt)} · ${esc(actorName(va.authorId))}`,
-        `v${b} · ${fmtDateTime(vb.createdAt)} · ${esc(actorName(vb.authorId))}`,
+        `v${a} · ${fmtDateTime(va.createdAt)} · ${actorLabel(va.authorId)}`,
+        `v${b} · ${fmtDateTime(vb.createdAt)} · ${actorLabel(vb.authorId)}`,
       )}
     </div>`;
 }
@@ -9249,7 +9254,7 @@ function attestationPreviewHTML(asOf) {
       <div><dt>Title then</dt><dd>${esc(asOf.title ?? '—')}</dd></div>
       <div><dt>Status then</dt><dd>${badge(asOf.status)}</dd></div>
       <div><dt>Canonical then</dt><dd>${asOf.canonical ? 'Yes' : 'No'}</dd></div>
-      <div><dt>Version then</dt><dd>${v ? `v${esc(v.number)} · ${fmtDateTime(v.createdAt)} · ${esc(actorName(v.authorId))}` : 'None published'}</dd></div>
+      <div><dt>Version then</dt><dd>${v ? `v${esc(v.number)} · ${fmtDateTime(v.createdAt)} · ${actorLabel(v.authorId)}` : 'None published'}</dd></div>
       <div><dt>Approved by</dt><dd>${asOf.approval
         ? `${esc(actorName(asOf.approval.approverId))} · ${fmtDateTime(asOf.approval.at)}`
         : '<span class="muted">no approval covers the version standing then</span>'}</dd></div>

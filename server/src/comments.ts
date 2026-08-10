@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { forbiddenRole } from './abilities.js';
-import { Actor, ActorKind, CanonError, Role, ROLE_RANK } from './model.js';
+import { Actor, ActorKind, actorNameForMessage, CanonError, Role, ROLE_RANK } from './model.js';
 import type { Notifier } from './notify.js';
 
 // Comments (CORE-PLAN.md Epic C, M2): inline comments anchored to a passage
@@ -258,7 +258,7 @@ export class CommentService {
     for (const recipient of notified) {
       this.notifier.send(recipient.id, {
         kind: 'mention',
-        subject: `${author.name} mentioned you on "${page.title}"`,
+        subject: `${actorNameForMessage(author)} mentioned you on "${page.title}"`,
         body,
         link: `/pages/${pageId}#comment-${id}`,
       });
@@ -282,7 +282,7 @@ export class CommentService {
       if (this.host.roleOf(ownerId, page.collectionId)) {
         this.notifier.send(ownerId, {
           kind: 'comment_added',
-          subject: `${author.name} commented on "${page.title}"`,
+          subject: `${actorNameForMessage(author)} commented on "${page.title}"`,
           body,
           link: `/pages/${pageId}#comment-${id}`,
         });
