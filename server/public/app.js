@@ -5447,7 +5447,18 @@ async function viewGaps(query = {}) {
         asker&rsquo;s word (its &ldquo;Also known as&rdquo; field), write the missing page, or record that this
         record owes no answer. No asker is shown here, and none is stored in this list; operators can
         read who asked what in the audit log, which has its own rule.</p>
-      ${gaps.length ? rows : `<div class="empty-state"><p>No ${esc(status)} gaps. Every question the record refused has been looked at.</p></div>`}
+      ${/* One sentence used to serve all three tabs: "No <status> gaps. Every
+            question the record refused has been looked at." True on the OPEN
+            tab and false on the other two — an empty Resolved tab means
+            nothing has been resolved, and the sentence claimed the opposite of
+            what it was describing. The tabs are three different filters over
+            one list, and only one of them can say anything about the whole of
+            it (round seven, Phase 5). */ ''}
+      ${gaps.length ? rows : `<div class="empty-state"><p>${status === 'open'
+        ? 'No open gaps. Every question the record refused has been looked at.'
+        : status === 'resolved'
+          ? 'No gap has been resolved yet. Open gaps, if there are any, are on the Open tab.'
+          : 'No gap has been dismissed. Open gaps, if there are any, are on the Open tab.'}</p></div>`}
     </div>`;
 
   app.querySelectorAll('[data-close]').forEach((btn) => {
@@ -5471,6 +5482,46 @@ async function viewGaps(query = {}) {
       } catch (err) { toastError(err); }
     });
   });
+}
+
+/**
+ * The one sentence under the audit filters, from BOTH of the numbers it is
+ * describing at once.
+ *
+ * The log draws from two routes — `/audit` for the rows and `/audit/summary`
+ * for the size of the population — and the screen used to let them speak
+ * separately. The count line was written only where rows existed, so narrowing
+ * a filter to nothing left the previous filter's sentence standing over a
+ * fresh "No matching events" panel: "168 events match these filters" and "No
+ * matching events", on screen together, both about different filters, one of
+ * them a lie (round seven, Phase 5). An auditor deciding a population is empty
+ * is exactly the reader who must not be shown a stale number.
+ *
+ * So the sentence is computed from the pair, always, including when there are
+ * no rows — and the disagreement case is stated rather than resolved in
+ * either direction. Two answers from two queries that cannot both be true is
+ * not something a screen may quietly pick a winner for; the honest move is to
+ * say the walk is unreliable and let the reader reload, because the wrong
+ * guess here ("show the count", "show the emptiness") produces a confident
+ * false claim in a compliance artefact.
+ */
+function auditCountLine(shownCount, matching) {
+  const n = Number(matching);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n === 0) return 'No events in the log match these filters.';
+  if (shownCount === 0) {
+    return `These filters match ${n.toLocaleString()} event${n === 1 ? '' : 's'}, but none of them came back ` +
+      'with this page of the log. Reload before treating this as an empty result.';
+  }
+  return shownCount >= n
+    ? `${n.toLocaleString()} event${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} these filters. All of them are shown.`
+    : `Showing the ${shownCount.toLocaleString()} most recent of ${n.toLocaleString()} matching events.`;
+}
+
+/** The heading over an empty table, which may only claim absence when the
+ *  count agrees that the population is empty. */
+function auditEmptyHeading(matching) {
+  return Number(matching) > 0 ? 'These events did not load' : 'No matching events';
 }
 
 async function viewAudit(query = {}) {
@@ -5500,7 +5551,14 @@ async function viewAudit(query = {}) {
               exists for (third round, Ruth). The click goes through
               downloadFromApi, which attaches identity the way api() does in
               both auth modes. */ ''}
-        <div class="actions"><button class="btn" id="audit-export" type="button">Export CSV</button></div>
+        ${/* Disabled until the summary lands. The export carries the FILTERS,
+              not the rows on screen, so before the first load nobody — not the
+              auditor, not this screen — knows how many events the click is
+              about; an export whose size is unknown is the shape of finding a
+              sample in a working paper labelled as a population. It enables
+              the moment the count that describes it exists. */ ''}
+        <div class="actions"><button class="btn" id="audit-export" type="button" disabled
+          title="Enables when the log has loaded.">Export CSV</button></div>
       </div>
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
       material, attributed to its actor.</p>
@@ -5598,10 +5656,15 @@ async function viewAudit(query = {}) {
     // Learn every page title on screen before any row is drawn, so a detail
     // that names another row's page can name it rather than print its id.
     for (const e of shown) if (e.pageId && e.pageTitle) pageTitles.set(e.pageId, e.pageTitle);
+    // The count line is written FIRST and unconditionally, because the branch
+    // that used to skip it is the branch where a stale one does the damage.
+    countHost.textContent = auditCountLine(shown.length, matching);
     if (!shown.length) {
       tableHost.innerHTML = `
-        <div class="empty-state"><h2>No matching events</h2>
-        <p>Nothing in the log matches these filters.</p></div>`;
+        <div class="empty-state"><h2>${esc(auditEmptyHeading(matching))}</h2>
+        <p>${matching > 0
+          ? 'The count above and this listing disagree. Reload the log rather than reporting an empty result.'
+          : 'Nothing in the log matches these filters.'}</p></div>`;
       moreHost.innerHTML = '';
       return;
     }
@@ -5619,14 +5682,19 @@ async function viewAudit(query = {}) {
     // The sentence that was missing. A screen showing a page and saying
     // nothing about the rest asserts a completeness it does not have.
     const all = shown.length >= matching;
-    countHost.textContent = all
-      ? `${matching.toLocaleString()} event${matching === 1 ? '' : 's'} match these filters. All of them are shown.`
-      : `Showing the ${shown.length.toLocaleString()} most recent of ${matching.toLocaleString()} matching events.`;
     moreHost.innerHTML = all
       ? ''
       : `<button class="btn" id="audit-older">Show older (${(matching - shown.length).toLocaleString()} more)</button>`;
     const older = moreHost.querySelector('#audit-older');
     if (older) older.addEventListener('click', () => load({ append: true }));
+  };
+
+  const exportBtn = app.querySelector('#audit-export');
+  /** Neither the count nor the export may outlive the filters they describe. */
+  const clearPopulation = (why) => {
+    countHost.textContent = '';
+    exportBtn.disabled = true;
+    exportBtn.title = why;
   };
 
   const load = async ({ append = false } = {}) => {
@@ -5635,6 +5703,10 @@ async function viewAudit(query = {}) {
       shown = [];
       tableHost.innerHTML = '<div class="loading">Loading…</div>';
       moreHost.innerHTML = '';
+      // The previous filters' count described a different population. Holding
+      // it over the new one is how "168 events match" ended up above "No
+      // matching events" — it was true a request ago.
+      clearPopulation('Enables when the log has loaded.');
       // The link an auditor can keep. Replaced rather than pushed, so paging
       // does not fill the back button with filter states.
       const q = paramsOf(f).toString();
@@ -5651,10 +5723,13 @@ async function viewAudit(query = {}) {
       shown = append ? shown.concat(events) : events;
       fillActions(summary.actions, f.action);
       render(summary.matching);
-      const exportBtn = app.querySelector('#audit-export');
+      exportBtn.disabled = false;
       exportBtn.title = `Downloads all ${summary.matching.toLocaleString()} matching events, not just the ones shown.`;
     } catch (err) {
       tableHost.innerHTML = `<div class="empty-state"><h2>Could not load the log</h2><p>${esc(err.message)}</p></div>`;
+      // A failed load knows nothing about the population, so it may neither
+      // describe it nor offer to download it.
+      clearPopulation('The log did not load, so the size of this export is unknown.');
     }
   };
 

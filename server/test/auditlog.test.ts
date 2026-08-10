@@ -296,3 +296,90 @@ test('ask screen: the asker is told their question is recorded, and for whom', (
   const view = source.slice(source.indexOf('async function viewAsk('), source.indexOf("const idleHTML"));
   assert.match(view, /Questions are kept in the audit log, readable by you and by\s+this record's operators\./);
 });
+
+// Round seven, Phase 5. The audit screen draws from two routes — `/audit` for
+// the rows, `/audit/summary` for the size of the population — and let them
+// speak separately. The count line was written ONLY in the branch that had
+// rows, so narrowing a filter down to nothing left the previous filter's
+// sentence standing over a fresh empty panel: "168 events match these filters"
+// and "No matching events", on screen together, about two different filters.
+//
+// The rule this pins: never render an empty result as a factual claim of
+// absence, and never enable an action whose consequences have not loaded.
+
+/** A top-level `function NAME(` lifted out of the shipped browser file, the
+ *  way pageview.test.ts and markdown.test.ts lift theirs. */
+function liftFunction(source: string, name: string): string {
+  const found = new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`).exec(source);
+  assert.ok(found, `public/app.js declares ${name}()`);
+  return found[0];
+}
+
+const auditClient = readFileSync(findPublicFile('app.js'), 'utf8');
+const auditCountLine = new Function(
+  `${liftFunction(auditClient, 'auditCountLine')}\nreturn auditCountLine;`,
+)() as (shown: number, matching: number) => string;
+const auditEmptyHeading = new Function(
+  `${liftFunction(auditClient, 'auditEmptyHeading')}\nreturn auditEmptyHeading;`,
+)() as (matching: number) => string;
+
+test('audit count: an empty population says so in its own words, not by silence', () => {
+  assert.equal(auditCountLine(0, 0), 'No events in the log match these filters.');
+  assert.equal(auditEmptyHeading(0), 'No matching events');
+});
+
+test('audit count: a count and an empty listing that disagree are reported as a disagreement', () => {
+  // Neither number wins. A screen that picked one would state a falsehood in a
+  // compliance artefact with full confidence; saying the walk is unreliable is
+  // the only claim that is true whichever route is wrong.
+  const line = auditCountLine(0, 168);
+  assert.match(line, /168/, 'the count is not silently dropped');
+  assert.match(line, /Reload/, 'and the reader is told the listing cannot be trusted as empty');
+  assert.doesNotMatch(line, /All of them are shown/);
+  assert.notEqual(auditEmptyHeading(168), 'No matching events', 'the heading may not claim absence');
+});
+
+test('audit count: a partial page is never rendered as the whole population', () => {
+  assert.equal(auditCountLine(200, 1187), 'Showing the 200 most recent of 1,187 matching events.');
+  assert.equal(auditCountLine(1187, 1187), '1,187 events match these filters. All of them are shown.');
+  assert.equal(auditCountLine(1, 1), '1 event matches these filters. All of them are shown.');
+});
+
+test('audit screen: the count line is written before the empty branch can return', () => {
+  // The defect was structural, not textual: an early `return` above the only
+  // assignment. Pinned where it happened, because a future edit that moves the
+  // assignment back below the guard reintroduces the exact stale sentence.
+  const view = auditClient.slice(
+    auditClient.indexOf('async function viewAudit('),
+    auditClient.indexOf('// Sources — registered external systems'),
+  );
+  const render = view.slice(view.indexOf('const render = (matching) => {'));
+  const assigned = render.indexOf('countHost.textContent = auditCountLine(');
+  const guard = render.indexOf('if (!shown.length)');
+  assert.ok(assigned !== -1 && guard !== -1, 'both the assignment and the empty guard are still there');
+  assert.ok(assigned < guard, 'the count is written before the empty listing can return');
+  // And a new load drops the old population entirely rather than letting it
+  // describe the next one.
+  assert.match(view, /clearPopulation\('Enables when the log has loaded\.'\)/);
+});
+
+test('audit export: the button does not offer to download a population nobody has counted', () => {
+  const view = auditClient.slice(
+    auditClient.indexOf('async function viewAudit('),
+    auditClient.indexOf('// Sources — registered external systems'),
+  );
+  assert.match(view, /id="audit-export" type="button" disabled/, 'it ships disabled');
+  assert.match(view, /exportBtn\.disabled = false;/, 'and is enabled only once the summary has landed');
+  // A failed load knows nothing about the population either.
+  assert.match(view, /clearPopulation\('The log did not load/);
+});
+
+test('gaps: an empty tab describes that tab, never the whole record', () => {
+  // One sentence served all three tabs: "No <status> gaps. Every question the
+  // record refused has been looked at." On the Resolved tab, empty means
+  // nothing has been resolved — the opposite of what it said.
+  const view = auditClient.slice(auditClient.indexOf('async function viewGaps('), auditClient.indexOf('async function viewAudit('));
+  assert.match(view, /No gap has been resolved yet/);
+  assert.match(view, /No gap has been dismissed/);
+  assert.doesNotMatch(view, /No \$\{esc\(status\)\} gaps/, 'the status is no longer interpolated into a claim about the record');
+});
