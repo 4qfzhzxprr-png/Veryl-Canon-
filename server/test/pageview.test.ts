@@ -481,7 +481,12 @@ test('search: "nothing matches" carries the likeliest reason there is nothing', 
   assert.match(searchScopeHTML(true), /try its title/);
   assert.doesNotMatch(searchScopeHTML(false), /try its title/, 'advice for a miss does not belong under hits');
   const wire = source.slice(source.indexOf('function wireSearch('), source.indexOf('// Router'));
-  assert.match(wire, /Nothing in the record matches\.<\/div>\$\{searchScopeHTML\(true\)\}/);
+  // Scoped to the reader, not to the record: the result set was already
+  // narrowed to their collections, so "nothing in the record" was a claim the
+  // search could not make. It deliberately does NOT report a hidden-match
+  // count — search takes an arbitrary term, and a count would be an oracle.
+  assert.match(wire, /Nothing you can see matches\.<\/div>\$\{searchScopeHTML\(true\)\}/);
+  assert.doesNotMatch(wire, /Nothing in the record matches/);
   assert.match(wire, /searchScopeHTML\(false\)/, 'and it is under the hits too, where it explains a page that did not match');
 });
 

@@ -1213,7 +1213,15 @@ function wireSearch() {
         const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
         const items = Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
         if (!items.length) {
-          results.innerHTML = `<div class="search-empty">Nothing in the record matches.</div>${searchScopeHTML(true)}`;
+          // This used to claim the RECORD held no match, from a result set
+          // that had already been narrowed to this reader's
+          // collections. Under the record's disclosure rule the fix is to stop
+          // overclaiming, NOT to report how many hidden pages matched: search
+          // takes an arbitrary term, so a hidden-match count is an oracle you
+          // could binary-search titles with. Existence is disclosed where the
+          // record states a relationship to a page you already hold; it is not
+          // disclosed in answer to any question anyone can type.
+          results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${searchScopeHTML(true)}`;
         } else {
           results.innerHTML = items.slice(0, 12).map((it) => {
             const id = it.pageId ?? it.id;
@@ -1729,18 +1737,24 @@ async function viewQueue() {
           <td>
             <a href="#/pages/${esc(r.mine.id)}">${esc(r.mine.title)}</a>
             <div class="queue-meta muted">conflicts with
-              <a href="#/pages/${esc(r.other.id)}">${esc(r.other.title)}</a>
+              ${r.other?.withheld
+                ? `<span class="rel-target-withheld">${esc(WITHHELD_TARGET)}</span>`
+                : `<a href="#/pages/${esc(r.other.id)}">${esc(r.other.title)}</a>`}
               · asserted by ${esc(actorName(r.assertedBy))}</div>
-            ${r.note ? `<div class="queue-note">${esc(r.note)}</div>` : ''}
+            ${r.other?.withheld
+              ? `<div class="queue-note muted">The reason describes that page, so it is not shown here.
+                  You own this one; ask ${esc(actorName(r.assertedBy))} what it conflicts with.</div>`
+              : r.note ? `<div class="queue-note">${esc(r.note)}</div>` : ''}
           </td>
           <td class="nowrap">${badge(r.mine.status, 'sm')}</td>
           <td class="nowrap queue-when">${esc(fmtAgo(r.assertedAt) ?? '')}</td>
         </tr>`),
-      // Not "no conflict has been asserted": this list drops a conflict whose
-      // OTHER end the reader cannot see (relations.ts keeps that deliberate),
-      // so the owner of a contested page was being told nothing contested it.
-      // Say what is shown, not what the record holds.
-      'No conflict on a page you own is shown here.',
+      // Now a complete statement again, and it was not before. This list used
+      // to DROP a conflict whose other end the reader could not see, so the
+      // owner of a contested page was told nothing contested it — the exact
+      // silence this queue exists to break. Withheld conflicts are listed, so
+      // the empty state can go back to being about the record.
+      'No conflict has been asserted against a page you own.',
     ),
     queueSection(
       'Sources disagreeing',
@@ -2689,9 +2703,31 @@ function pageStandingNotes(page, relations) {
 
 /** The other page in a relation, as a link where the reader may open it. */
 function standingTargetHTML(rel) {
+  // Withheld: no link, no title, no status. The banner still fires — that a
+  // page is contested is a fact about THIS page, and the reader is standing on
+  // it. What they are not told is which page it is contested with.
+  if (rel.withheld) return `<span class="rel-target-withheld">${esc(WITHHELD_TARGET)}</span>`;
   const title = esc(rel.other.title);
   const badgeHTML = rel.other.status ? ` ${badge(rel.other.status, 'sm')}` : '';
   return rel.other.id ? `<a href="#/pages/${esc(rel.other.id)}">${title}</a>${badgeHTML}` : `${title}${badgeHTML}`;
+}
+
+/**
+ * The reason line under a standing banner.
+ *
+ * Three cases, and only one of them is "nobody wrote a reason". A withheld
+ * relation HAS a note; it is being kept back because it describes the page the
+ * reader may not see. Rendering the "no reason was recorded" line there would
+ * be a false statement about the record, which is the one thing this product
+ * cannot afford to make.
+ */
+function standingReasonHTML(rel) {
+  if (rel.withheld) {
+    return `<p class="muted standing-reason-none">The reason recorded with this assertion describes that page,
+      so it is not shown here.</p>`;
+  }
+  if (rel.note) return `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`;
+  return '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>';
 }
 
 /** Who asserted it and when, with the way down to the whole register. */
@@ -2718,9 +2754,7 @@ function standingNoticeHTML(note, page) {
         <div><strong>Contested.</strong> A person has recorded that this page and ${standingTargetHTML(rel)}
           contradict each other. Both are still the record and both may still be cited: Canon draws a contradiction
           and does not settle it, so what this page says about the disputed point is not agreed.</div>
-        ${rel.note
-          ? `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`
-          : '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>'}
+        ${standingReasonHTML(rel)}
         ${standingAttributionHTML(rel)}
       </div>`;
   }
@@ -2729,9 +2763,7 @@ function standingNoticeHTML(note, page) {
       <div><strong>Superseded.</strong> A person has recorded that ${standingTargetHTML(rel)} replaces this page.
         Saying so archives nothing: this page keeps its standing, its text and its history, and the page named is
         where that person says the current answer is.</div>
-      ${rel.note
-        ? `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`
-        : '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>'}
+      ${standingReasonHTML(rel)}
       ${standingAttributionHTML(rel)}
     </div>`;
 }
@@ -3631,6 +3663,10 @@ function normalizeRelation(r) {
   const kind = r?.kind === 'supersedes' ? 'supersedes' : 'conflicts_with';
   const other = r?.other ?? {};
   const reads = RELATION_READ_LABELS[r?.reads] ? r.reads : kind === 'conflicts_with' ? 'conflicts_with' : 'supersedes';
+  // The far page is withheld when the reader holds no role in its collection.
+  // The relation is still listed — existence, never identity — so everything
+  // below has a shape for "there is one, and it is not describable here".
+  const withheld = other.withheld === true;
   return {
     id: r?.id ?? null,
     kind,
@@ -3638,14 +3674,24 @@ function normalizeRelation(r) {
     note: r?.note ?? null,
     assertedBy: r?.assertedBy ?? null,
     assertedAt: r?.assertedAt ?? null,
-    other: {
-      id: other.id ?? r?.otherPageId ?? null,
-      title: other.title ?? '(untitled page)',
-      status: other.status ?? null,
-      type: other.type ?? null,
-    },
+    withheld,
+    other: withheld
+      ? { id: null, title: null, status: null, type: null }
+      : {
+          id: other.id ?? r?.otherPageId ?? null,
+          title: other.title ?? '(untitled page)',
+          status: other.status ?? null,
+          type: other.type ?? null,
+        },
   };
 }
+
+// How the far end reads when it is withheld. One phrase, used by the panel, the
+// standing banner and the owner's queue, so the three cannot drift into three
+// different descriptions of the same absence. Not "(hidden page)" and not a
+// redacted title: there is no page here to name, and saying "a page" with a
+// styled blank invites the reader to guess at one.
+const WITHHELD_TARGET = 'a page you do not have access to';
 
 // Statuses a grounded answer may draw on — retrieval.ts ANSWERABLE_STATUSES.
 // Canonical, and Canonical whose review date has passed.
@@ -3658,6 +3704,14 @@ const ANSWERABLE_STATUSES = ['canonical', 'needs_update'];
 // stops at naming the replacement makes it look filled.
 function supersededByUnanswerableHTML(rel) {
   if (rel.reads !== 'superseded_by') return '';
+  // A withheld replacement has no status to read, and the honest thing is to
+  // say the standing is unknown rather than pick a side. Claiming it IS in the
+  // record would imply an approved answer nobody here can check; claiming it is
+  // NOT would be a guess about a page this reader was never shown.
+  if (rel.withheld) {
+    return `<p class="rel-note muted">Whether that replacement is part of the official record is not
+      something this page can tell you. Until you know, this page is what the record serves.</p>`;
+  }
   const status = rel.other.status;
   if (!status || ANSWERABLE_STATUSES.includes(status)) return '';
   return `<p class="rel-note muted">The page named as its replacement is not part of the official record yet,
@@ -3666,15 +3720,23 @@ function supersededByUnanswerableHTML(rel) {
 
 function relationEntryHTML(rel) {
   return `
-    <li class="relation rel-${esc(rel.reads)}"${rel.id ? ` data-relation="${esc(rel.id)}"` : ''}>
+    <li class="relation rel-${esc(rel.reads)}${rel.withheld ? ' rel-withheld' : ''}"${rel.id ? ` data-relation="${esc(rel.id)}"` : ''}>
       <div class="rel-head">
         <span class="rel-kind" title="${esc(RELATION_READ_HELP[rel.reads])}">${esc(RELATION_READ_LABELS[rel.reads])}</span>
-        ${rel.other.id
-          ? `<a class="rel-target" href="#/pages/${esc(rel.other.id)}">${esc(rel.other.title)}</a>`
-          : `<span class="rel-target">${esc(rel.other.title)}</span>`}
-        ${rel.other.status ? badge(rel.other.status, 'sm') : ''}
+        ${rel.withheld
+          ? `<span class="rel-target rel-target-withheld">${esc(WITHHELD_TARGET)}</span>`
+          : rel.other.id
+            ? `<a class="rel-target" href="#/pages/${esc(rel.other.id)}">${esc(rel.other.title)}</a>`
+            : `<span class="rel-target">${esc(rel.other.title)}</span>`}
+        ${!rel.withheld && rel.other.status ? badge(rel.other.status, 'sm') : ''}
       </div>
-      ${rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
+      ${rel.withheld
+        // No note, and it is not that none was written: the reason for a
+        // conflict describes the other page, which is the thing being withheld.
+        // Saying "no note was recorded" here would be false.
+        ? `<p class="rel-note muted">The reason recorded with this assertion describes that page, so it is
+            not shown here. Ask ${esc(actorName(rel.assertedBy))} or the collection's administrators.</p>`
+        : rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
         <p class="rel-note muted">No note was recorded with this assertion.</p>`}
       ${supersededByUnanswerableHTML(rel)}
       <p class="rel-meta muted">Asserted by ${actorLabel(rel.assertedBy)}${
@@ -3739,7 +3801,12 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
       ${group.noteHTML()}
       ${rows.length
         ? `<ul class="rel-list">${rows.map(relationEntryHTML).join('')}</ul>`
-        : `<p class="muted rel-empty">No conflict or supersession is shown for this page.</p>`}
+        // A complete statement again: the panel now lists relations whose far
+        // page is withheld, so an empty panel really does mean the record holds
+        // none. It said "is shown for this page" while relations to invisible
+        // pages were silently dropped, which was the most it could honestly
+        // claim then.
+        : `<p class="muted rel-empty">No conflict or supersession has been asserted for this page.</p>`}
     </section>`;
 
   host.querySelector('#rel-assert')?.addEventListener('click', () => openRelationModal(pageId, page));
@@ -3921,7 +3988,7 @@ function openRelationModal(pageId, page) {
       });
       picks.innerHTML = items.length
         ? rows.join('')
-        : '<p class="muted rel-pick-empty">Nothing in the record matches.</p>';
+        : '<p class="muted rel-pick-empty">Nothing you can see matches.</p>';
       picks.hidden = false;
       note.innerHTML = items.length ? group.noteHTML() : '';
       picks.querySelectorAll('.rel-pick:not(.is-refused)').forEach((btn) => {
@@ -6446,8 +6513,8 @@ const EDGE_HELP = {
   // Both say what the map DRAWS, not what the record holds: an edge whose far
   // end sits in a collection you are not a member of is not drawn, so a count
   // of nought here is not a claim that the record holds none.
-  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner. Only relations whose other page you can also read are drawn.',
-  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing. Only relations whose other page you can also read are drawn.',
+  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner. Only relations whose other page you can also read are drawn here; the panel on each page lists the rest, without naming what is at the far end.',
+  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing. Only relations whose other page you can also read are drawn here; the panel on each page lists the rest, without naming what is at the far end.',
 };
 // The order the legend and the edge filters use. The two relations come last
 // because they are the newest thing on the map, not because they matter least.

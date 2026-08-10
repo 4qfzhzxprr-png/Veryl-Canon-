@@ -1253,6 +1253,10 @@ label.check input { width: auto; display: inline; margin: 0; }
 }
 .relation.rel-conflicts_with .rel-kind { color: var(--danger); }
 .rel-target { font-weight: 600; overflow-wrap: anywhere; }
+/* A withheld far end is not a page and must not look like one: no link colour,
+   no weight competing with the titles beside it, and italic so a reader scanning
+   the panel sees a description rather than a name they half-recognise. */
+.rel-target-withheld { font-weight: 400; font-style: italic; color: var(--muted); }
 .rel-note { margin: 0.35rem 0 0; font-size: 0.9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rel-meta { margin: 0.35rem 0 0; font-size: 0.8rem; }
 .rel-withdraw { font-size: 0.8rem; padding: 0 0.35rem; }
