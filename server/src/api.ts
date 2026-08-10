@@ -190,6 +190,12 @@ const routes: Route[] = [
     // is the review's baseline, and no other screen reads it. Null, when
     // carried, means no version has ever held the mark and the whole draft is
     // new to review.
+    // Which of the body's own links point at pages this reader may not open.
+    // Travels with the payload the UI already fetches, for the same reason
+    // `references` does: the renderer needs it on the first paint, and a body
+    // that briefly shows a withheld title before a second request comes back
+    // has already shown it.
+    const withheldLinks = current ? store.withheldLinks(actorId, current.body) : [];
     return {
       ...page,
       current,
@@ -197,6 +203,7 @@ const routes: Route[] = [
       review,
       sentBack,
       abilities,
+      withheldLinks,
       ...(review ? { lastCanonical: store.lastCanonicalVersion(actorId, page.id) } : {}),
     };
   }),
@@ -242,9 +249,12 @@ const routes: Route[] = [
   ),
 
   route('GET', '/pages/:id/versions', ({ store, actorId, params }) => store.listVersions(actorId, params.id!)),
-  route('GET', '/pages/:id/versions/:n', ({ store, actorId, params }) =>
-    store.getVersion(actorId, params.id!, countParam(params.n!, 'version')!),
-  ),
+  // An OLD version leaks a linked title exactly as the current one does — the
+  // body is the body — so the same withheld-link list travels with it.
+  route('GET', '/pages/:id/versions/:n', ({ store, actorId, params }) => {
+    const version = store.getVersion(actorId, params.id!, countParam(params.n!, 'version')!);
+    return { ...version, withheldLinks: store.withheldLinks(actorId, version.body) };
+  }),
   route('POST', '/pages/:id/restore', ({ store, actorId, params, body }) =>
     store.restore(actorId, params.id!, requiredCount(body.version, 'version')),
   ),

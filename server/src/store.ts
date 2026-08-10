@@ -51,7 +51,7 @@ import { SearchIndex } from './search.js';
 import { Comment, CommentAnchor, CommentService, CreatedComment } from './comments.js';
 import { Notification, NotificationTransport, Notifier } from './notify.js';
 import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
-import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
+import { RetrievalCandidate, RetrievalService, RetrieveRequest, parsePageLinks } from './retrieval.js';
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 import { AUDIT_CSV_MAX_ROWS, AUDIT_CSV_PAGE_ROWS, RawResponse, auditCsvResponse } from './csv.js';
 import { ImportInput, ImportRunRecord, ImportService, ImportSummary, ImportUploadInput } from './import.js';
@@ -2569,6 +2569,45 @@ export class CanonStore {
 
   listReferences(actorId: string, pageId: string): PageReference[] {
     return this.references.list(actorId, pageId);
+  }
+
+  /**
+   * The pages this body links to that `actorId` may not read.
+   *
+   * A body is prose, and prose names things. A page written by somebody with
+   * wider access can say "superseded by [Q3 Workforce Reduction Plan](/pages/…)"
+   * and Canon will show that sentence, verbatim, to every reader of THIS page —
+   * in the page, in a search snippet, and inside an extractive answer that
+   * quotes the passage. The title of a page they were refused, handed over in
+   * the body of one they were granted.
+   *
+   * Not all of that is fixable, and pretending otherwise would be the worse
+   * error: a body that merely MENTIONS a title in prose is indistinguishable
+   * from any other sentence, and no permission check can find it. What IS
+   * findable is a link, because a link carries the page id — so the id can be
+   * tested against the reader the same way every other read is, and the label
+   * beside it suppressed when the test fails. The rest is what the publish-time
+   * warning to the AUTHOR is for; they are the only one who can judge prose.
+   *
+   * Returned as a list of ids for the renderer to match on, never as a rewritten
+   * body: the editor loads the same version, and a body silently redacted on
+   * read is a body an author saves back with their own link destroyed.
+   */
+  withheldLinks(actorId: string, body: string): string[] {
+    const linked = parsePageLinks(body ?? '');
+    if (!linked.length) return [];
+    const out: string[] = [];
+    for (const id of linked) {
+      const row = this.db.prepare('SELECT collection_id FROM pages WHERE id = ?').get(id) as
+        | { collection_id: string }
+        | undefined;
+      // An id that names no page is just text, exactly as retrieval treats it —
+      // and reporting it as withheld would tell a reader that a page exists
+      // where none does.
+      if (!row) continue;
+      if (!this.roleOf(actorId, row.collection_id)) out.push(id);
+    }
+    return out;
   }
 
   removeReference(actorId: string, referenceId: string): void {

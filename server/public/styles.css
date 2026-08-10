@@ -1257,6 +1257,11 @@ label.check input { width: auto; display: inline; margin: 0; }
    no weight competing with the titles beside it, and italic so a reader scanning
    the panel sees a description rather than a name they half-recognise. */
 .rel-target-withheld { font-weight: 400; font-style: italic; color: var(--muted); }
+/* A link whose target the reader cannot open, standing in the flow of the body.
+   Muted and italic rather than struck through or boxed: it is not damaged text
+   and not a redaction, it is a phrase that replaced a name. No underline — it
+   is not a link, and nothing happens when it is clicked. */
+.link-withheld { font-style: italic; color: var(--muted); cursor: help; }
 .rel-note { margin: 0.35rem 0 0; font-size: 0.9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rel-meta { margin: 0.35rem 0 0; font-size: 0.8rem; }
 .rel-withdraw { font-size: 0.8rem; padding: 0 0.35rem; }

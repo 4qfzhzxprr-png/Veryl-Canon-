@@ -677,3 +677,42 @@ test('API: relations round-trip, and an agent is refused at the door', async () 
     r.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// A body that links to a page the reader may not open (3.9)
+//
+// The link is the findable half of a prose leak: it carries a page id, so the
+// id can be tested against the reader the way every other read is, and the
+// label beside it — where the author almost certainly typed the target's title
+// — suppressed when the test fails.
+
+test('withheldLinks names the linked pages this reader cannot open, and only those', () => {
+  const { store, dana, marc, compliance, engineering } = setup();
+  const secret = note(store, dana.id, engineering.id, 'Q3 Workforce Reduction Plan');
+  const sibling = note(store, dana.id, compliance.id, 'Retention periods');
+  const body = [
+    `Superseded by [Q3 Workforce Reduction Plan](/pages/${secret}).`,
+    `See also [Retention periods](/pages/${sibling}) and [[${secret}]].`,
+    'And an outside link: [the regulator](https://example.gov/rules).',
+  ].join('\n\n');
+
+  // Dana is in both collections: nothing is withheld from her.
+  assert.deepEqual(store.withheldLinks(dana.id, body), []);
+
+  // Marc is not in Engineering. The Engineering page is named once, however
+  // many times the body links to it.
+  assert.deepEqual(store.withheldLinks(marc.id, body), [secret]);
+});
+
+test('withheldLinks does not invent a page where the id names none', () => {
+  // An id that matches nothing is just text, exactly as retrieval treats it.
+  // Reporting it as withheld would tell a reader a page exists where none does
+  // — the disclosure rule cuts both ways.
+  const { store, marc } = setup();
+  assert.deepEqual(store.withheldLinks(marc.id, 'See [something](/pages/aaaaaaaa-not-a-page).'), []);
+});
+
+test('withheldLinks leaves a body with no links alone', () => {
+  const { store, marc } = setup();
+  assert.deepEqual(store.withheldLinks(marc.id, 'Plain prose, no links at all.'), []);
+});

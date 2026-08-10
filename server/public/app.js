@@ -859,11 +859,52 @@ function parseTable(lines, start) {
   return { html, next: i };
 }
 
+/**
+ * Page ids the current body links to that this reader may not open, supplied by
+ * the server with the page (`withheldLinks`).
+ *
+ * Module-level rather than threaded through renderMarkdown's five call sites,
+ * and set immediately before the render that needs it. The editor's live
+ * preview renders from the textarea and never sets this, which is deliberate:
+ * an author is looking at their own draft and must see exactly what they typed.
+ */
+let withheldLinkIds = new Set();
+
+function withWithheldLinks(ids, fn) {
+  const previous = withheldLinkIds;
+  withheldLinkIds = new Set(ids ?? []);
+  try {
+    return fn();
+  } finally {
+    withheldLinkIds = previous;
+  }
+}
+
+// The id inside a Canon page link, in either form the record uses: the stable
+// link the product hands out (`/pages/<id>`, with or without the hash route)
+// and the wiki-style reference. Mirrors retrieval.ts PAGE_LINK, which is what
+// the server tested permission against — the two must agree on what a link is,
+// or the renderer redacts something the server did not check, or misses one it
+// did.
+const PAGE_LINK_HREF = /^#?\/pages\/([A-Za-z0-9][A-Za-z0-9_-]{5,})/;
+
+// What a withheld link leaves behind. Not the label, not a blank, and not a
+// styled redaction bar — those all invite a reader to guess at the words under
+// them. A phrase, so the sentence it sits in still reads.
+const WITHHELD_LINK_HTML =
+  '<span class="link-withheld" title="This links to a page you do not have access to.">a page you do not have access to</span>';
+
 function mdInline(raw) {
   let s = esc(raw);
   const codes = [];
   s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, href) => {
+    // A link to a page this reader cannot open takes its LABEL with it. The
+    // label is the leak: whoever wrote the body almost certainly typed the
+    // target's title there, and Canon would otherwise hand it to everyone who
+    // can read this page. The href goes too — an id is a handle.
+    const linked = href.match(PAGE_LINK_HREF);
+    if (linked && withheldLinkIds.has(linked[1])) return WITHHELD_LINK_HTML;
     // href is already entity-escaped; allow only benign schemes.
     if (/^(https?:|mailto:|#)/i.test(href)) {
       const external = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
@@ -871,6 +912,11 @@ function mdInline(raw) {
     }
     return text;
   });
+  // The wiki form carries no label, only the id — but an id is still a handle,
+  // and leaving it as text tells a reader precisely which page to go and ask
+  // about by name.
+  s = s.replace(/\[\[\s*([A-Za-z0-9][A-Za-z0-9_-]{5,})\s*\]\]/g, (whole, id) =>
+    withheldLinkIds.has(id) ? WITHHELD_LINK_HTML : whole);
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${codes[Number(n)]}</code>`);
@@ -2963,7 +3009,7 @@ async function viewPage(id) {
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
 
-        ${current ? `<article class="doc-body">${renderMarkdown(current.body)}</article>` : inReview ? `
+        ${current ? `<article class="doc-body">${withWithheldLinks(page.withheldLinks, () => renderMarkdown(current.body))}</article>` : inReview ? `
           <div class="empty-state">
             <h2>Nothing published yet</h2>
             ${/* A page in review HAS text — it is in the panel above, which is
@@ -5008,7 +5054,7 @@ async function viewVersion(id, n) {
         ${version.fields.reviewDate ? `<div><dt>Review date</dt><dd>${fmtDate(version.fields.reviewDate)}</dd></div>` : ''}
         ${version.note ? `<div><dt>Version note</dt><dd>${esc(version.note)}</dd></div>` : ''}
       </dl>
-      <article class="doc-body">${renderMarkdown(version.body)}</article>
+      <article class="doc-body">${withWithheldLinks(version.withheldLinks, () => renderMarkdown(version.body))}</article>
     </div>`;
   app.querySelector('#restore-here')?.addEventListener('click', () => openModal({
     title: `Restore version ${n}`,
