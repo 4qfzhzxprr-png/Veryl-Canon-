@@ -247,6 +247,13 @@ const COPY: Record<NotificationKind, KindCopy> = {
     cta: 'Open the comment',
     why: 'You are receiving this because you were mentioned in a comment.',
   },
+  comment_added: {
+    cta: 'Open the comment',
+    // Says which of the two reasons it is, because "you own this page" is the
+    // one the reader can act on — and the one that tells them why they are
+    // getting this when nobody addressed them directly.
+    why: 'You are receiving this because you own the page it was left on.',
+  },
   review_requested: {
     cta: 'Open the review',
     why: 'You are receiving this because this page is waiting for your review.',

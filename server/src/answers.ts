@@ -98,7 +98,8 @@ export interface Citation {
     /** True when at least one counterpart is outside what this asker may read. */
     someWithheld: boolean;
     assertedByName: string;
-    note: string;
+    /** Null when the only assertions here concern a page the asker cannot see. */
+    note: string | null;
   };
 }
 
@@ -1713,7 +1714,19 @@ export interface PageDispute {
   someWithheld: boolean;
   assertedByName: string;
   assertedAt: string;
-  note: string;
+  /**
+   * The reason someone recorded with the assertion — null when the only
+   * assertions here concern a page the asker cannot see.
+   *
+   * A note is free text one person typed to explain why two pages contradict,
+   * so it can name, quote or summarise the page at the other end. Under the
+   * record's disclosure rule (existence, never identity) the asserter's NAME
+   * travels — that is a structured fact about an assertion made against a page
+   * the asker holds — and the prose does not. Where a page carries several
+   * conflicts, the note kept is one belonging to a VISIBLE counterpart, so a
+   * reader is not deprived of a reason that was always theirs to read.
+   */
+  note: string | null;
 }
 
 /**
@@ -1776,11 +1789,17 @@ export class StoredAnswerRecord implements AnswerRecord {
           someWithheld: false,
           assertedByName: row.asserted_by_name as string,
           assertedAt: row.asserted_at as string,
-          note: row.note as string,
+          // Filled below, and only from a row whose counterpart is visible.
+          note: null as string | null,
         };
         if (otherVisible) {
           entry.withPageIds.push(other);
           entry.withTitles.push(otherTitle);
+          // First visible one wins, matching how assertedByName/assertedAt are
+          // taken. A note attached to a WITHHELD counterpart is never adopted,
+          // even when it is the only note there is — the alternative is quoting
+          // a description of a page this asker was refused.
+          if (entry.note === null) entry.note = row.note as string;
         } else {
           entry.someWithheld = true;
         }
@@ -2445,7 +2464,14 @@ export class AnswerService {
           ? ` with ${d.withTitles.join(' and ')}`
           : ' with another page in the record';
         const withheld = d.someWithheld && d.withTitles.length ? ' (and with a page you cannot see)' : '';
-        return `“${c.title}” is recorded as conflicting${others}${withheld}. ${d.assertedByName} asserted that, and wrote: “${d.note}”`;
+        // The note is prose about the other page. Where every counterpart is
+        // withheld there is no note to quote, and the sentence has to end
+        // honestly rather than trail into an empty quotation — saying WHY it
+        // stops, so the reader knows a reason exists and where to ask for it.
+        const reason = d.note
+          ? ` and wrote: “${d.note}”`
+          : ', and the reason recorded describes a page you do not have access to';
+        return `“${c.title}” is recorded as conflicting${others}${withheld}. ${d.assertedByName} asserted that${reason}`;
       });
       answer = `${DISPUTED_LEAD} ${lines.join(' ')}\n\n${answer}`;
     }

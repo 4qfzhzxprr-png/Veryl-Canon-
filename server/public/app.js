@@ -859,11 +859,52 @@ function parseTable(lines, start) {
   return { html, next: i };
 }
 
+/**
+ * Page ids the current body links to that this reader may not open, supplied by
+ * the server with the page (`withheldLinks`).
+ *
+ * Module-level rather than threaded through renderMarkdown's five call sites,
+ * and set immediately before the render that needs it. The editor's live
+ * preview renders from the textarea and never sets this, which is deliberate:
+ * an author is looking at their own draft and must see exactly what they typed.
+ */
+let withheldLinkIds = new Set();
+
+function withWithheldLinks(ids, fn) {
+  const previous = withheldLinkIds;
+  withheldLinkIds = new Set(ids ?? []);
+  try {
+    return fn();
+  } finally {
+    withheldLinkIds = previous;
+  }
+}
+
+// The id inside a Canon page link, in either form the record uses: the stable
+// link the product hands out (`/pages/<id>`, with or without the hash route)
+// and the wiki-style reference. Mirrors retrieval.ts PAGE_LINK, which is what
+// the server tested permission against — the two must agree on what a link is,
+// or the renderer redacts something the server did not check, or misses one it
+// did.
+const PAGE_LINK_HREF = /^#?\/pages\/([A-Za-z0-9][A-Za-z0-9_-]{5,})/;
+
+// What a withheld link leaves behind. Not the label, not a blank, and not a
+// styled redaction bar — those all invite a reader to guess at the words under
+// them. A phrase, so the sentence it sits in still reads.
+const WITHHELD_LINK_HTML =
+  '<span class="link-withheld" title="This links to a page you do not have access to.">a page you do not have access to</span>';
+
 function mdInline(raw) {
   let s = esc(raw);
   const codes = [];
   s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, href) => {
+    // A link to a page this reader cannot open takes its LABEL with it. The
+    // label is the leak: whoever wrote the body almost certainly typed the
+    // target's title there, and Canon would otherwise hand it to everyone who
+    // can read this page. The href goes too — an id is a handle.
+    const linked = href.match(PAGE_LINK_HREF);
+    if (linked && withheldLinkIds.has(linked[1])) return WITHHELD_LINK_HTML;
     // href is already entity-escaped; allow only benign schemes.
     if (/^(https?:|mailto:|#)/i.test(href)) {
       const external = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
@@ -871,6 +912,11 @@ function mdInline(raw) {
     }
     return text;
   });
+  // The wiki form carries no label, only the id — but an id is still a handle,
+  // and leaving it as text tells a reader precisely which page to go and ask
+  // about by name.
+  s = s.replace(/\[\[\s*([A-Za-z0-9][A-Za-z0-9_-]{5,})\s*\]\]/g, (whole, id) =>
+    withheldLinkIds.has(id) ? WITHHELD_LINK_HTML : whole);
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${codes[Number(n)]}</code>`);
@@ -1213,7 +1259,15 @@ function wireSearch() {
         const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
         const items = Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
         if (!items.length) {
-          results.innerHTML = `<div class="search-empty">Nothing in the record matches.</div>${searchScopeHTML(true)}`;
+          // This used to claim the RECORD held no match, from a result set
+          // that had already been narrowed to this reader's
+          // collections. Under the record's disclosure rule the fix is to stop
+          // overclaiming, NOT to report how many hidden pages matched: search
+          // takes an arbitrary term, so a hidden-match count is an oracle you
+          // could binary-search titles with. Existence is disclosed where the
+          // record states a relationship to a page you already hold; it is not
+          // disclosed in answer to any question anyone can type.
+          results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${searchScopeHTML(true)}`;
         } else {
           results.innerHTML = items.slice(0, 12).map((it) => {
             const id = it.pageId ?? it.id;
@@ -1729,13 +1783,23 @@ async function viewQueue() {
           <td>
             <a href="#/pages/${esc(r.mine.id)}">${esc(r.mine.title)}</a>
             <div class="queue-meta muted">conflicts with
-              <a href="#/pages/${esc(r.other.id)}">${esc(r.other.title)}</a>
+              ${r.other?.withheld
+                ? `<span class="rel-target-withheld">${esc(WITHHELD_TARGET)}</span>`
+                : `<a href="#/pages/${esc(r.other.id)}">${esc(r.other.title)}</a>`}
               · asserted by ${esc(actorName(r.assertedBy))}</div>
-            ${r.note ? `<div class="queue-note">${esc(r.note)}</div>` : ''}
+            ${r.other?.withheld
+              ? `<div class="queue-note muted">The reason describes that page, so it is not shown here.
+                  You own this one; ask ${esc(actorName(r.assertedBy))} what it conflicts with.</div>`
+              : r.note ? `<div class="queue-note">${esc(r.note)}</div>` : ''}
           </td>
           <td class="nowrap">${badge(r.mine.status, 'sm')}</td>
           <td class="nowrap queue-when">${esc(fmtAgo(r.assertedAt) ?? '')}</td>
         </tr>`),
+      // Now a complete statement again, and it was not before. This list used
+      // to DROP a conflict whose other end the reader could not see, so the
+      // owner of a contested page was told nothing contested it — the exact
+      // silence this queue exists to break. Withheld conflicts are listed, so
+      // the empty state can go back to being about the record.
       'No conflict has been asserted against a page you own.',
     ),
     queueSection(
@@ -2685,9 +2749,31 @@ function pageStandingNotes(page, relations) {
 
 /** The other page in a relation, as a link where the reader may open it. */
 function standingTargetHTML(rel) {
+  // Withheld: no link, no title, no status. The banner still fires — that a
+  // page is contested is a fact about THIS page, and the reader is standing on
+  // it. What they are not told is which page it is contested with.
+  if (rel.withheld) return `<span class="rel-target-withheld">${esc(WITHHELD_TARGET)}</span>`;
   const title = esc(rel.other.title);
   const badgeHTML = rel.other.status ? ` ${badge(rel.other.status, 'sm')}` : '';
   return rel.other.id ? `<a href="#/pages/${esc(rel.other.id)}">${title}</a>${badgeHTML}` : `${title}${badgeHTML}`;
+}
+
+/**
+ * The reason line under a standing banner.
+ *
+ * Three cases, and only one of them is "nobody wrote a reason". A withheld
+ * relation HAS a note; it is being kept back because it describes the page the
+ * reader may not see. Rendering the "no reason was recorded" line there would
+ * be a false statement about the record, which is the one thing this product
+ * cannot afford to make.
+ */
+function standingReasonHTML(rel) {
+  if (rel.withheld) {
+    return `<p class="muted standing-reason-none">The reason recorded with this assertion describes that page,
+      so it is not shown here.</p>`;
+  }
+  if (rel.note) return `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`;
+  return '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>';
 }
 
 /** Who asserted it and when, with the way down to the whole register. */
@@ -2714,9 +2800,7 @@ function standingNoticeHTML(note, page) {
         <div><strong>Contested.</strong> A person has recorded that this page and ${standingTargetHTML(rel)}
           contradict each other. Both are still the record and both may still be cited: Canon draws a contradiction
           and does not settle it, so what this page says about the disputed point is not agreed.</div>
-        ${rel.note
-          ? `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`
-          : '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>'}
+        ${standingReasonHTML(rel)}
         ${standingAttributionHTML(rel)}
       </div>`;
   }
@@ -2725,9 +2809,7 @@ function standingNoticeHTML(note, page) {
       <div><strong>Superseded.</strong> A person has recorded that ${standingTargetHTML(rel)} replaces this page.
         Saying so archives nothing: this page keeps its standing, its text and its history, and the page named is
         where that person says the current answer is.</div>
-      ${rel.note
-        ? `<blockquote class="standing-reason">${esc(rel.note)}</blockquote>`
-        : '<p class="muted standing-reason-none">No reason was recorded with the assertion.</p>'}
+      ${standingReasonHTML(rel)}
       ${standingAttributionHTML(rel)}
     </div>`;
 }
@@ -2927,7 +3009,7 @@ async function viewPage(id) {
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
 
-        ${current ? `<article class="doc-body">${renderMarkdown(current.body)}</article>` : inReview ? `
+        ${current ? `<article class="doc-body">${withWithheldLinks(page.withheldLinks, () => renderMarkdown(current.body))}</article>` : inReview ? `
           <div class="empty-state">
             <h2>Nothing published yet</h2>
             ${/* A page in review HAS text — it is in the panel above, which is
@@ -3083,7 +3165,7 @@ async function viewPage(id) {
   renderDivergencesPanel(id);
   renderRelationsPanel(id, page, relations);
   renderRelatedPanel(id);
-  renderCommentsPanel(id, can?.comment ?? null);
+  renderCommentsPanel(id, can?.comment ?? null, page.collectionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -3249,6 +3331,11 @@ function referenceRowHTML({ r, cls, valueHTML, marks, prov, valueTitle }) {
     </div>`;
 }
 
+function askerMarkHTML() {
+  return `<span class="kind-tag ref-asker"
+    title="Resolved with your own identity, so another reader of this page may see a different value here, or none">resolved for you</span>`;
+}
+
 function serviceMarkHTML() {
   return `<span class="kind-tag ref-service"
     title="Resolved with a service identity, so this value is visible to everyone who can view this collection">service-resolved</span>`;
@@ -3262,12 +3349,13 @@ const SERVICE_SENTENCE = 'Service-resolved: visible to everyone who can view thi
 function referencePlaceholderHTML(ref) {
   const r = normalizeReference(ref);
   const service = r.authMode === 'service' || r.serviceResolved;
+  const perAsker = !service && r.authMode === 'per_asker';
   return referenceRowHTML({
     r,
     cls: 'is-resolving',
     valueHTML: '<span class="skel-line ref-skel-value" aria-hidden="true"></span>'
       + '<span class="sr-only">Resolving this value from its source…</span>',
-    marks: service ? [serviceMarkHTML()] : [],
+    marks: service ? [serviceMarkHTML()] : perAsker ? [askerMarkHTML()] : [],
     prov: `${esc(clip(r.sourceName || r.sourceId || 'Its source', 32))} · resolving…`
       + (service ? ` ${SERVICE_SENTENCE}` : ''),
   });
@@ -3319,6 +3407,8 @@ function referenceFieldHTML(r, sourcesById) {
 
   if (service) {
     marks.push(serviceMarkHTML());
+  } else if (authModeOf(r, sourcesById) === 'per_asker') {
+    marks.push(askerMarkHTML());
     prov += ` ${SERVICE_SENTENCE}`;
   }
 
@@ -3352,13 +3442,14 @@ function referenceFieldHTML(r, sourcesById) {
 function referenceUnreachableHTML(ref, err) {
   const r = normalizeReference(ref);
   const service = r.authMode === 'service' || r.serviceResolved;
+  const perAsker = !service && r.authMode === 'per_asker';
   return referenceRowHTML({
     r,
     cls: 'is-error',
     valueHTML: '<span class="ref-value is-unresolved">Not resolved</span>',
     marks: [
       '<span class="badge badge-unresolved sm">unresolved</span>',
-      ...(service ? [serviceMarkHTML()] : []),
+      ...(service ? [serviceMarkHTML()] : perAsker ? [askerMarkHTML()] : []),
     ],
     prov: `Canon could not reach its own resolver: ${esc(endSentence(clip(err?.message ?? 'the request failed')))}
       The reference is still on this page; only its value is missing.`,
@@ -3618,6 +3709,10 @@ function normalizeRelation(r) {
   const kind = r?.kind === 'supersedes' ? 'supersedes' : 'conflicts_with';
   const other = r?.other ?? {};
   const reads = RELATION_READ_LABELS[r?.reads] ? r.reads : kind === 'conflicts_with' ? 'conflicts_with' : 'supersedes';
+  // The far page is withheld when the reader holds no role in its collection.
+  // The relation is still listed — existence, never identity — so everything
+  // below has a shape for "there is one, and it is not describable here".
+  const withheld = other.withheld === true;
   return {
     id: r?.id ?? null,
     kind,
@@ -3625,27 +3720,71 @@ function normalizeRelation(r) {
     note: r?.note ?? null,
     assertedBy: r?.assertedBy ?? null,
     assertedAt: r?.assertedAt ?? null,
-    other: {
-      id: other.id ?? r?.otherPageId ?? null,
-      title: other.title ?? '(untitled page)',
-      status: other.status ?? null,
-      type: other.type ?? null,
-    },
+    withheld,
+    other: withheld
+      ? { id: null, title: null, status: null, type: null }
+      : {
+          id: other.id ?? r?.otherPageId ?? null,
+          title: other.title ?? '(untitled page)',
+          status: other.status ?? null,
+          type: other.type ?? null,
+        },
   };
+}
+
+// How the far end reads when it is withheld. One phrase, used by the panel, the
+// standing banner and the owner's queue, so the three cannot drift into three
+// different descriptions of the same absence. Not "(hidden page)" and not a
+// redacted title: there is no page here to name, and saying "a page" with a
+// styled blank invites the reader to guess at one.
+const WITHHELD_TARGET = 'a page you do not have access to';
+
+// Statuses a grounded answer may draw on — retrieval.ts ANSWERABLE_STATUSES.
+// Canonical, and Canonical whose review date has passed.
+const ANSWERABLE_STATUSES = ['canonical', 'needs_update'];
+
+// "Superseded by X" reads as "the answer moved over there". It only means that
+// once X is part of the official record. Where the replacement is still a
+// draft or in review, Ask will not use it and this page is still what the
+// record serves — so the subject has NO approved answer, and a banner that
+// stops at naming the replacement makes it look filled.
+function supersededByUnanswerableHTML(rel) {
+  if (rel.reads !== 'superseded_by') return '';
+  // A withheld replacement has no status to read, and the honest thing is to
+  // say the standing is unknown rather than pick a side. Claiming it IS in the
+  // record would imply an approved answer nobody here can check; claiming it is
+  // NOT would be a guess about a page this reader was never shown.
+  if (rel.withheld) {
+    return `<p class="rel-note muted">Whether that replacement is part of the official record is not
+      something this page can tell you. Until you know, this page is what the record serves.</p>`;
+  }
+  const status = rel.other.status;
+  if (!status || ANSWERABLE_STATUSES.includes(status)) return '';
+  return `<p class="rel-note muted">The page named as its replacement is not part of the official record yet,
+    so nothing here has been approved on this subject. This page is still what the record serves.</p>`;
 }
 
 function relationEntryHTML(rel) {
   return `
-    <li class="relation rel-${esc(rel.reads)}"${rel.id ? ` data-relation="${esc(rel.id)}"` : ''}>
+    <li class="relation rel-${esc(rel.reads)}${rel.withheld ? ' rel-withheld' : ''}"${rel.id ? ` data-relation="${esc(rel.id)}"` : ''}>
       <div class="rel-head">
         <span class="rel-kind" title="${esc(RELATION_READ_HELP[rel.reads])}">${esc(RELATION_READ_LABELS[rel.reads])}</span>
-        ${rel.other.id
-          ? `<a class="rel-target" href="#/pages/${esc(rel.other.id)}">${esc(rel.other.title)}</a>`
-          : `<span class="rel-target">${esc(rel.other.title)}</span>`}
-        ${rel.other.status ? badge(rel.other.status, 'sm') : ''}
+        ${rel.withheld
+          ? `<span class="rel-target rel-target-withheld">${esc(WITHHELD_TARGET)}</span>`
+          : rel.other.id
+            ? `<a class="rel-target" href="#/pages/${esc(rel.other.id)}">${esc(rel.other.title)}</a>`
+            : `<span class="rel-target">${esc(rel.other.title)}</span>`}
+        ${!rel.withheld && rel.other.status ? badge(rel.other.status, 'sm') : ''}
       </div>
-      ${rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
+      ${rel.withheld
+        // No note, and it is not that none was written: the reason for a
+        // conflict describes the other page, which is the thing being withheld.
+        // Saying "no note was recorded" here would be false.
+        ? `<p class="rel-note muted">The reason recorded with this assertion describes that page, so it is
+            not shown here. Ask ${esc(actorName(rel.assertedBy))} or the collection's administrators.</p>`
+        : rel.note ? `<p class="rel-note">${esc(rel.note)}</p>` : `
         <p class="rel-note muted">No note was recorded with this assertion.</p>`}
+      ${supersededByUnanswerableHTML(rel)}
       <p class="rel-meta muted">Asserted by ${actorLabel(rel.assertedBy)}${
         rel.assertedAt ? ` · ${esc(fmtAgo(rel.assertedAt) ?? '')} (${esc(fmtDateTime(rel.assertedAt))})` : ''
       }${rel.id ? ` · <button class="btn subtle rel-withdraw" type="button" data-withdraw="${esc(rel.id)}">Withdraw</button>` : ''}</p>
@@ -3708,7 +3847,12 @@ async function renderRelationsPanel(pageId, page, preloaded = undefined) {
       ${group.noteHTML()}
       ${rows.length
         ? `<ul class="rel-list">${rows.map(relationEntryHTML).join('')}</ul>`
-        : '<p class="muted rel-empty">The record does not hold a conflict or a supersession for this page.</p>'}
+        // A complete statement again: the panel now lists relations whose far
+        // page is withheld, so an empty panel really does mean the record holds
+        // none. It said "is shown for this page" while relations to invisible
+        // pages were silently dropped, which was the most it could honestly
+        // claim then.
+        : `<p class="muted rel-empty">No conflict or supersession has been asserted for this page.</p>`}
     </section>`;
 
   host.querySelector('#rel-assert')?.addEventListener('click', () => openRelationModal(pageId, page));
@@ -3890,7 +4034,7 @@ function openRelationModal(pageId, page) {
       });
       picks.innerHTML = items.length
         ? rows.join('')
-        : '<p class="muted rel-pick-empty">Nothing in the record matches.</p>';
+        : '<p class="muted rel-pick-empty">Nothing you can see matches.</p>';
       picks.hidden = false;
       note.innerHTML = items.length ? group.noteHTML() : '';
       picks.querySelectorAll('.rel-pick:not(.is-refused)').forEach((btn) => {
@@ -3971,9 +4115,66 @@ function normalizeComment(c) {
 // in `page.abilities.comment` shape, or null on a server that serves none. A
 // refusal replaces the box with the reason rather than leaving a form that
 // 403s at the last click (T4.4).
-async function renderCommentsPanel(pageId, ability = null) {
+/**
+ * Who this reader can mention, and how.
+ *
+ * `@<actorId>` was the only form the server accepted and an actor id is a
+ * UUID — so "mention someone to bring them in", which the product describes as
+ * a workflow, could not be performed by a person. The server now resolves a
+ * member's NAME as well; this is the half that makes it discoverable, because
+ * a feature nobody can see is not one.
+ *
+ * The list is the collection's members, which is exactly the set the server
+ * will resolve and exactly the set a mention would reach — somebody outside it
+ * is withheld anyway. So the names offered here can never be a promise the
+ * server then breaks.
+ */
+function mentionHintHTML(people) {
+  if (!people.length) return '';
+  return `<p class="muted comment-mention-hint">Mention someone with <code>@</code>:
+    ${people.map((p) => `<button type="button" class="btn subtle mention-chip"
+      data-mention="${esc(p.name)}">@${esc(p.name)}</button>`).join(' ')}</p>`;
+}
+
+/** Clicking a name inserts it at the cursor — a hint you cannot act on is a
+ *  smaller version of the same problem. */
+function wireMentionChips(host) {
+  const box = host.querySelector('#comment-form textarea');
+  if (!box) return;
+  for (const chip of host.querySelectorAll('.mention-chip')) {
+    chip.addEventListener('click', () => {
+      const insert = `@${chip.dataset.mention} `;
+      const at = box.selectionStart ?? box.value.length;
+      const end = box.selectionEnd ?? at;
+      box.value = box.value.slice(0, at) + insert + box.value.slice(end);
+      box.focus();
+      const caret = at + insert.length;
+      box.setSelectionRange(caret, caret);
+    });
+  }
+}
+
+/** The collection's members, as names. Empty on any failure: the composer is
+ *  still usable without the hint, and a broken hint must not cost a comment. */
+async function mentionableIn(collectionId) {
+  if (!collectionId) return [];
+  try {
+    const rows = await api('GET', `/collections/${collectionId}/members`);
+    const list = Array.isArray(rows) ? rows : (rows?.members ?? []);
+    return list
+      .map((m) => ({ id: m.actorId ?? m.actor_id, name: actorName(m.actorId ?? m.actor_id) }))
+      // Not yourself: the server never notifies an author about their own
+      // comment, so offering your own name would be a chip that does nothing.
+      .filter((m) => m.id && m.name && m.name !== '—' && m.id !== state.actor?.id);
+  } catch {
+    return [];
+  }
+}
+
+async function renderCommentsPanel(pageId, ability = null, collectionId = null) {
   const host = document.getElementById('comments-host');
   if (!host || state.features.comments === false) return;
+  const mentionable = ability && ability.can === false ? [] : await mentionableIn(collectionId);
   let comments;
   try {
     const r = await api('GET', `/pages/${pageId}/comments`);
@@ -4004,16 +4205,18 @@ async function renderCommentsPanel(pageId, ability = null) {
         ? `<p class="muted">${esc(ability.why ?? 'You cannot comment on this page.')}</p>`
         : `<form id="comment-form" class="stack">
              <textarea name="body" rows="2" required placeholder="Add a comment…"></textarea>
+             ${mentionHintHTML(mentionable)}
              <div><button class="btn" type="submit">Comment</button></div>
            </form>`}
     </section>`;
+  wireMentionChips(host);
   host.querySelector('#comment-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = e.target.body.value.trim();
     if (!body) return;
     try {
       await api('POST', `/pages/${pageId}/comments`, { body });
-      renderCommentsPanel(pageId, ability);
+      renderCommentsPanel(pageId, ability, collectionId);
     } catch (err) {
       if (err.status === 404 || err.status === 405) {
         state.features.comments = false;
@@ -4910,7 +5113,7 @@ async function viewVersion(id, n) {
         ${version.fields.reviewDate ? `<div><dt>Review date</dt><dd>${fmtDate(version.fields.reviewDate)}</dd></div>` : ''}
         ${version.note ? `<div><dt>Version note</dt><dd>${esc(version.note)}</dd></div>` : ''}
       </dl>
-      <article class="doc-body">${renderMarkdown(version.body)}</article>
+      <article class="doc-body">${withWithheldLinks(version.withheldLinks, () => renderMarkdown(version.body))}</article>
     </div>`;
   app.querySelector('#restore-here')?.addEventListener('click', () => openModal({
     title: `Restore version ${n}`,
@@ -6412,8 +6615,11 @@ const EDGE_HELP = {
   child: 'Parent to child: where the page sits in the tree.',
   link: 'A link one published page makes to another. Written by hand, never inferred.',
   reference: 'A reference field on a page, resolving against a registered external source.',
-  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner.',
-  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing.',
+  // Both say what the map DRAWS, not what the record holds: an edge whose far
+  // end sits in a collection you are not a member of is not drawn, so a count
+  // of nought here is not a claim that the record holds none.
+  conflicts_with: 'A person asserted that these two pages contradict each other, and said how. Canon surfaces the contradiction; it never resolves it — no merge, no precedence, no quiet winner. Only relations whose other page you can also read are drawn here; the panel on each page lists the rest, without naming what is at the far end.',
+  supersedes: 'A person asserted that one page replaces another. The superseded page keeps its standing and its history: saying so archives nothing. Only relations whose other page you can also read are drawn here; the panel on each page lists the rest, without naming what is at the far end.',
 };
 // The order the legend and the edge filters use. The two relations come last
 // because they are the newest thing on the map, not because they matter least.

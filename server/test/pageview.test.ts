@@ -33,6 +33,18 @@ function findPublicFile(name: string): string {
   throw new Error(`server/public/${name} not found above the compiled test file`);
 }
 
+/** Same walk as findPublicFile, for a file under server/src — the tests run
+ *  from dist, so nothing under src is at a fixed offset from them. */
+function findSourceFile(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let up = 0; up < 8; up += 1) {
+    const candidate = join(dir, 'src', name);
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error(`server/src/${name} not found above the compiled test file`);
+}
+
 const source = readFileSync(findPublicFile('app.js'), 'utf8');
 
 function lift(name: string): string {
@@ -481,7 +493,12 @@ test('search: "nothing matches" carries the likeliest reason there is nothing', 
   assert.match(searchScopeHTML(true), /try its title/);
   assert.doesNotMatch(searchScopeHTML(false), /try its title/, 'advice for a miss does not belong under hits');
   const wire = source.slice(source.indexOf('function wireSearch('), source.indexOf('// Router'));
-  assert.match(wire, /Nothing in the record matches\.<\/div>\$\{searchScopeHTML\(true\)\}/);
+  // Scoped to the reader, not to the record: the result set was already
+  // narrowed to their collections, so "nothing in the record" was a claim the
+  // search could not make. It deliberately does NOT report a hidden-match
+  // count — search takes an arbitrary term, and a count would be an oracle.
+  assert.match(wire, /Nothing you can see matches\.<\/div>\$\{searchScopeHTML\(true\)\}/);
+  assert.doesNotMatch(wire, /Nothing in the record matches/);
   assert.match(wire, /searchScopeHTML\(false\)/, 'and it is under the hits too, where it explains a page that did not match');
 });
 
@@ -621,4 +638,85 @@ test('editor: the alias caption says when a name starts working, truthfully', ()
   assert.match(editor, /steer search to this page as soon as they publish/);
   assert.match(editor, /badged with the page's standing/);
   assert.match(editor, /official answers use them only while the page holds the Canonical mark/);
+});
+
+// ---------------------------------------------------------------------------
+// A body links to a page the reader may not open (3.9)
+//
+// A body is prose, and prose names things. A page written by somebody with
+// wider access can say "superseded by [Q3 Workforce Reduction Plan](/pages/…)"
+// and Canon shows that sentence verbatim to every reader of THIS page. The
+// title of a page they were refused, handed to them in the body of one they
+// were granted.
+//
+// The link is the findable half — it carries a page id, so the id can be tested
+// against the reader like any other read. These pin the renderer's side of that:
+// the label goes with the link, both link forms are covered, and the editor's
+// own preview is never touched.
+
+test('body links: a withheld link loses its label and its href', () => {
+  const fn = source.slice(source.indexOf('function mdInline('), source.indexOf('function diffLines('));
+  // The label is the leak — it is where the author typed the title.
+  assert.match(fn, /withheldLinkIds\.has\(linked\[1\]\)/);
+  assert.match(fn, /return WITHHELD_LINK_HTML/);
+  // And the wiki form, which carries the bare id.
+  assert.match(fn, /\\\[\\\[/);
+});
+
+test('body links: the withheld phrase names no page and offers no link', () => {
+  const html = source.slice(source.indexOf('const WITHHELD_LINK_HTML'), source.indexOf('function mdInline('));
+  assert.match(html, /a page you do not have access to/);
+  // Not an anchor, and nothing to click through to.
+  assert.doesNotMatch(html, /<a\s/);
+  assert.doesNotMatch(html, /href=/);
+});
+
+test('body links: the renderer and the server agree on what a link is', () => {
+  // The server decides which ids are withheld using retrieval.ts PAGE_LINK; the
+  // renderer matches hrefs with PAGE_LINK_HREF. If they disagree, the renderer
+  // either redacts something never checked or misses one that was — so the id
+  // shape is pinned to the same floor in both.
+  const client = source.slice(source.indexOf('const PAGE_LINK_HREF'), source.indexOf('const WITHHELD_LINK_HTML'));
+  assert.match(client, /A-Za-z0-9_-\]\{5,\}/);
+  const retrieval = readFileSync(findSourceFile('retrieval.ts'), 'utf8');
+  assert.match(retrieval, /A-Za-z0-9_-\]\{5,\}/);
+});
+
+test('body links: the editor preview renders what the author typed', () => {
+  // withWithheldLinks is scoped and set only around a SERVED body. An author
+  // editing their own page sees their own text — redacting a draft in the
+  // preview would show them a hole where their link is and invite them to
+  // "fix" it.
+  const preview = source.slice(source.indexOf('const preview ='), source.indexOf('const preview =') + 2000);
+  assert.doesNotMatch(preview, /withWithheldLinks/);
+});
+
+// ---------------------------------------------------------------------------
+// The comment loop's client half (Phase 4)
+//
+// The mention machinery was complete and had no usable address: `@<actorId>`
+// was the only form the server accepted, an actor id is a UUID, and the
+// composer was a bare textarea that said nothing about any of it.
+
+test('comments: the composer says who can be mentioned, and inserting one works', () => {
+  const hint = source.slice(source.indexOf('function mentionHintHTML('), source.indexOf('async function mentionableIn('));
+  assert.match(hint, /Mention someone with/);
+  // A hint you cannot act on is a smaller version of the same problem.
+  assert.match(hint, /data-mention=/);
+  assert.match(hint, /setSelectionRange/);
+});
+
+test('comments: the names offered are the collection members, not the directory', () => {
+  // The server resolves a name against the collection's members only — so
+  // offering anybody else would be a promise the server then breaks, and would
+  // make the directory probeable one chip at a time.
+  const fn = source.slice(source.indexOf('async function mentionableIn('), source.indexOf('async function renderCommentsPanel('));
+  assert.match(fn, /\/collections\/\$\{collectionId\}\/members/);
+  // And never yourself: an author is never notified about their own comment.
+  assert.match(fn, /state\.actor\?\.id/);
+});
+
+test('comments: a failed member lookup costs the hint, never the comment box', () => {
+  const fn = source.slice(source.indexOf('async function mentionableIn('), source.indexOf('async function renderCommentsPanel('));
+  assert.match(fn, /catch \{\s*return \[\];/);
 });

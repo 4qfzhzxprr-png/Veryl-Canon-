@@ -144,15 +144,63 @@ export interface RelationOtherPage {
   collectionId: string;
 }
 
-/** One relation, listed for one page: which end it is, and what is at the other. */
-export interface PageRelationView extends PageRelation {
+/**
+ * The other end when the asker holds no role in its collection.
+ *
+ * EXISTENCE, NEVER IDENTITY. This is a reversal, and the argument it reverses
+ * is written a few lines below in `list`: a relation to an invisible page used
+ * to be dropped outright, on the reasoning that "your policy conflicts with
+ * something you may not see" is a sentence that tells you about the something.
+ *
+ * That reasoning is sound about IDENTITY and wrong about EXISTENCE, and the
+ * product had already decided so somewhere else: `answers.ts` tells an asker
+ * that a cited page "is recorded as conflicting … (and with a page you cannot
+ * see)". Two surfaces, opposite rules, and the one that disclosed was the one
+ * built after a compliance director found the gap by asking the same question
+ * three ways. Canon's whole claim is that the record can be trusted; a record
+ * that silently omits the existence of a contradiction is not one.
+ *
+ * So: the relation is listed, and it carries NOTHING about the page at the far
+ * end — no id, no title, no type, no status, no collection. Not a redacted
+ * page: the absence of one. The relation's own note goes with it (see `list`),
+ * because a note is prose one person typed about the page you may not see.
+ *
+ * What this deliberately does NOT do is turn an open-ended query into an
+ * oracle. The disclosure is bounded to relations asserted against a page the
+ * asker already holds; nothing here lets someone enumerate the record by
+ * asking about pages they have no standing over.
+ */
+export interface RelationOtherWithheld {
+  withheld: true;
+}
+
+export type RelationOther = RelationOtherPage | RelationOtherWithheld;
+
+/** True when the far end is outside what this asker may read. */
+export function isWithheld(other: RelationOther): other is RelationOtherWithheld {
+  return (other as RelationOtherWithheld).withheld === true;
+}
+
+/**
+ * One relation, listed for one page: which end it is, and what is at the other.
+ *
+ * `fromPageId`/`toPageId` are narrowed to allow null, because the stored row
+ * NAMES BOTH ENDS and one of them may be a page this asker cannot see. The
+ * withheld marker on `other` would have been decoration while the id it hides
+ * rode out on the row beside it — a test caught exactly that. The end the asker
+ * is reading from is always present; the far end is null when withheld, and
+ * `other` is where a caller should read it from anyway.
+ */
+export interface PageRelationView extends Omit<PageRelation, 'fromPageId' | 'toPageId'> {
+  fromPageId: string | null;
+  toPageId: string | null;
   /** The page this listing was for. */
   pageId: string;
   /** Which end of the stored row that page is. */
   end: 'from' | 'to';
   /** What the relation says when read from `pageId`. */
   reads: RelationReading;
-  other: RelationOtherPage;
+  other: RelationOther;
 }
 
 /**
@@ -331,39 +379,54 @@ export class RelationService {
   list(actorId: string, pageId: string): PageRelationView[] {
     const page = this.page(pageId);
     this.requireRole(actorId, page.collectionId, 'view');
+    // The membership test moved from the JOIN to a column. It used to be an
+    // INNER JOIN, which dropped the whole relation when the far page was
+    // invisible; now the relation comes back either way and `visible` decides
+    // how much of the far end travels with it. See RelationOtherWithheld for
+    // why that reversed.
     const rows = this.db
       .prepare(
         `SELECT r.id, r.from_page_id, r.to_page_id, r.kind, r.note, r.asserted_by, r.asserted_at,
                 o.id AS other_id, o.title AS other_title, o.type AS other_type,
-                o.status AS other_status, o.collection_id AS other_collection_id
+                o.status AS other_status, o.collection_id AS other_collection_id,
+                EXISTS (SELECT 1 FROM collection_members m
+                         WHERE m.collection_id = o.collection_id AND m.actor_id = ?) AS other_visible
            FROM page_relations r
            JOIN pages o ON o.id = CASE WHEN r.from_page_id = ? THEN r.to_page_id ELSE r.from_page_id END
-           JOIN collection_members m ON m.collection_id = o.collection_id AND m.actor_id = ?
           WHERE r.from_page_id = ? OR r.to_page_id = ?
           ORDER BY r.asserted_at, r.rowid`,
       )
-      .all(pageId, actorId, pageId, pageId) as Record<string, unknown>[];
-    return rows.map((row) =>
-      this.view(
+      .all(actorId, pageId, pageId, pageId) as Record<string, unknown>[];
+    return rows.map((row) => {
+      const visible = Boolean(row.other_visible);
+      return this.view(
         {
           id: row.id as string,
           fromPageId: row.from_page_id as string,
           toPageId: row.to_page_id as string,
           kind: row.kind as RelationKind,
-          note: (row.note as string) ?? null,
+          // The note travels with the page it is about. It is free text one
+          // person typed to explain a contradiction, which means it can name,
+          // quote or describe the page at the other end — everything the
+          // withheld marker exists to keep back. The asserter's NAME stays:
+          // that is a structured fact about who made an assertion against a
+          // page this asker holds, not prose about one they do not.
+          note: visible ? ((row.note as string) ?? null) : null,
           assertedBy: row.asserted_by as string,
           assertedAt: row.asserted_at as string,
         },
         pageId,
-        {
-          id: row.other_id as string,
-          title: row.other_title as string,
-          type: row.other_type as DocType,
-          status: row.other_status as PageStatus,
-          collectionId: row.other_collection_id as string,
-        },
-      ),
-    );
+        visible
+          ? {
+              id: row.other_id as string,
+              title: row.other_title as string,
+              type: row.other_type as DocType,
+              status: row.other_status as PageStatus,
+              collectionId: row.other_collection_id as string,
+            }
+          : { withheld: true },
+      );
+    });
   }
 
   /**
@@ -382,11 +445,16 @@ export class RelationService {
    * conflict is asserted against what is PUBLISHED, and the published page's
    * owner is the person §3 makes accountable for keeping it true.
    *
-   * Permission-filtered on BOTH ends in the SELECT, exactly as `list` is: the
-   * owned page must be in a collection this asker belongs to, and so must the
-   * page it conflicts with. A conflict whose far end is invisible is absent
-   * rather than half-rendered, because "your policy conflicts with something
-   * you may not see" is a sentence that tells you about the something.
+   * Permission-filtered on the OWNED end in the SELECT: the page must be in a
+   * collection this asker belongs to. The far end is not filtered, it is
+   * WITHHELD — the same reversal `list` carries, and this is the read where it
+   * matters most. This whole method exists because the record held a
+   * contradiction against someone's page silently; dropping the row whenever
+   * the far end sat in a collection she was not in reproduced exactly that
+   * silence, for the conflicts most likely to be worth her time. She is
+   * accountable for her page either way, and "something in the record
+   * contradicts this, and you cannot see what" is the smallest true thing that
+   * lets her go and ask.
    *
    * Archived pages are left out at either end. Archiving is how the record says
    * a page is no longer live; a contradiction with a retired page is not work.
@@ -400,19 +468,24 @@ export class RelationService {
                 mine.id AS mine_id, mine.title AS mine_title, mine.type AS mine_type,
                 mine.status AS mine_status, mine.collection_id AS mine_collection_id,
                 o.id AS other_id, o.title AS other_title, o.type AS other_type,
-                o.status AS other_status, o.collection_id AS other_collection_id
+                o.status AS other_status, o.collection_id AS other_collection_id,
+                EXISTS (SELECT 1 FROM collection_members om
+                         WHERE om.collection_id = o.collection_id AND om.actor_id = ?) AS other_visible
            FROM page_relations r
            JOIN pages mine ON mine.id IN (r.from_page_id, r.to_page_id)
                           AND mine.owner_id = ? AND mine.status != 'archived'
            JOIN collection_members mm ON mm.collection_id = mine.collection_id AND mm.actor_id = ?
            JOIN pages o ON o.id = CASE WHEN r.from_page_id = mine.id THEN r.to_page_id ELSE r.from_page_id END
                        AND o.status != 'archived'
-           JOIN collection_members om ON om.collection_id = o.collection_id AND om.actor_id = ?
           WHERE r.kind = 'conflicts_with'
           ORDER BY r.asserted_at DESC, r.rowid DESC
           LIMIT ?`,
       )
-      .all(ownerId, actorId, actorId, limit) as Record<string, unknown>[];
+      // Bind order follows the statement text, and the visibility EXISTS now
+      // sits in the SELECT list — ahead of the owner and membership tests in
+      // the FROM clause. Getting this wrong would compare an owner id against
+      // an actor id and quietly return nothing.
+      .all(actorId, ownerId, actorId, limit) as Record<string, unknown>[];
 
     // One conflict, one row in the answer. When the owner owns BOTH ends the
     // join matches the relation twice, once anchored on each; the pair is one
@@ -431,24 +504,27 @@ export class RelationService {
         status: row.mine_status as PageStatus,
         collectionId: row.mine_collection_id as string,
       };
+      const visible = Boolean(row.other_visible);
       const view = this.view(
         {
           id,
           fromPageId: row.from_page_id as string,
           toPageId: row.to_page_id as string,
           kind: row.kind as RelationKind,
-          note: (row.note as string) ?? null,
+          note: visible ? ((row.note as string) ?? null) : null,
           assertedBy: row.asserted_by as string,
           assertedAt: row.asserted_at as string,
         },
         mine.id,
-        {
-          id: row.other_id as string,
-          title: row.other_title as string,
-          type: row.other_type as DocType,
-          status: row.other_status as PageStatus,
-          collectionId: row.other_collection_id as string,
-        },
+        visible
+          ? {
+              id: row.other_id as string,
+              title: row.other_title as string,
+              type: row.other_type as DocType,
+              status: row.other_status as PageStatus,
+              collectionId: row.other_collection_id as string,
+            }
+          : { withheld: true },
       );
       out.push({ ...view, mine });
     }
@@ -488,22 +564,34 @@ export class RelationService {
 
   // ---- internals -------------------------------------------------------
 
-  private view(relation: PageRelation, pageId: string, other: RelationPageRow | RelationOtherPage): PageRelationView {
+  private view(
+    relation: PageRelation,
+    pageId: string,
+    other: RelationPageRow | RelationOtherPage | RelationOtherWithheld,
+  ): PageRelationView {
     const end: 'from' | 'to' = relation.fromPageId === pageId ? 'from' : 'to';
     const reads: RelationReading =
       relation.kind === 'conflicts_with' ? 'conflicts_with' : end === 'from' ? 'supersedes' : 'superseded_by';
+    const withheld = isWithheld(other as RelationOther);
     return {
       ...relation,
+      // The far end's id is the identity this whole thing exists to withhold.
+      fromPageId: withheld && end === 'to' ? null : relation.fromPageId,
+      toPageId: withheld && end === 'from' ? null : relation.toPageId,
       pageId,
       end,
       reads,
-      other: {
-        id: other.id,
-        title: other.title,
-        type: other.type,
-        status: other.status,
-        collectionId: other.collectionId,
-      },
+      // Built field by field rather than spread, so a column added to the page
+      // row later cannot ride out to a reader who was never shown the page.
+      other: withheld
+        ? { withheld: true }
+        : {
+            id: (other as RelationOtherPage).id,
+            title: (other as RelationOtherPage).title,
+            type: (other as RelationOtherPage).type,
+            status: (other as RelationOtherPage).status,
+            collectionId: (other as RelationOtherPage).collectionId,
+          },
     };
   }
 

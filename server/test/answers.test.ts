@@ -1711,6 +1711,96 @@ test('ask: what the record stated is on the audit log, an asserted conflict mark
   assert.deepEqual(event!.details.disagreementAsserted, [marc.id]);
 });
 
+// EXISTENCE, NEVER IDENTITY — the answer path's half of the record's disclosure
+// rule. The asker is told the page they are reading is contested. They are not
+// told what with, and — this is the part that was wrong — they are not read the
+// asserter's note either, because a note explaining why two pages contradict
+// is a description of the page being withheld.
+test('ask: a conflict with a page the asker cannot see is disclosed without its reason', async () => {
+  const { store, dana, marc, iris, collection } = setup();
+  // A second collection Marc is not a member of.
+  const engineering = store.createCollection(dana.id, { name: 'Engineering' });
+  store.setMember(dana.id, engineering.id, iris.id, 'approve');
+
+  const schedule = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Records Retention Schedule',
+    'Claims and appeals records are kept for seven years from final determination.',
+  );
+  const platform = publishCanonical(
+    store, dana.id, iris.id, engineering.id,
+    'Data Retention in the Platform',
+    'A scheduled job in the claims platform deletes stored artefacts at twenty-four months.',
+  );
+  store.assertRelation(dana.id, schedule.id, {
+    toPageId: platform.id,
+    kind: 'conflicts_with',
+    note: 'Seven years on the schedule against twenty-four months in the platform.',
+  });
+
+  const answer = await store.ask(marc.id, { question: 'final determination claims appeals kept' });
+  assert.equal(answer.refused, false);
+  const cited = answer.citations.find((c) => c.pageId === schedule.id);
+  assert.ok(cited, 'the schedule should be cited');
+
+  // Told that it is contested, and by whom.
+  assert.ok(cited!.disputed, 'a contested page says so even when the other side is out of reach');
+  assert.equal(cited!.disputed!.someWithheld, true);
+  assert.equal(cited!.disputed!.assertedByName, 'Dana');
+  // And nothing about the page it is contested with.
+  assert.deepEqual(cited!.disputed!.withTitles, []);
+  assert.equal(cited!.disputed!.note, null);
+
+  // Not in the prose either — the reader who takes the words and leaves the
+  // cards behind is the one this is for, and they must not be handed the
+  // withheld page through a quotation.
+  assert.match(answer.answer!, /contested in the record/);
+  assert.match(answer.answer!, /do not have access to/);
+  assert.equal(/twenty-four months in the platform/.test(answer.answer!), false);
+  assert.equal(answer.answer!.includes('Data Retention in the Platform'), false);
+  assert.equal(JSON.stringify(answer.citations).includes(platform.id), false);
+});
+
+test('ask: a page contested on both sides keeps the reason that was always readable', async () => {
+  // Over-withholding is its own failure. A page with one visible conflict and
+  // one withheld conflict must still show the note belonging to the visible
+  // one — otherwise the rule costs a reader a reason that was never in doubt.
+  const { store, dana, marc, iris, collection } = setup();
+  const engineering = store.createCollection(dana.id, { name: 'Engineering' });
+  store.setMember(dana.id, engineering.id, iris.id, 'approve');
+
+  const schedule = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Records Retention Schedule',
+    'Claims and appeals records are kept for seven years from final determination.',
+  );
+  const sibling = publishCanonical(
+    store, marc.id, iris.id, collection.id,
+    'Retention periods table',
+    'The table gives five years for claims and appeals records.',
+  );
+  const platform = publishCanonical(
+    store, dana.id, iris.id, engineering.id,
+    'Data Retention in the Platform',
+    'A scheduled job deletes stored artefacts at twenty-four months.',
+  );
+  store.assertRelation(dana.id, schedule.id, {
+    toPageId: platform.id, kind: 'conflicts_with', note: 'Against twenty-four months in the platform.',
+  });
+  store.assertRelation(marc.id, schedule.id, {
+    toPageId: sibling.id, kind: 'conflicts_with', note: 'The table and the schedule disagree.',
+  });
+
+  const answer = await store.ask(marc.id, { question: 'final determination claims appeals kept' });
+  const cited = answer.citations.find((c) => c.pageId === schedule.id);
+  assert.ok(cited!.disputed);
+  assert.equal(cited!.disputed!.someWithheld, true);
+  assert.deepEqual(cited!.disputed!.withTitles, ['Retention periods table']);
+  // The readable note, not the withheld one.
+  assert.equal(cited!.disputed!.note, 'The table and the schedule disagree.');
+  assert.equal(JSON.stringify(answer.citations).includes('twenty-four months in the platform'), false);
+});
+
 // A page's standing must not depend on how the question was phrased.
 //
 // A compliance director asked one question three ways. Two phrasings pulled
@@ -1744,7 +1834,7 @@ test('ask: a contested page says so even when only its own side is cited', async
   assert.ok(cited, `the schedule should be cited: ${oneSided.citations.map((c) => c.title).join(', ')}`);
   assert.ok(cited!.disputed, 'a contested page carries its standing however the question was phrased');
   assert.equal(cited!.disputed!.assertedByName, 'Marc');
-  assert.match(cited!.disputed!.note, /twenty-four months/);
+  assert.match(cited!.disputed!.note!, /twenty-four months/);
   assert.deepEqual(cited!.disputed!.withTitles, ['Data Retention in the Platform']);
   // And the prose says it too, for a reader who takes the words and leaves the
   // cards behind.

@@ -720,8 +720,35 @@ function bestWindow(text: string, terms: string[]): { text: string; score: numbe
   return { text: clip(text.slice(bestAt), PASSAGE_LENGTH), score: bestScore };
 }
 
+// How far a quotation may run past PASSAGE_LENGTH to finish the sentence it is
+// standing in the middle of.
+//
+// Cutting on the length alone ellipsed a clinician's answer 37 characters short
+// of itself: "An expedited claim, where delay would jeopardise the member's
+// health,…" — where the page goes on "is decided within seventy-two hours." The
+// window was the right one and the citation was honest; the reader was simply
+// handed the subordinate clause and not the main one, under an ANSWER label,
+// which is worse than a refusal because it discourages looking further.
+//
+// This is not the window-selection question that was measured and rejected
+// above (a schedule's every window holds a figure, so the answer's shape cannot
+// choose between them). It is the end of the window, not its start. A sentence
+// finished is still a verbatim quotation of the record's own words, and no
+// grounding test changes: answers.ts judges the text this returns, so a
+// quotation that now carries its figure is judged on the figure it carries.
+const SENTENCE_OVERRUN = 160;
+
 function clip(text: string, max: number): string {
   if (text.length <= max) return text;
+  // Prefer ending where the sentence does, if that is close enough to reach.
+  const tail = text.slice(max, max + SENTENCE_OVERRUN);
+  const stop = tail.search(/[.!?](\s|$)|\n/);
+  if (stop !== -1) {
+    const end = max + stop + 1;
+    // Only worth it if what we picked up is a real ending rather than the
+    // whole of another sentence sneaking in on an abbreviation.
+    return text.slice(0, end).trimEnd() + (end < text.length ? '' : '');
+  }
   const cut = text.slice(0, max);
   const space = cut.lastIndexOf(' ');
   return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;

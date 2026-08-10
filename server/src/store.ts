@@ -51,7 +51,7 @@ import { SearchIndex } from './search.js';
 import { Comment, CommentAnchor, CommentService, CreatedComment } from './comments.js';
 import { Notification, NotificationTransport, Notifier } from './notify.js';
 import { EmbeddingProvider, EmbeddingStore } from './embeddings.js';
-import { RetrievalCandidate, RetrievalService, RetrieveRequest } from './retrieval.js';
+import { RetrievalCandidate, RetrievalService, RetrieveRequest, parsePageLinks } from './retrieval.js';
 import { AnswerResponse, AnswerService, AskRequest } from './answers.js';
 import { AUDIT_CSV_MAX_ROWS, AUDIT_CSV_PAGE_ROWS, RawResponse, auditCsvResponse } from './csv.js';
 import { ImportInput, ImportRunRecord, ImportService, ImportSummary, ImportUploadInput } from './import.js';
@@ -350,6 +350,33 @@ export class CanonStore {
   // `administrator` role. The second is the break-glass path a Canon needs when
   // a collection's last admin leaves; it is not silent, because the grant it
   // makes is this very audit event with the administrator's name on it.
+  // A collection with no administrator cannot be administered back: its members
+  // cannot be changed, its restriction cannot be altered, and Canon has no
+  // archive or delete for one. A reviewer removed her own membership from a
+  // collection she had created four minutes earlier — one unconfirmed click —
+  // and stranded it, with a published policy page inside it, recoverable only
+  // by hand-crafting a request no screen offers.
+  //
+  // So the last administrator cannot be taken off, by themselves or by an org
+  // administrator: hand the role to somebody else first, which is the act that
+  // was missing. Registry already refuses the same thing in the same words.
+  private refuseLastAdminLoss(collectionId: string, memberId: string, nextRole: Role | null): void {
+    if (nextRole === 'admin') return;
+    const current = this.db
+      .prepare('SELECT role FROM collection_members WHERE collection_id = ? AND actor_id = ?')
+      .get(collectionId, memberId) as { role: Role } | undefined;
+    if (current?.role !== 'admin') return;
+    const others = this.db
+      .prepare("SELECT COUNT(*) AS n FROM collection_members WHERE collection_id = ? AND actor_id != ? AND role = 'admin'")
+      .get(collectionId, memberId) as { n: number };
+    if (others.n > 0) return;
+    throw new CanonError(
+      'workflow',
+      'This is the only administrator of this collection. Give somebody else the admin role first — a collection with no administrator cannot be administered back.',
+      { collectionId, memberId },
+    );
+  }
+
   setMember(actorId: string, collectionId: string, memberId: string, role: Role): void {
     this.requirePermissionAdmin(actorId, collectionId, 'Adding a member');
     this.getActor(memberId);
@@ -358,6 +385,7 @@ export class CanonStore {
     // there is nothing here for an administrator to widen.
     refuseSystemActor(memberId, 'Granting a collection role');
     if (!ROLE_RANK[role]) throw new CanonError('invalid', `Unknown collection role: ${role}`);
+    this.refuseLastAdminLoss(collectionId, memberId, role);
     const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, role);
     this.audit(actorId, 'collection.member_set', {
       collectionId,
@@ -382,6 +410,7 @@ export class CanonStore {
     memberId: string,
   ): { removed: boolean; remaining: Role | null; groups: { group: string; role: Role }[] } {
     this.requirePermissionAdmin(actorId, collectionId, 'Removing a member');
+    this.refuseLastAdminLoss(collectionId, memberId, null);
     const { effective, mapped } = setHandGrant(this.db, collectionId, memberId, null);
     this.audit(actorId, 'collection.member_removed', {
       collectionId,
@@ -700,17 +729,31 @@ export class CanonStore {
   getPage(actorId: string, id: string, opts: { logView?: boolean } = {}): Page {
     const row = this.pageRow(id);
     const collectionId = row.collection_id as string;
-    this.requireRole(actorId, collectionId, 'view');
-    const page = this.toPage(row);
-    if (opts.logView) {
-      const restricted = (
+    const restricted =
+      (
         this.db.prepare('SELECT restricted FROM collections WHERE id = ?').get(collectionId) as {
           restricted: number;
         }
-      ).restricted;
-      if (restricted === 1) {
-        this.audit(actorId, 'page.view', { collectionId, pageId: id });
-      }
+      ).restricted === 1;
+    try {
+      this.requireRole(actorId, collectionId, 'view');
+    } catch (err) {
+      // A refusal on restricted material is recorded on the same terms as a
+      // read of it. "Who tried and was turned away" is the question an examiner
+      // asks first, and the log answered it with nothing: an auditor's five
+      // refused requests left no trace at all under a page promising a record
+      // of every view of restricted material.
+      //
+      // Scoped to restricted collections exactly as `page.view` is, and for the
+      // same reason: everything else would bury the log under the capability
+      // probes the UI fires on every sign-in, and a log nobody can read is not
+      // evidence either.
+      if (restricted) this.audit(actorId, 'page.view_refused', { collectionId, pageId: id });
+      throw err;
+    }
+    const page = this.toPage(row);
+    if (opts.logView && restricted) {
+      this.audit(actorId, 'page.view', { collectionId, pageId: id });
     }
     return page;
   }
@@ -1207,10 +1250,13 @@ export class CanonStore {
   // stays a working note; a reviewed type returns to Draft because the
   // Canonical mark applies to reviewed content, not to whatever came after.
   //
-  // `opts.authorId` exists for exactly one caller: an accepted proposal, whose
-  // version is authored by the agent that proposed it while the acting actor
-  // is the person who accepted it (proposals.ts). Everywhere else author and
-  // actor are the same, which is why it defaults to actorId.
+  // `opts.authorId` separates who WROTE a version from who ACTED to create it,
+  // for the two places they differ: an accepted proposal, authored by the agent
+  // that proposed it while the acting actor is the person who accepted it
+  // (proposals.ts), and an approval, authored by the drafter while the acting
+  // actor is the approver granting the mark. On publish they are necessarily
+  // the same — only the current editor may publish — which is why it defaults
+  // to actorId.
   private writeVersion(
     actorId: string,
     page: Page,
@@ -1571,7 +1617,13 @@ export class CanonStore {
         fields,
         note: input.note ?? 'Approved as Canonical',
       },
-      { toStatus: 'canonical' },
+      // The approver grants the mark; they did not write the words. Without
+      // this the version — and with it Version History, the compare header and
+      // the attestation bundle — named the approver as author of text the
+      // drafter wrote. Those are the three artifacts Canon produces to PROVE
+      // separation of duties, and they were the ones asserting it had not
+      // happened, while the audit log recorded the split correctly all along.
+      { toStatus: 'canonical', authorId: draft.editor_id as string },
     );
     // The mark follows the act that grants it. `marked_version` is the log's
     // `page.approve` answer denormalised onto the row so retrieval can ask
@@ -2517,6 +2569,45 @@ export class CanonStore {
 
   listReferences(actorId: string, pageId: string): PageReference[] {
     return this.references.list(actorId, pageId);
+  }
+
+  /**
+   * The pages this body links to that `actorId` may not read.
+   *
+   * A body is prose, and prose names things. A page written by somebody with
+   * wider access can say "superseded by [Q3 Workforce Reduction Plan](/pages/…)"
+   * and Canon will show that sentence, verbatim, to every reader of THIS page —
+   * in the page, in a search snippet, and inside an extractive answer that
+   * quotes the passage. The title of a page they were refused, handed over in
+   * the body of one they were granted.
+   *
+   * Not all of that is fixable, and pretending otherwise would be the worse
+   * error: a body that merely MENTIONS a title in prose is indistinguishable
+   * from any other sentence, and no permission check can find it. What IS
+   * findable is a link, because a link carries the page id — so the id can be
+   * tested against the reader the same way every other read is, and the label
+   * beside it suppressed when the test fails. The rest is what the publish-time
+   * warning to the AUTHOR is for; they are the only one who can judge prose.
+   *
+   * Returned as a list of ids for the renderer to match on, never as a rewritten
+   * body: the editor loads the same version, and a body silently redacted on
+   * read is a body an author saves back with their own link destroyed.
+   */
+  withheldLinks(actorId: string, body: string): string[] {
+    const linked = parsePageLinks(body ?? '');
+    if (!linked.length) return [];
+    const out: string[] = [];
+    for (const id of linked) {
+      const row = this.db.prepare('SELECT collection_id FROM pages WHERE id = ?').get(id) as
+        | { collection_id: string }
+        | undefined;
+      // An id that names no page is just text, exactly as retrieval treats it —
+      // and reporting it as withheld would tell a reader that a page exists
+      // where none does.
+      if (!row) continue;
+      if (!this.roleOf(actorId, row.collection_id)) out.push(id);
+    }
+    return out;
   }
 
   removeReference(actorId: string, referenceId: string): void {

@@ -147,7 +147,7 @@ const RULES: Rule[] = [
     // submission, bounded in store.ts to the actor who made it, so `write` is
     // exactly the grant it needs — an agent that could submit could always
     // take that back by asking a person to send it back.
-    pattern: /^\/pages\/([^/]+)\/(?:move|archive|publish|submit|approve|send-back|withdraw|restore)$/,
+    pattern: /^\/pages\/([^/]+)\/(?:move|archive|publish|submit|send-back|withdraw|restore)$/,
     action: 'write',
     scope: PAGE,
   },
@@ -336,6 +336,30 @@ const RULES: Rule[] = [
   // filtered by whether the asker may see its OTHER end, inside the handler,
   // by the same collection-membership join the map uses.
   { method: 'GET', pattern: /^\/pages\/([^/]+)\/relations$/, action: 'read', scope: PAGE },
+
+  // GRANTING THE CANONICAL MARK IS ABSENT, on the same terms as asserting a
+  // relation and accepting a proposal.
+  //
+  // It used to sit in the rule above, under `write`. That made it reachable by
+  // any certified agent holding write — and since the contract fixes a
+  // vocabulary of three (read, comment, write), there was NO grant an
+  // administrator could issue that let an agent draft without also letting it
+  // make pages canonical. A certified agent with ordinary write granted the
+  // mark to a policy a person had written, and the badge then read "This is
+  // the official record: you may rely on it and quote it."
+  //
+  // The argument against is the one already made two rules down: `write` is
+  // about changing what the record SAYS, and approval is not that. It is a
+  // judgement about STANDING — that this text is now the official answer — and
+  // Canon already keeps every judgement of that kind for a person. It refuses
+  // an agent the assertion that two policies contradict each other, and it
+  // refuses an agent the acceptance of its own proposal, "publishing what it
+  // proposed is a person's act". The mark is the same act with more weight.
+  //
+  // So POST /pages/:id/approve is in no rule here: `classify` returns null, the
+  // request is refused 403 `route_not_available_to_agents`, and it is audited
+  // as `agent.denied`. `send-back` stays — refusing a draft narrows the record
+  // rather than granting anything, and store.ts still checks the actor's role.
 
   // ASSERTING AND REMOVING ONE ARE DELIBERATELY ABSENT, on the same terms as
   // accepting a proposal. §7 asks for a relation "asserted by a person or

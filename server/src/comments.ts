@@ -72,6 +72,63 @@ export function parseMentions(body: string): string[] {
   return [...ids];
 }
 
+/**
+ * Mentioning a person by NAME, which is the only way anybody was ever going to
+ * do it.
+ *
+ * `@<actorId>` was the whole feature, and an actor id is a UUID. Nothing in the
+ * composer said so, nothing offered one, and no reader of a page has a
+ * colleague's UUID to hand — so "mention someone to bring them in", which the
+ * product describes as a workflow, could not be performed by a person. The
+ * mention machinery underneath it is careful and complete; it simply had no
+ * usable address.
+ *
+ * Matched longest-name-first so "Dana Reyes" wins over a colleague called
+ * "Dana", and case-insensitively because nobody capitalises consistently in a
+ * comment box. A name that matches nothing stays plain text, exactly as an
+ * unknown id does — an `@` in prose ("email @ the vendor") must not become a
+ * failed mention that anybody has to explain.
+ *
+ * Pure, and takes the candidate list, so it can be unit-tested without a
+ * database and so the CALLER decides who is nameable. That is a permission
+ * decision, and it does not belong in a parser.
+ */
+export function resolveMentionNames(
+  body: string,
+  candidates: readonly { id: string; name: string }[],
+): string[] {
+  const text = String(body ?? '');
+  const byLength = [...candidates]
+    .filter((c) => (c.name ?? '').trim().length > 0)
+    .sort((a, b) => b.name.length - a.name.length);
+  const found = new Set<string>();
+  const lower = text.toLowerCase();
+  // Spans already spoken for by a longer name. Ordering alone is not enough:
+  // "@Dana Reyes" contains "@Dana", so without claiming the span BOTH people
+  // are notified and the shorter name is always a false positive of the longer.
+  const claimed: [number, number][] = [];
+  const overlaps = (at: number, end: number) => claimed.some(([s2, e2]) => at < e2 && s2 < end);
+  for (const candidate of byLength) {
+    const needle = `@${candidate.name.toLowerCase()}`;
+    let from = 0;
+    for (;;) {
+      const at = lower.indexOf(needle, from);
+      if (at === -1) break;
+      const end = at + needle.length;
+      // The character after the name must not continue it, or "@Dana" would
+      // match inside "@Danae" and notify the wrong person.
+      const after = text[end];
+      if ((after === undefined || !/[A-Za-z0-9'-]/.test(after)) && !overlaps(at, end)) {
+        found.add(candidate.id);
+        claimed.push([at, end]);
+        break;
+      }
+      from = at + 1;
+    }
+  }
+  return [...found];
+}
+
 // What became of the mentions in a comment (SECURITY.md R3).
 //
 // A mention used to notify whoever it named, member or not — and a mention
@@ -154,16 +211,26 @@ export class CommentService {
       )
       .run(id, pageId, actorId, body, anchor?.quote ?? null, anchor?.context ?? null, now());
 
-    // Mentions: only candidates naming an existing actor count, and the
-    // author is never notified about their own comment.
+    // Mentions: an actor id, or a member's NAME — the second because nobody has
+    // a colleague's UUID to hand, so the id-only form made the feature real and
+    // unusable at the same time. Only candidates naming an existing actor
+    // count, and the author is never notified about their own comment.
     const mentioned: Actor[] = [];
+    const seenMentions = new Set<string>([actorId]);
     for (const candidate of parseMentions(body)) {
-      if (candidate === actorId) continue;
+      if (seenMentions.has(candidate)) continue;
       try {
-        mentioned.push(this.host.getActor(candidate));
+        const actor = this.host.getActor(candidate);
+        seenMentions.add(actor.id);
+        mentioned.push(actor);
       } catch {
         // not an actor id; plain text
       }
+    }
+    for (const id of resolveMentionNames(body, this.members(page.collectionId))) {
+      if (seenMentions.has(id)) continue;
+      seenMentions.add(id);
+      mentioned.push(this.host.getActor(id));
     }
     // A mention notification carries the page title and the comment text, so
     // it may only reach somebody who could have read both anyway. See
@@ -195,6 +262,31 @@ export class CommentService {
         body,
         link: `/pages/${pageId}#comment-${id}`,
       });
+    }
+
+    // The page's OWNER is told, mentioned or not.
+    //
+    // §3 makes the owner accountable for keeping a page true, and a comment is
+    // usually somebody telling them it is not. Until now that only arrived if
+    // the commenter happened to know the owner's UUID — so the ordinary case,
+    // "I read your policy and something is wrong with it", reached nobody and
+    // sat on the page waiting to be stumbled over.
+    //
+    // Not sent when the owner wrote the comment, and not sent twice when they
+    // were also mentioned: the mention is the more specific message and it has
+    // already gone. Membership is checked exactly as it is for a mention — an
+    // owner who has since lost their role in the collection is not mailed the
+    // page's title and the comment's text.
+    const ownerId = page.ownerId;
+    if (ownerId && ownerId !== actorId && !notified.some((a) => a.id === ownerId)) {
+      if (this.host.roleOf(ownerId, page.collectionId)) {
+        this.notifier.send(ownerId, {
+          kind: 'comment_added',
+          subject: `${author.name} commented on "${page.title}"`,
+          body,
+          link: `/pages/${pageId}#comment-${id}`,
+        });
+      }
     }
     return { ...this.getComment(id), mentions: { notified: notified.map((a) => a.id), withheld } };
   }
@@ -296,17 +388,49 @@ export class CommentService {
     };
   }
 
-  private page(id: string): { id: string; collectionId: string; status: string; title: string } {
-    const row = this.db.prepare('SELECT id, collection_id, status, title FROM pages WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
+  private page(id: string): {
+    id: string;
+    collectionId: string;
+    status: string;
+    title: string;
+    ownerId: string | null;
+  } {
+    const row = this.db
+      .prepare('SELECT id, collection_id, status, title, owner_id FROM pages WHERE id = ?')
+      .get(id) as Record<string, unknown> | undefined;
     if (!row) throw new CanonError('not_found', `No such page: ${id}`);
     return {
       id: row.id as string,
       collectionId: row.collection_id as string,
       status: row.status as string,
       title: row.title as string,
+      ownerId: (row.owner_id as string) ?? null,
     };
+  }
+
+  /**
+   * Everyone in a collection, for resolving `@Name`.
+   *
+   * Scoped to the collection on purpose. Resolving a name against the whole
+   * actor directory would make the directory probeable one `@` at a time — type
+   * a name, see whether the response says it was withheld — and the people
+   * outside the collection are exactly the ones a mention refuses to notify
+   * anyway (see MentionOutcome). So the set that can be NAMED is the set that
+   * can be REACHED, and nothing is learned by guessing.
+   */
+  private members(collectionId: string): Actor[] {
+    const rows = this.db
+      .prepare('SELECT actor_id FROM collection_members WHERE collection_id = ?')
+      .all(collectionId) as { actor_id: string }[];
+    const out: Actor[] = [];
+    for (const row of rows) {
+      try {
+        out.push(this.host.getActor(row.actor_id));
+      } catch {
+        // A membership row whose actor is gone is not a person to mention.
+      }
+    }
+    return out;
   }
 
   private requireRole(actorId: string, collectionId: string, needed: Role): void {

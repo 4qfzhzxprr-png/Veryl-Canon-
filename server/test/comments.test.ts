@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { createApi } from '../src/api.js';
 import { openDb } from '../src/db.js';
 import { CanonError } from '../src/model.js';
-import { parseMentions } from '../src/comments.js';
+import { parseMentions, resolveMentionNames } from '../src/comments.js';
 import type { Notification, NotificationTransport } from '../src/notify.js';
 import { CanonStore } from '../src/store.js';
 
@@ -349,4 +349,125 @@ test('API smoke: comments, mentions, and notifications over HTTP', async () => {
   } finally {
     server.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Closing the comment loop (Phase 4)
+//
+// The mention machinery was careful and complete and had no usable address:
+// `@<actorId>` was the only form, an actor id is a UUID, and nothing in the
+// composer said so. And a comment that named nobody reached nobody at all —
+// including the person §3 makes accountable for the page it was left on.
+
+test('mentions by name: resolution is exact, longest-first, and case-insensitive', () => {
+  const people = [
+    { id: 'u_dana', name: 'Dana' },
+    { id: 'u_dana_reyes', name: 'Dana Reyes' },
+    { id: 'u_marc', name: 'Marc' },
+  ];
+  // The longer name wins, so a colleague who shares a first name is not the
+  // one notified.
+  assert.deepEqual(resolveMentionNames('ping @Dana Reyes about this', people), ['u_dana_reyes']);
+  assert.deepEqual(resolveMentionNames('ping @Dana about this', people), ['u_dana']);
+  // Nobody capitalises consistently in a comment box.
+  assert.deepEqual(resolveMentionNames('@marc can you look', people), ['u_marc']);
+  // A name that runs on is a different word, not a mention.
+  assert.deepEqual(resolveMentionNames('@Marcus is not Marc', people), []);
+  // An `@` in prose is prose.
+  assert.deepEqual(resolveMentionNames('email @ the vendor', people), []);
+  assert.deepEqual(resolveMentionNames('@nobody at all', people), []);
+});
+
+test('mentions by name: a member named in a comment is notified', () => {
+  const { store, marc, iris, rosa, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Q2 figures' });
+
+  const body = '@Iris is this current?';
+  const comment = store.createComment(rosa.id, page.id, { body });
+
+  const mentions = ofKind(store, iris.id, 'mention');
+  assert.equal(mentions.length, 1);
+  assert.match(mentions[0]!.subject, /Rosa mentioned you/);
+  assert.equal(mentions[0]!.link, `/pages/${page.id}#comment-${comment.id}`);
+  // And it is on the record as a mention, like any other.
+  const events = store.queryAudit(rosa.id, { action: 'comment.create' });
+  assert.deepEqual(events[0]!.details.mentions, [iris.id]);
+});
+
+test('mentions by name: only people in the collection are nameable', () => {
+  // Resolving against the whole directory would make it probeable one `@` at a
+  // time — and somebody outside the collection is exactly who a mention
+  // refuses to notify anyway.
+  const { store, dana, marc, rosa, collection } = setup();
+  const outsider = store.createActor({ kind: 'person', name: 'Quinn', email: 'quinn@example.com' });
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Figures' });
+
+  const result = store.createComment(rosa.id, page.id, { body: '@Quinn should see this' });
+  assert.deepEqual(result.mentions.notified, []);
+  // Not even reported as withheld: the name resolved to nobody, because nobody
+  // of that name is in this collection. Withheld is for a real id.
+  assert.deepEqual(result.mentions.withheld, []);
+  assert.equal(ofKind(store, outsider.id, 'mention').length, 0);
+  assert.ok(dana);
+});
+
+test('mentions: the author naming themselves is still not notified', () => {
+  const { store, marc, rosa, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Figures' });
+  store.createComment(rosa.id, page.id, { body: '@Rosa talking to myself' });
+  assert.equal(ofKind(store, rosa.id, 'mention').length, 0);
+});
+
+test('mentions: naming someone by id AND by name notifies them once', () => {
+  const { store, marc, iris, rosa, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Figures' });
+  store.createComment(rosa.id, page.id, { body: `@${iris.id} — @Iris, twice over` });
+  assert.equal(ofKind(store, iris.id, 'mention').length, 1);
+});
+
+test("comments: the page's owner is told, even when nobody named them", () => {
+  // The ordinary case — "I read your policy and something is wrong with it" —
+  // reached nobody at all, and sat on the page waiting to be stumbled over.
+  // A `policy` rather than a `note`: TYPE_RULES only gives an owner to the
+  // types that require one, and there is nobody to tell about an unowned page.
+  const { store, marc, rosa, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Q2 figures' });
+
+  const comment = store.createComment(rosa.id, page.id, { body: 'The second figure looks wrong.' });
+
+  const told = ofKind(store, marc.id, 'comment_added');
+  assert.equal(told.length, 1);
+  assert.match(told[0]!.subject, /Rosa commented on "Q2 figures"/);
+  assert.equal(told[0]!.link, `/pages/${page.id}#comment-${comment.id}`);
+  // Nobody else is.
+  assert.equal(ofKind(store, rosa.id, 'comment_added').length, 0);
+});
+
+test('comments: the owner is not told twice when they were also mentioned', () => {
+  // The mention is the more specific message and it has already gone.
+  const { store, marc, rosa, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Figures' });
+  store.createComment(rosa.id, page.id, { body: '@Marc your figures' });
+
+  assert.equal(ofKind(store, marc.id, 'mention').length, 1);
+  assert.equal(ofKind(store, marc.id, 'comment_added').length, 0);
+});
+
+test('comments: commenting on your own page does not notify you', () => {
+  const { store, marc, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Figures' });
+  store.createComment(marc.id, page.id, { body: 'note to self' });
+  assert.equal(ofKind(store, marc.id, 'comment_added').length, 0);
+});
+
+test('comments: a page with no owner has nobody to tell, and that is not a failure', () => {
+  // A `note` carries no owner by type rule, and an importer may deliberately
+  // bring in a corpus whose ownership is not known. The absence of a
+  // notification here is the record being honest, not a dropped message —
+  // `hasOwner: false` and the record-health count are how those are found.
+  const { store, marc, rosa, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'note', title: 'Figures' });
+  const result = store.createComment(rosa.id, page.id, { body: 'no owner to tell' });
+  assert.ok(result.id);
+  assert.equal(ofKind(store, marc.id, 'comment_added').length, 0);
 });

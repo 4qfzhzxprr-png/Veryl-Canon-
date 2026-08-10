@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { isWithheld } from '../src/relations.js';
+import type { RelationOther, RelationOtherPage } from '../src/relations.js';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { createRegistryApi } from '../../registry-stub/src/api.js';
@@ -84,6 +86,12 @@ function policyInReview(
 }
 
 // ---- the finding itself -------------------------------------------------
+
+/** The far end of a relation, asserted visible — see relations.test.ts. */
+function seen(other: RelationOther): RelationOtherPage {
+  assert.equal(isWithheld(other), false, 'expected a visible far page, got a withheld one');
+  return other as RelationOtherPage;
+}
 
 test('the queue: a page in review naming me as approver is in my queue and in nobody else\'s', () => {
   const { store, dana, marcus, priya, iris, collection } = setup();
@@ -244,7 +252,7 @@ test('the queue: a conflict asserted against a page I own finds its owner', asyn
   const priyas = store.myQueue(priya.id);
   assert.equal(priyas.conflictsOnMyPages.length, 1);
   assert.equal(priyas.conflictsOnMyPages[0]!.mine.id, hers.id);
-  assert.equal(priyas.conflictsOnMyPages[0]!.other.id, theirs.id);
+  assert.equal(seen(priyas.conflictsOnMyPages[0]!.other).id, theirs.id);
   assert.match(priyas.conflictsOnMyPages[0]!.note!, /different retention periods/);
   // Dana owns the other end, so it is Dana's work too — anchored on her page.
   const danas = store.myQueue(dana.id);

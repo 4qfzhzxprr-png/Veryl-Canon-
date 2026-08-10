@@ -125,6 +125,10 @@ test('concentration: one approver out of one is a different sentence from one ou
   // differently: nobody else could have done it.
   store.removeMember(dana.id, collection.id, helena.id);
   setHandOrgRole(db, dana.id, 'operator', null);
+  // Nadia takes the admin role before Dana steps down from it: a collection
+  // cannot be left with no administrator, and Nadia already holds approve, so
+  // the eligible roster this test is about is unchanged by the handover.
+  store.setMember(dana.id, collection.id, nadia.id, 'admin');
   store.setMember(dana.id, collection.id, dana.id, 'edit');
   const narrow = store.collectionHealth(nadia.id, collection.id).approvalConcentration;
   assert.equal(narrow.eligible, 1);

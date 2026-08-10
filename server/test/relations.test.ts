@@ -27,7 +27,8 @@ import { GRAPH_EDGE_KINDS } from '../src/graph.js';
 import { CanonError } from '../src/model.js';
 import type { NotificationTransport } from '../src/notify.js';
 import { RegistryClient } from '../src/registry.js';
-import { RELATION_KINDS, relationPair } from '../src/relations.js';
+import { RELATION_KINDS, isWithheld, relationPair } from '../src/relations.js';
+import type { RelationOther, RelationOtherPage } from '../src/relations.js';
 import { CanonStore } from '../src/store.js';
 
 const quiet: NotificationTransport = { deliver() {} };
@@ -73,6 +74,17 @@ function auditActions(store: CanonStore, actorId: string): string[] {
 
 // ---------------------------------------------------------------------------
 // The shape
+
+/**
+ * Narrow a relation's far end to the visible shape, failing the test if it is
+ * withheld. Written as an assertion rather than a cast so a relation that
+ * starts coming back withheld fails HERE, naming the test, instead of reading
+ * `undefined` off a withheld marker three lines later.
+ */
+function seen(other: RelationOther): RelationOtherPage {
+  assert.equal(isWithheld(other), false, 'expected a visible far page, got a withheld one');
+  return other as RelationOtherPage;
+}
 
 test('a relation is one of exactly two kinds, between two different pages', () => {
   const { store, dana, compliance } = setup();
@@ -132,7 +144,7 @@ test('conflicts_with is stored once, canonically ordered, and reads from both en
   assert.equal(asserted.toPageId, high);
   // ...and it reads correctly from the page it was asserted from.
   assert.equal(asserted.pageId, b);
-  assert.equal(asserted.other.id, a);
+  assert.equal(seen(asserted.other).id, a);
   assert.equal(asserted.reads, 'conflicts_with');
 
   // Both ends list it, once, naming the other page.
@@ -141,9 +153,9 @@ test('conflicts_with is stored once, canonically ordered, and reads from both en
   assert.equal(fromA.length, 1);
   assert.equal(fromB.length, 1);
   assert.equal(fromA[0]!.id, fromB[0]!.id);
-  assert.equal(fromA[0]!.other.id, b);
-  assert.equal(fromB[0]!.other.id, a);
-  assert.equal(fromA[0]!.other.title, 'B');
+  assert.equal(seen(fromA[0]!.other).id, b);
+  assert.equal(seen(fromB[0]!.other).id, a);
+  assert.equal(seen(fromA[0]!.other).title, 'B');
 
   // And it cannot be asserted twice, in either direction: the canonical order
   // is exactly what lets the UNIQUE constraint see the second one.
@@ -173,7 +185,7 @@ test('supersedes is directed: it reads as superseded by from the other end, and 
 
   assert.equal(store.listRelations(dana.id, newer)[0]!.reads, 'supersedes');
   assert.equal(store.listRelations(dana.id, older)[0]!.reads, 'superseded_by');
-  assert.equal(store.listRelations(dana.id, older)[0]!.other.title, 'Incident Management');
+  assert.equal(seen(store.listRelations(dana.id, older)[0]!.other).title, 'Incident Management');
 
   // B cannot supersede A while A supersedes B. Canon refuses the second rather
   // than picking one; the person withdraws the first if the record changed its
@@ -295,7 +307,20 @@ test('an agent is told why it may not assert one, in the abilities it is given',
   assert.match(can.why!, /raises a proposal/);
 });
 
-test('a relation whose other end the asker cannot see is absent, never a placeholder', () => {
+// EXISTENCE, NEVER IDENTITY.
+//
+// This test used to assert the opposite — that a relation whose far end the
+// asker cannot see is "absent, never a placeholder". That rule was deliberate
+// and it was wrong in one direction: it hid from a reader that the page in
+// front of them is contested at all. The answer path had already decided the
+// other way ("and with a page you cannot see"), so the two surfaces contradicted
+// each other, and the one that disclosed was the one built after a compliance
+// director found the gap.
+//
+// The rule now: the relation is listed, and everything identifying about the
+// far page is withheld — including the assertion's note, which is prose one
+// person typed about the page the reader may not see.
+test('a relation whose other end the asker cannot see is listed, with the far page withheld', () => {
   const { store, dana, marc, compliance, engineering } = setup();
   const policy = note(store, dana.id, compliance.id, 'Records Retention Schedule');
   const spec = note(store, dana.id, engineering.id, 'Data Retention in the Platform');
@@ -311,18 +336,59 @@ test('a relation whose other end the asker cannot see is absent, never a placeho
     note: 'The table and the schedule disagree.',
   });
 
-  // Dana sees both collections and therefore both relations.
-  assert.equal(store.listRelations(dana.id, policy).length, 2);
+  // Dana sees both collections and therefore both relations, in full.
+  const danaSees = store.listRelations(dana.id, policy);
+  assert.equal(danaSees.length, 2);
+  assert.equal(danaSees.every((r) => !isWithheld(r.other)), true);
 
-  // Marc is not a member of Engineering: the relation reaching it is not in
-  // his answer at all — no id, no title, no marker that something is hidden.
+  // Marc is not a member of Engineering. He is told BOTH relations exist.
   const marcSees = store.listRelations(marc.id, policy);
-  assert.equal(marcSees.length, 1);
-  assert.equal(marcSees[0]!.other.id, sibling);
-  assert.equal(JSON.stringify(marcSees).includes(spec), false);
+  assert.equal(marcSees.length, 2);
 
-  // Reading the far page itself is refused outright, as it always was.
+  const visible = marcSees.filter((r) => !isWithheld(r.other));
+  const hidden = marcSees.filter((r) => isWithheld(r.other));
+  assert.equal(visible.length, 1);
+  assert.equal(hidden.length, 1);
+  assert.equal(seen(visible[0]!.other).id, sibling);
+  assert.equal(visible[0]!.note, 'The table and the schedule disagree.');
+
+  // The withheld one carries the fact and the asserter, and nothing else.
+  assert.deepEqual(hidden[0]!.other, { withheld: true });
+  assert.equal(hidden[0]!.reads, 'conflicts_with');
+  assert.equal(hidden[0]!.assertedBy, dana.id);
+  // The note goes with the page it is about: it names the disputed figures,
+  // which is a description of a page Marc may not read.
+  assert.equal(hidden[0]!.note, null);
+
+  // Nothing in the whole answer identifies the far page or its collection.
+  const wire = JSON.stringify(marcSees);
+  assert.equal(wire.includes(spec), false);
+  assert.equal(wire.includes('Data Retention in the Platform'), false);
+  assert.equal(wire.includes(engineering.id), false);
+  assert.equal(wire.includes('twenty-four months'), false);
+
+  // Reading the far page itself is refused outright, as it always was: being
+  // told a conflict exists is not a step towards reading what it is with.
   expectCode(() => store.listRelations(marc.id, spec), 'forbidden');
+});
+
+test('a supersession the asker cannot see is disclosed the same way', () => {
+  // The conflict case is the one the product argues about, but the rule is
+  // about relations, not about conflicts: "this page has been replaced by
+  // something, and you cannot see what" is the same shape of true statement.
+  const { store, dana, marc, compliance, engineering } = setup();
+  const old = note(store, dana.id, compliance.id, 'Expenses Policy 2024');
+  const replacement = note(store, dana.id, engineering.id, 'Expenses Policy 2026');
+  store.assertRelation(dana.id, replacement, {
+    toPageId: old,
+    kind: 'supersedes',
+    note: 'Rewritten for the new travel vendor.',
+  });
+
+  const [rel] = store.listRelations(marc.id, old);
+  assert.equal(rel!.reads, 'superseded_by');
+  assert.deepEqual(rel!.other, { withheld: true });
+  assert.equal(rel!.note, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -560,12 +626,12 @@ test('API: relations round-trip, and an agent is refused at the door', async () 
     );
     assert.equal(created.status, 200, JSON.stringify(created.json));
     assert.equal(created.json.kind, 'conflicts_with');
-    assert.equal(created.json.other.id, b);
+    assert.equal(seen(created.json.other).id, b);
 
     const listed = await r.call('GET', `/pages/${b}/relations`, { actor: dana.id });
     assert.equal(listed.status, 200);
     assert.equal(listed.json.length, 1);
-    assert.equal(listed.json[0].other.id, a);
+    assert.equal(seen(listed.json[0].other).id, a);
     assert.equal(listed.json[0].reads, 'conflicts_with');
 
     // The agent door. The Registry grants everything it can grant; the routes
@@ -610,4 +676,43 @@ test('API: relations round-trip, and an agent is refused at the door', async () 
   } finally {
     r.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// A body that links to a page the reader may not open (3.9)
+//
+// The link is the findable half of a prose leak: it carries a page id, so the
+// id can be tested against the reader the way every other read is, and the
+// label beside it — where the author almost certainly typed the target's title
+// — suppressed when the test fails.
+
+test('withheldLinks names the linked pages this reader cannot open, and only those', () => {
+  const { store, dana, marc, compliance, engineering } = setup();
+  const secret = note(store, dana.id, engineering.id, 'Q3 Workforce Reduction Plan');
+  const sibling = note(store, dana.id, compliance.id, 'Retention periods');
+  const body = [
+    `Superseded by [Q3 Workforce Reduction Plan](/pages/${secret}).`,
+    `See also [Retention periods](/pages/${sibling}) and [[${secret}]].`,
+    'And an outside link: [the regulator](https://example.gov/rules).',
+  ].join('\n\n');
+
+  // Dana is in both collections: nothing is withheld from her.
+  assert.deepEqual(store.withheldLinks(dana.id, body), []);
+
+  // Marc is not in Engineering. The Engineering page is named once, however
+  // many times the body links to it.
+  assert.deepEqual(store.withheldLinks(marc.id, body), [secret]);
+});
+
+test('withheldLinks does not invent a page where the id names none', () => {
+  // An id that matches nothing is just text, exactly as retrieval treats it.
+  // Reporting it as withheld would tell a reader a page exists where none does
+  // — the disclosure rule cuts both ways.
+  const { store, marc } = setup();
+  assert.deepEqual(store.withheldLinks(marc.id, 'See [something](/pages/aaaaaaaa-not-a-page).'), []);
+});
+
+test('withheldLinks leaves a body with no links alone', () => {
+  const { store, marc } = setup();
+  assert.deepEqual(store.withheldLinks(marc.id, 'Plain prose, no links at all.'), []);
 });

@@ -519,6 +519,28 @@ test('quotableText: a fenced block is somebody’s example and is kept as writte
   assert.ok(!text.includes('```'), text);
 });
 
+// A clinician asked how quickly an expedited claim must be decided and was
+// handed the subordinate clause and not the main one — the quotation ellipsed
+// 37 characters before "is decided within seventy-two hours", under an ANSWER
+// label. The window was right; only its end was wrong.
+test('passageFor: a quotation finishes its sentence rather than ellipsing the answer away', () => {
+  const filler = 'A claim pended for information is decided within fifteen calendar days of the information arriving, and the member is told within three days of pending it what is missing.';
+  const body = [
+    'Timeframes',
+    'A clean claim is decided within thirty calendar days of receipt.',
+    filler,
+    "An expedited claim, where delay would jeopardise the member's health, is decided within seventy-two hours.",
+  ].join('\n');
+
+  const passage = passageFor(body, ['expedited', 'claim', 'decided']);
+  assert.ok(
+    passage.includes('seventy-two hours'),
+    `the answer was cut off the end of the quotation: ${JSON.stringify(passage)}`,
+  );
+  // Still verbatim, and still bounded.
+  assert.ok(body.includes(passage.replace(/…$/, '')), 'passage is not verbatim');
+});
+
 test('passageFor: a quotation from a structured body carries no syntax', () => {
   const body = ['## Retention', '', 'Claims and appeals records are kept for *seven years*.'].join('\n');
   const passage = passageFor(body, ['claims', 'retention']);

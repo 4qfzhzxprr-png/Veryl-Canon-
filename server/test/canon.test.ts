@@ -261,6 +261,68 @@ test('review workflow: draft -> in review -> canonical, by the named approver on
   assert.equal(republished.currentVersion, 2);
 });
 
+// Four testers, in four different roles, read the approver's name where the
+// drafter's belonged: on the version, in the compare header, and in the
+// downloaded attestation. Canon ENFORCES author != approver at submission and
+// then reported them as the same person in the artifacts that exist to prove
+// it did. The audit log was right throughout, which is what gave the game away.
+test('approval records the drafter as author, not the approver who granted the mark', () => {
+  const { store, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Retention policy' });
+  store.editDraft(marc.id, page.id, {
+    body: 'Claims records are kept for seven years.',
+    fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: TODAY },
+  });
+  store.submitForReview(marc.id, page.id);
+  const canonical = store.approve(iris.id, page.id);
+  assert.equal(canonical.status, 'canonical');
+
+  // Marc typed it; Iris granted the mark. The version says Marc.
+  const versions = store.listVersions(iris.id, page.id);
+  assert.equal(versions.length, 1);
+  assert.equal(versions[0]!.authorId, marc.id);
+  assert.notEqual(versions[0]!.authorId, iris.id);
+
+  // And the split is still legible in the log, from the other direction.
+  const approvals = store.queryAudit(iris.id, { action: 'page.approve' });
+  assert.equal(approvals[0]!.actorId, iris.id);
+});
+
+// A reviewer removed her own membership from a collection she had created four
+// minutes earlier — one unconfirmed click — and stranded it: no administrator
+// left, so members could not be changed, restriction could not be altered, and
+// Canon has no archive or delete for a collection. Even the org administrator
+// got "No access" from every screen.
+test('the last administrator of a collection cannot be removed or demoted', () => {
+  const { store, dana, marc, collection } = setup();
+  store.setMember(dana.id, collection.id, marc.id, 'edit');
+
+  expectCode(() => store.removeMember(dana.id, collection.id, dana.id), 'workflow');
+  expectCode(() => store.setMember(dana.id, collection.id, dana.id, 'edit'), 'workflow');
+  assert.equal(store.roleOf(dana.id, collection.id), 'admin', 'still administered');
+
+  // The way out is the act that was missing: hand the role on first.
+  store.setMember(dana.id, collection.id, marc.id, 'admin');
+  store.removeMember(dana.id, collection.id, dana.id);
+  assert.equal(store.roleOf(marc.id, collection.id), 'admin');
+});
+
+// An external auditor's five refused requests left no trace, under a page that
+// advertises a record of every view of restricted material. "Who tried and was
+// turned away" is the question an examiner asks first.
+test('a refused read of restricted material is on the record, like a read of it', () => {
+  const { store, dana, collection } = setup();
+  const page = store.createPage(dana.id, { collectionId: collection.id, type: 'note', title: 'Calibration' });
+  const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
+
+  expectCode(() => store.getPage(outsider.id, page.id), 'forbidden');
+
+  const refusals = store.queryAudit(dana.id, { action: 'page.view_refused' });
+  assert.equal(refusals.length, 1, 'the refusal is on the record');
+  assert.equal(refusals[0]!.actorId, outsider.id);
+  assert.equal(refusals[0]!.pageId, page.id);
+});
+
 test('review workflow: the approver can send a draft back with a comment', () => {
   const { store, marc, iris, collection } = setup();
   const page = store.createPage(marc.id, { collectionId: collection.id, type: 'plan', title: 'Q4 plan' });
