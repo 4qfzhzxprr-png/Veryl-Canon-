@@ -187,6 +187,66 @@ Two things that could have gone wrong and are pinned instead:
 - **Never the author's own draft.** The editor's live preview renders from the textarea
   and never applies the list. A hole where their link is would invite them to "fix" it.
 
+## Phase 4 — done, and half of it was not what was reported
+
+The plan said to do this as one design adopted three times. In the event the three
+products needed three different things, because they had three different amounts of it
+already built — and checking first was worth more here than anywhere else in the test.
+
+**Canon: "comments notify nobody" — wrong.** Canon has eleven notification kinds, an
+outbox with delivery attempts, and a non-disclosure rule that *withholds* a mention
+rather than refusing the comment, so `@`-ing an outsider does not mail them a restricted
+page's title. What was real underneath:
+
+- Mentions had **no usable address**. `@<actorId>` was the only form and an actor id is
+  a UUID; the composer was a bare textarea that said nothing about it. Names resolve
+  now, scoped to the collection's members — the set that can be *named* is the set that
+  can be *reached*, so nothing is learned by guessing. Longest-first ordering alone was
+  not enough and a test caught it: `@Dana Reyes` contains `@Dana`, so without claiming
+  the matched span the shorter name is a permanent false positive of the longer.
+- A comment naming nobody **reached nobody**, including the person §3 makes accountable
+  for the page. New `comment_added` kind, weaker than a mention: you were not asked,
+  your page was discussed. A page with no owner still tells nobody, and that is pinned —
+  it is the record being honest, not a dropped message.
+- **Resolve had routes and no button.** `POST /comments/:id/resolve` and `/reopen` have
+  existed since resolve was written, and `resolved_at`/`resolved_by` are stored — so the
+  send-back banner's promise that a comment "can be replied to and resolved" was half
+  true. The client was also dropping who resolved it and when, so "resolved" rendered as
+  a conversation closed by nobody at no time.
+- **Authors could not see submitted work.** `myDrafts` excludes `in_review` because the
+  move is the approver's — right about whose turn it is, wrong about what the author
+  needs. New strand, deliberately **outside the count**: the badge is what is waiting on
+  *you*, and a badge you cannot clear is ignored within a week. Naming the approver hit
+  the trap the codebase warns about — `pages.approver_id` is the *published* version's
+  and is null on a page that never published — so it reads the same `fields_json` column
+  `approve` enforces against.
+
+**Registry: one demo defect, one real one.** "Agents submitted never reach the queue" is
+the fixture: session-created agents live in `CREATED_AGENTS`, `agentByVersion` was
+taught about that when submitted drafts stayed "Draft" forever, and `mockQueue` never
+was. Same bug, second half, different function — only the half somebody reported got
+fixed. "No reviewer record of their own decisions" is real and the data was never
+missing: `verification_run` has carried `reviewer_id` and `reviewer_decision` since
+sign-off was written. `GET /review/decisions` reads it back; the strip merges it behind
+this sitting's entries so a decision made ten seconds ago does not wait on a refetch.
+Deliberately the caller's own record only — an admin wanting the team's has the audit
+log, which 3.4 made filterable. An advisory engine run is not a decision, and listing it
+would credit a person with a machine's output.
+
+**Studio: one real, two not.** `approvalNote` was written by the approve route and read
+by **nothing** — the only other mention in the codebase is the seed. An approver who
+sent a version back and typed why sent it nowhere; nothing in the builder's surfaces
+renders `rejected` at all. A decision now writes a notification carrying the note. The
+doorbell rule (rings carry no data) is about governed data crossing a channel that
+checked nobody's access — an approver's sentence about somebody's own work is not that.
+
+Not what was reported: there **is** a notifications area (the bell is mounted in the
+shell, backed by a real API with server-side read state), and the unused
+`digest_ready`/`alert_fired` templates are dead code rather than a broken delivery,
+because a digest goes out through a workflow connection.
+
+Canon 836 passing, Registry 2223 backend + 366 web + 358 E2E, Studio 1680.
+
 ---
 
 ## Phase 5 — Loading and empty-state discipline
@@ -261,12 +321,180 @@ Each of these blocked a tester outright.
 
 ~271 rows, batched per product once the above lands.
 
+## Phases 5, 6 and 8 — done, in parallel across the three repos
+
+Run as three independent workstreams, one per repo, on the same discipline: verify the
+claim before fixing it, withdraw what is not real *with evidence*, and a test that fails
+without the change. It held up — several of the most valuable outcomes below are
+withdrawals or corrections rather than fixes.
+
+### The pattern that keeps recurring: a mechanism that cannot run
+
+Three instances now, all found this session, and it is worth naming as a class because
+nothing in a normal review catches any of them — the code reads correctly and simply
+never executes.
+
+- **The guard census** read vitest's summary through terminal colour, so every red guard
+  scored `crashed`. The spine test had been failing wholesale in CI while passing
+  locally.
+- **The shared chrome's CSS** was never generated, because no Tailwind config scanned
+  `packages/shell`. Correct markup, missing rules, reads as a design choice.
+- **The mock-AI notice** (defect 1.13, believed closed) — `splitProviderNotice` lifts a
+  provider's self-identification out of an answer, but the mock never signs itself and
+  its docstring says so deliberately. So it returned `undefined` on every reply and the
+  three `⚙️` render sites had **never drawn anything, in either mode**. What was
+  described as a policy — "shown to the builder, stripped for the viewer" — was a gate on
+  a line that could not appear.
+
+The fix carries the fact on the disclosure envelope (`generatedBy: "demo"`) instead of in
+the prose, so it reaches both readers *and* the emailed digest, which has no chrome left
+to add a caveat to. The proposed viewer wording was also rejected as untrue: this mock
+quotes real retrieved passages, counts real rows and its citation chips are genuine. What
+is absent is **interpretation**, so the copy says no model wrote it and that it repeats
+rather than interprets.
+
+### Phase 5 — empty results asserted as facts
+
+The rule adopted: *never render an empty result as a factual claim of absence, and never
+enable an action whose consequences have not loaded.*
+
+The worst instances were not silences but **assertions built out of failures**:
+
+- Studio's approvals panel: `.catch(() => setQueue([]))` renders **"✅ Nothing is waiting
+  on you."**
+- Studio's clearance dialog: `.catch(() => setImpact({ blurb: "", gained: [] }))` prints
+  as **"Nothing immediately"** — the product asserting that a raise to `restricted`
+  exposes nothing, from a request that failed. Its confirm wanted three characters of
+  justification and nothing else; it is now gated on the impact.
+- Canon's audit viewer wrote its count line inside the branch that had rows, above an
+  early return — so narrowing a filter to nothing left the *previous* filter's sentence
+  standing over "No matching events". The count-vs-listing disagreement is now *stated as
+  a disagreement* rather than resolved, deliberately: either choice produces a confident
+  false claim in a compliance artefact.
+- Registry's review queue: `engineResults(undefined)` is an empty map, indistinguishable
+  from "the engine failed nothing" — so the 3.3 override guard was **silently off** and
+  the panel asserted "All checks pass or warn" over unloaded data. Now gated, with `null`
+  ("the engine never ran") treated as a *loaded* answer that does not block.
+
+Studio's Domains duplicate write was diagnosed and is not a route race: `add()` cleared
+`busy` in the same tick as firing the refresh, so Add re-armed over a list not yet showing
+the new domain. Retyping is reasonable from that screen, and the `400` reads as somebody
+else having taken the name.
+
+### Phase 6 — accessibility
+
+Both products: per-route `document.title` (Canon derives it from the view's own `<h1>`
+rather than a route→name table that would drift), focus moved on navigation, a polite
+live region, `aria-current` corrected, focus rings brought above the 3:1 floor, and
+Canon's modal given a focus trap, Escape and focus restore.
+
+Two things worth keeping:
+
+- Canon's focus-ring test **computes the WCAG contrast ratio** in both themes against
+  three surfaces, rather than asserting a token changed. Registry's equivalent measures
+  the *rendered* ring in-browser across 6 routes × 2 themes — which is what caught an
+  uncoloured `focus-visible:ring-2` falling back to Tailwind's stock blue at 1.84:1, a
+  case no source grep could see.
+- Registry's assistant launcher hid itself from the keyboard *exactly* when a keyboard
+  user reached for it: the scroll-duck set `aria-hidden` + `tabindex="-1"` +
+  `visibility:hidden`, and tabbing is what scrolls. `visibility:hidden` was the mechanical
+  blocker — an invisible element cannot fire `onFocus`.
+
+**A frozen-token file was edited, deliberately and argued in place.** `tailwind.config.js`
+now points `ringColor`/`ringOpacity`/`ringOffsetColor` defaults at existing tokens,
+because an uncoloured `ring-*` was falling back to Tailwind's stock `#3b82f6/.5` — an
+*off-palette* colour. The change **removes** a colour from the rendered UI rather than
+adding one, which is what the freeze exists to prevent. `tokens.css` itself is untouched,
+as are `trust.ts` and `StatusBadge.tsx`.
+
+### Phase 8 — mobile, search and vocabulary
+
+Canon: prefix matching (on the last term only, and retrieval explicitly does **not**
+inherit it — widening an answer's grounding pool is not a side effect of fixing a search
+box); Enter works and `#/search?q=…` is a real route; 16px floor on text fields; sticky
+header 37.5% → ~21%; `effectiveDateBasis` out of five user-facing refusals.
+
+Registry: the middle-dot in seven fixture room titles made a delete confirmation
+untypeable on iOS; "+ Add to a room" is a real modal; and the trust vocabulary now speaks
+English — `Invocable` → "Cleared to run", `JWS · EdDSA` → "Digital signature",
+`p50`/`p95` → "Typical reply" / "Slowest 1 in 20".
+
+**"One word per state" could not be done the obvious way.** "Certified" was a third
+user-facing name for the same thing, but renaming that meter to "Verified agents" would
+have silently widened a **billing number** — it counts only `state == "certified"`. It
+reads "Reviewer-signed agents" instead.
+
+### Withdrawn, with evidence
+
+- **Registry's 44px tap floor "one-line fix"** (`a:not(.tap-inline)`) — measured at 390px
+  across 22 routes. The rule is **inert** on three of the nine shapes (`min-height` does
+  not apply to non-replaced inline boxes, and WCAG 2.5.8 exempts inline targets anyway),
+  and where it does apply it inflates dense rows. Three real failures under the 24px SC
+  2.5.8 floor were fixed with an opt-in `a.tap-target`.
+- **Canon acronym handling** — not a gap for a heuristic. Canon indexes "Also known as"
+  aliases at the same bm25 weight as the title, and the Gaps view exists so a human adds
+  the asker's word to the page that should have answered. Guessing an expansion in a
+  policy corpus produces *a guess that gets cited*.
+- **Studio's app list** is not a Phase 5 instance (async server components that await
+  their queries — `apps.length === 0` genuinely means zero), and **"no loading state
+  anywhere" is too strong**: eight surfaces had one. None had a *failure* state, which is
+  why "Loading…" was permanent rather than wrong.
+- **`viaApps: []` on a draft** is correct by design — the list is built from app-principal
+  grants, which a draft has none of.
+- **Studio's four hidden guest preconditions** are all stated in the publish dialog. The
+  real blocker is a fifth: `maxGuestClassification` defaults to `public` while every
+  seeded object is `internal`+, so every column fails with an identical red line that
+  never names the setting. Lowering the default was rejected — that trades a real ceiling
+  for a demo path.
+
+### Typo tolerance, and the boundary it nearly crossed
+
+Canon's new "did you mean" reads a corpus-wide FTS5 vocabulary table — which would have
+been a **word-guessing oracle**: type `zeph`, get "did you mean zephyrus", and you have
+learned a codename one letter at a time from a collection you hold no role in. That is
+precisely the boundary policy question 1 drew for search. Every candidate is now verified
+through the ordinary permission-filtered search first, so only a word that finds a page
+the asker could have found themselves survives. Both halves tested.
+
+It also declines to hide its own wart: the Porter-stemmed vocabulary holds `retent`, not
+`retention`, so a suggestion reads "did you mean retent". Named rather than papered over
+with a second index carried for the spelling of a hint.
+
+### Counts
+
+| Suite | Before | After |
+|---|---|---|
+| Canon | 836 | **876** |
+| Registry web | 366 | **400** |
+| Registry E2E | 358 | **386** |
+| Registry backend | 2223 | **2223** (unchanged) |
+| Studio | 1680 | **1703** |
+
+All verified by re-running each suite rather than taking the reports on trust.
+
+### Not done
+
+**Phase 7** (Canon's import UI, per-page visibility and request-access; Studio's guest
+administration, directory and group control; Registry's "Sell an agent" form and external-
+agent verification) — deliberately skipped rather than half-built. Three Registry items
+are confirmed blocked on frozen contracts: `ScheduledMeetingOut` has no attendees field,
+`PurchaseOut` has no buyer/approver/cost-centre, `ConnectorGrantOut` has no actor.
+
+**Phase 9** (~271 minor and cosmetic rows) — untouched.
+
+Two pre-existing flakes are recorded and deliberately unfixed, in both cases because a fix
+that cannot be reproduced against the actual failure is a guess: Studio's
+`apps/registry/tests/bootstrap.test.ts` (transaction isolation against a peer suite) and
+Canon's idle-session expiry test (140ms margins against a 200ms TTL).
+
 ---
 
 ## Policy questions for the team — decisions, not bugs
 
 These came out of the test and should be answered by a person, not chosen by whoever
-picks up the ticket.
+picks up the ticket. **All five are now answered.** Each records the decision and the
+reasoning, not just the outcome — the reasoning is what a later change has to argue
+against.
 
 1. **Canon: does a reader learn that something exists they cannot see?** — **ANSWERED:
    existence, never identity.** Ask disclosed contested-ness without naming the page;
@@ -294,17 +522,61 @@ picks up the ticket.
      pages. The legend now points at the page panel for the rest.
 
    Landed in `ed3a4c9` (relations, Ask, search) and `75c5166` (3.9, body links).
-2. **Registry: is the demo meant to simulate enforcement, or to be visibly a demo?**
-   Determines whether 1.16/1.17 get real implementations or honest labels.
-3. **Studio: should Text components be classifiable at all,** or is authored prose
-   always the builder's responsibility?
-4. **Canon: correct the one page carrying a false version note** from defect 1.4, or
-   leave the record as it was written?
-5. **Should an end user be told an AI answer came from the offline mock?** Today the
-   marker is stripped for viewers by design and shown only in the builder preview. The
-   argument for stripping is good; the consequence is that a published app can present
-   canned text with citation chips and no hedge, which is the single most repeated
-   defect shape across all three products.
+2. **Registry: is the demo meant to simulate enforcement, or to be visibly a demo?** —
+   **ANSWERED: visibly a demo, wherever a label is honest and cheap. Where the demo makes
+   a TRUST CLAIM — a verified badge, an intact hash chain, a citation — make it real or
+   say it is canned.**
+
+   The question was posed as "does 1.16/1.17 get a real implementation or an honest
+   label", and events overtook it: both got real implementations. The audit chain now
+   computes genuine digests and verifies by recomputing; the interview refuses what its
+   sample document cannot answer. What survives is the standing principle, and it earned
+   itself — Registry's testers were judging a fixture, and two of the report's *biggest*
+   findings were filed against demo behaviour the real backend disproves. The failure
+   mode throughout was a fixture that was **more impressive than the product**, which
+   costs credibility in exactly the room where you can least afford it.
+
+3. **Studio: should Text components be classifiable at all?** — **ANSWERED: no. Authored
+   prose is the builder's responsibility, and the system's job is to say so at the moment
+   they publish.**
+
+   A classification on prose is a promise the system cannot keep: nothing stops a builder
+   typing a confidential figure into a Text block marked `internal`, and a label that can
+   be wrong is worse than none. What ships instead is the publish-time **flag** (3.6):
+   this text changed, and Studio will show it to the whole audience whatever their data
+   access.
+
+   This is the same design as Canon's 3.9, reached independently from the other end. A
+   LINK is fixable because it carries an id that can be tested against the reader; a
+   TITLE MENTIONED IN A SENTENCE is not, and no permission check will ever find it. Both
+   products therefore fix the machine-checkable half and warn the author about the rest,
+   because the author is the only one who can judge prose.
+
+4. **Canon: correct the one page carrying a false version note?** — **ANSWERED: no. Leave
+   the record as it was written, and add a correcting note alongside it.**
+
+   Defect 1.4 was withdrawn on inspection: the false note is free text a human approver
+   typed into `input.note`, not something Canon generated. So this was never a bug fix —
+   it was a question about editing the record because a person wrote something inaccurate
+   in it. Canon's entire claim is that the record is what people actually wrote, with its
+   history. Silently correcting a human's note in the demo corpus would teach precisely
+   the wrong thing about the product, and the product already has the right mechanism:
+   say something new alongside it.
+
+5. **Should an end user be told an AI answer came from the offline mock?** — **ANSWERED:
+   yes, but in different words from the builder's.**
+
+   `splitProviderNotice` already lifts the mock's self-identification out of the answer,
+   and all three AI components render it — but every render site is gated
+   `mode === "draft"`, so the builder sees it in preview and the end user never does. A
+   published app can present canned text with citation chips and no hedge to somebody
+   with no way to know. That is the single most repeated defect shape in the whole test.
+
+   The argument for stripping is good and it is kept: `⚙️ offline mock provider` is
+   infrastructure configuration, and it does not belong on a salesperson's screen. So the
+   builder keeps the technical note and the viewer gets a plain-language truth claim
+   about what they are reading — *"generated by a demo model, not from your company's
+   data"*. The objection was to the vocabulary, not to the disclosure.
 
 ---
 

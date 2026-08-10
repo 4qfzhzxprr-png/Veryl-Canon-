@@ -459,8 +459,14 @@ function toast(message, kind = 'error') {
   text.textContent = message;
   el.appendChild(text);
   const leave = () => { el.classList.add('leaving'); setTimeout(() => el.remove(), 300); };
-  // Good news and warnings pass; a refusal waits to be read.
-  if (kind === 'error') {
+  // Good news passes; a refusal waits to be read — and so does a WARNING, which
+  // is the third kind and the reason this is no longer a two-way split. "You
+  // published, and eleven of your fourteen readers cannot follow a link in
+  // it" is not good news and it is not a refusal: the act happened, and the
+  // sentence is the only thing that will make the author go back and look. A
+  // two-and-a-half-second life would put it on screen while its reader was
+  // already three actions further on.
+  if (kind === 'error' || kind === 'warn') {
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'toast-close';
@@ -583,9 +589,33 @@ function refusalGroup(what = 'these') {
 // A refusal raised in here is drawn IN here. It used to go to a toast in the
 // far corner, behind this dialog's own backdrop, and disappear — which is how a
 // contributor came to believe she had asserted a conflict she had not.
+//
+// It said `aria-modal="true"` and behaved like nothing of the kind (round
+// seven): Tab walked straight out of the dialog into the page behind it, which
+// a screen reader has been told is not there; Escape did nothing, so the one
+// key everybody tries to dismiss a dialog with left them hunting for Cancel;
+// and closing it dropped focus on the body, so the next Tab started again from
+// the top of the document — 85 stops from where they had been working.
+//
+// Deliberately NOT a `<dialog>` element with showModal(), which would give all
+// three for free. The dialog is rendered as a string into #modal-root like
+// everything else in this client, several callers reach into `#modal-root form`
+// afterwards to wire their own fields, and `<dialog>`'s top-layer rendering
+// changes how the backdrop and the sticky header stack. Three real behaviours
+// are worth more than the elegance of a rewrite that touches nine call sites.
+
+/** What can hold focus inside a dialog. `:not([disabled])` matters: the submit
+ *  button disables itself while a save is in flight, and a trap that cycled
+ *  onto it would strand the reader on a control that does nothing. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit }) {
   const root = document.getElementById('modal-root');
+  // Whoever opened it. Focus goes back here when it closes — the button that
+  // opened a dialog is where the reader was, and it is where the next thing
+  // they do begins.
+  const opener = document.activeElement;
   root.innerHTML = `
     <div class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -603,7 +633,46 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
   const backdrop = root.querySelector('.modal-backdrop');
   const form = root.querySelector('form');
   const problem = form.querySelector('[data-modal-error]');
-  const close = () => { root.innerHTML = ''; };
+  const dialog = root.querySelector('.modal');
+  const close = () => {
+    document.removeEventListener('keydown', onKeydown, true);
+    root.innerHTML = '';
+    // Only if the opener is still in the document: a dialog whose submit
+    // re-rendered the view behind it has no opener left to go back to, and
+    // focusing a detached node silently focuses the body instead. The route's
+    // own focus move (announceRoute) covers that case.
+    if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+  };
+  // Capture phase, on the document: the dialog's own fields stop keys from
+  // reaching a listener bound to the dialog (the editor's textarea handles
+  // Tab itself), and a trap that can be escaped by one field is not a trap.
+  const onKeydown = (e) => {
+    if (e.key === 'Escape') {
+      // Escape closes without acting. That is the whole contract: it is the
+      // "I did not mean to open this" key, and a dialog that submits on it
+      // would be a destructive act triggered by a reflex.
+      e.preventDefault();
+      close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const stops = [...dialog.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+    if (!stops.length) { e.preventDefault(); return; }
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    const active = document.activeElement;
+    if (!dialog.contains(active)) {
+      // Focus got out some other way (a click on the page behind, an
+      // extension). Bring it back rather than letting the cycle continue
+      // outside a dialog that claims to be modal.
+      e.preventDefault();
+      first.focus();
+      return;
+    }
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', onKeydown, true);
   backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
   root.querySelector('[data-cancel]').addEventListener('click', close);
   form.addEventListener('submit', async (e) => {
@@ -623,8 +692,13 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
       problem.scrollIntoView({ block: 'nearest' });
     }
   });
-  const first = form.querySelector('input, textarea, select');
+  // The first field if there is one, otherwise the first control of any kind:
+  // a confirm dialog is all buttons, and it used to open with focus still on
+  // the page behind it — which is a dialog you cannot answer from the keyboard
+  // without tabbing through the whole document to find it.
+  const first = form.querySelector('input, textarea, select') ?? dialog.querySelector(FOCUSABLE);
   if (first) first.focus();
+  else { dialog.setAttribute('tabindex', '-1'); dialog.focus(); }
   return { close, form, showRefusal: (message) => { problem.textContent = message; problem.hidden = false; } };
 }
 
@@ -987,8 +1061,13 @@ function diffTableHTML(rows, headA, headB) {
 function renderChrome() {
   const chip = document.getElementById('actor-chip');
   const nav = document.getElementById('topnav');
+  // The phone-width disclosure for the nav. It tracks the nav's own hidden
+  // state rather than having one of its own: a control that opens something
+  // nobody is allowed to see is worse than no control.
+  const navToggle = document.getElementById('nav-toggle');
   if (state.actor) {
     nav.hidden = false;
+    if (navToggle) navToggle.hidden = false;
     chip.innerHTML = `
       <span class="chip-name">${esc(state.actor.name)}</span>
       ${state.actor.kind === 'agent' ? '<span class="kind-tag agent">agent</span>' : ''}
@@ -1033,8 +1112,29 @@ function renderChrome() {
     refreshQueueNav({ force: true });
   } else {
     nav.hidden = true;
+    if (navToggle) navToggle.hidden = true;
+    closeNavMenu();
     chip.innerHTML = '';
   }
+}
+
+/** Shut the phone menu. Called on sign-out and on every navigation — a menu
+ *  left standing over the page you just chose from it is a menu you have to
+ *  dismiss before you can read what you asked for. */
+function closeNavMenu() {
+  document.querySelector('.topbar')?.classList.remove('is-nav-open');
+  document.getElementById('nav-toggle')?.setAttribute('aria-expanded', 'false');
+}
+
+function wireNavToggle() {
+  const toggle = document.getElementById('nav-toggle');
+  const bar = document.querySelector('.topbar');
+  if (!toggle || !bar) return;
+  toggle.addEventListener('click', () => {
+    const open = toggle.getAttribute('aria-expanded') !== 'true';
+    toggle.setAttribute('aria-expanded', String(open));
+    bar.classList.toggle('is-nav-open', open);
+  });
 }
 
 async function detectSearch() {
@@ -1245,53 +1345,211 @@ function searchScopeHTML(empty) {
       title alone${empty ? ' — if you are looking for words inside one, try its title' : ''}.</p>`;
 }
 
+/** One hit, drawn the same way in the dropdown and on the results page —
+ *  because two renderings of the same result set drift, and a reader who sees
+ *  a page in the dropdown and not on the page it links to has been lied to
+ *  by one of them. */
+function searchHitHTML(it, { withCollection = null } = {}) {
+  const id = it.pageId ?? it.id;
+  const title = it.title ?? '(untitled)';
+  const status = it.status ? badge(it.status, 'sm') : '';
+  const type = it.type ? `<span class="muted">${esc(TYPE_LABELS[it.type] ?? it.type)}</span>` : '';
+  const where = withCollection && it.collectionId && withCollection.get(it.collectionId)
+    ? `<span class="muted"> · ${esc(withCollection.get(it.collectionId))}</span>`
+    : '';
+  const snippet = it.snippet ?? it.excerpt ?? '';
+  return `<a class="search-hit" href="#/pages/${esc(id)}">
+    <span class="search-hit-title">${esc(title)}</span> ${status} ${type}${where}
+    ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
+  </a>`;
+}
+
+/** The results of a search, however the caller got them. `Array.isArray` first
+ *  because that is the shape /search has always returned. */
+function searchItemsOf(r) {
+  return Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
+}
+
+/** Where a submitted search goes. One place, so the box, the Enter key and any
+ *  future "see all" link cannot disagree about it. */
+function searchRoute(q) {
+  return `#/search?q=${encodeURIComponent(q)}`;
+}
+
+/**
+ * "Did you mean" — asked for only when a search found nothing, and rendered as
+ * an OFFER rather than applied. The server verifies that the alternative would
+ * actually find something this reader can open before it suggests it (see
+ * SearchIndex.suggest); a suggestion that silently re-ran the search would be
+ * answering a question nobody asked, which is the same failure as a record
+ * that quietly corrects what somebody wrote.
+ */
+async function searchSuggestionHTML(q) {
+  try {
+    const r = await api('GET', `/search/suggest?q=${encodeURIComponent(q)}`);
+    if (!r?.query) return '';
+    return `<p class="search-suggest">Did you mean <a href="${esc(searchRoute(r.query))}">${esc(r.query)}</a>?</p>`;
+  } catch {
+    // A server without the route says nothing rather than showing an error for
+    // a convenience.
+    return '';
+  }
+}
+
+const SEARCH_DROPDOWN_CAP = 12;
+
 function wireSearch() {
   const input = document.getElementById('search-input');
   const results = document.getElementById('search-results');
   let timer = null;
+  // Which request the box is waiting for. Two keystrokes produce two requests
+  // and nothing guarantees they come back in order — an earlier, slower answer
+  // landing last leaves the dropdown showing results for a query the box no
+  // longer contains, which is the same class of defect as the audit log's
+  // stale count: a listing from one source under a question from another.
+  let seq = 0;
   const hide = () => { results.hidden = true; };
-  input.addEventListener('input', () => {
-    clearTimeout(timer);
+  const run = async () => {
     const q = input.value.trim();
     if (q.length < 2) { hide(); return; }
-    timer = setTimeout(async () => {
-      try {
-        const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
-        const items = Array.isArray(r) ? r : (r?.results ?? r?.pages ?? r?.hits ?? []);
-        if (!items.length) {
-          // This used to claim the RECORD held no match, from a result set
-          // that had already been narrowed to this reader's
-          // collections. Under the record's disclosure rule the fix is to stop
-          // overclaiming, NOT to report how many hidden pages matched: search
-          // takes an arbitrary term, so a hidden-match count is an oracle you
-          // could binary-search titles with. Existence is disclosed where the
-          // record states a relationship to a page you already hold; it is not
-          // disclosed in answer to any question anyone can type.
-          results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${searchScopeHTML(true)}`;
-        } else {
-          results.innerHTML = items.slice(0, 12).map((it) => {
-            const id = it.pageId ?? it.id;
-            const title = it.title ?? '(untitled)';
-            const status = it.status ? badge(it.status, 'sm') : '';
-            const type = it.type ? `<span class="muted">${esc(TYPE_LABELS[it.type] ?? it.type)}</span>` : '';
-            const snippet = it.snippet ?? it.excerpt ?? '';
-            return `<a class="search-hit" href="#/pages/${esc(id)}">
-              <span class="search-hit-title">${esc(title)}</span> ${status} ${type}
-              ${snippet ? `<span class="search-snippet">${highlightedSnippet(snippet)}</span>` : ''}
-            </a>`;
-          }).join('') + searchScopeHTML(false);
-        }
+    const mine = ++seq;
+    try {
+      const r = await api('GET', `/search?q=${encodeURIComponent(q)}`);
+      if (mine !== seq) return; // a later keystroke owns the dropdown now
+      const items = searchItemsOf(r);
+      if (!items.length) {
+        // This used to claim the RECORD held no match, from a result set
+        // that had already been narrowed to this reader's
+        // collections. Under the record's disclosure rule the fix is to stop
+        // overclaiming, NOT to report how many hidden pages matched: search
+        // takes an arbitrary term, so a hidden-match count is an oracle you
+        // could binary-search titles with. Existence is disclosed where the
+        // record states a relationship to a page you already hold; it is not
+        // disclosed in answer to any question anyone can type.
+        results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${searchScopeHTML(true)}`;
         results.hidden = false;
-      } catch (err) {
-        if (err.status === 404) { state.features.search = false; document.getElementById('search-slot').hidden = true; }
-        else toastError(err);
+        const suggestion = await searchSuggestionHTML(q);
+        if (mine === seq && suggestion) {
+          results.innerHTML = `<div class="search-empty">Nothing you can see matches.</div>${suggestion}${searchScopeHTML(true)}`;
+        }
+      } else {
+        // A dropdown holds twelve. It used to hold twelve and say nothing
+        // about the thirteenth, so the list a reader treated as "the results"
+        // was a slice of them with no mark on it.
+        const more = items.length > SEARCH_DROPDOWN_CAP
+          ? `<a class="search-more" href="${esc(searchRoute(q))}">More matches than fit here — see the results page</a>`
+          : `<a class="search-more" href="${esc(searchRoute(q))}">See these on a page you can read and link to</a>`;
+        results.innerHTML = items.slice(0, SEARCH_DROPDOWN_CAP).map((it) => searchHitHTML(it)).join('')
+          + more + searchScopeHTML(false);
+        results.hidden = false;
       }
-    }, 250);
+    } catch (err) {
+      if (err.status === 404) { state.features.search = false; document.getElementById('search-slot').hidden = true; }
+      else toastError(err);
+    }
+  };
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(run, 250);
   });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hide(); input.blur(); } });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { hide(); input.blur(); return; }
+    // ENTER DID NOTHING. The box is inside no form, so the key that everybody
+    // presses after typing a search fell on the floor — and there was nowhere
+    // for it to go, because the dropdown was the only surface search had
+    // (round seven). It goes to the results page now, which is a route, which
+    // means a search is a link somebody can send to a colleague.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const q = input.value.trim();
+      if (!q) return;
+      clearTimeout(timer);
+      hide();
+      location.hash = searchRoute(q);
+    }
+  });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.search-slot')) hide();
-    if (e.target.closest('.search-hit')) { hide(); input.value = ''; }
+    if (e.target.closest('.search-hit') || e.target.closest('.search-more')) { hide(); input.value = ''; }
+  });
+}
+
+/**
+ * The results page. Search had a dropdown and nothing else: no way to see past
+ * twelve hits, no way to keep a search, no way to send one to somebody, and
+ * nothing at all for the Enter key to do.
+ *
+ * It states the same boundary the dropdown states, in the same words, and it
+ * makes the same claim about emptiness — "nothing YOU CAN SEE matches" — for
+ * the same reason: the result set is permission-scoped and a screen that reads
+ * it as a fact about the record is stating something it cannot know.
+ */
+async function viewSearch(query = {}) {
+  const q = (query.q ?? '').trim();
+  const collections = await api('GET', '/collections').catch(() => []);
+  const names = new Map(collections.map((c) => [c.id, c.name]));
+
+  if (!q) {
+    app.innerHTML = `
+      <div class="page-narrow">
+        <div class="page-head"><h1>Search</h1></div>
+        <form class="search-page-form" id="search-page-form">
+          <label>What are you looking for?
+            <input name="q" type="search" autocomplete="off" placeholder="Search the record&hellip;"></label>
+          <button class="btn primary" type="submit">Search</button>
+        </form>
+        ${searchScopeHTML(false)}
+      </div>`;
+    wireSearchPageForm();
+    return;
+  }
+
+  let items = [];
+  try {
+    // 50, not the dropdown's twelve: this is the surface that exists to show
+    // more than a dropdown can. The server caps at 100 either way.
+    items = searchItemsOf(await api('GET', `/search?q=${encodeURIComponent(q)}&limit=50`));
+  } catch (err) {
+    renderErrorPage(err);
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="page-narrow">
+      <div class="page-head"><h1>Search</h1></div>
+      <form class="search-page-form" id="search-page-form">
+        <label>What are you looking for?
+          <input name="q" type="search" autocomplete="off" value="${esc(q)}"></label>
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      ${items.length
+        ? `<p class="muted search-count">${items.length} result${items.length === 1 ? '' : 's'} you can see${
+            items.length >= 50 ? ', the most relevant first — narrow the words if what you want is not here' : ''
+          }.</p>
+           <div class="search-results-list">${items.map((it) => searchHitHTML(it, { withCollection: names })).join('')}</div>`
+        : `<div class="empty-state">
+            <h2>Nothing you can see matches</h2>
+            <p>Searching finds pages in the collections you belong to. Somebody else may hold
+            material on this subject in a collection you are not a member of.</p>
+          </div>`}
+      <div id="search-suggest"></div>
+      ${searchScopeHTML(!items.length)}
+    </div>`;
+  wireSearchPageForm();
+  if (!items.length) {
+    const host = app.querySelector('#search-suggest');
+    const suggestion = await searchSuggestionHTML(q);
+    if (host?.isConnected) host.innerHTML = suggestion;
+  }
+}
+
+function wireSearchPageForm() {
+  const form = app.querySelector('#search-page-form');
+  if (!form) return;
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = form.q.value.trim();
+    if (q) location.hash = searchRoute(q);
   });
 }
 
@@ -1317,6 +1575,93 @@ function hashQuery() {
   return Object.fromEntries(new URLSearchParams(location.hash.slice(at + 1)));
 }
 
+/**
+ * Which nav entry is the place you are standing in.
+ *
+ * `.active` was the whole of it, which is a colour — and a colour is not a
+ * statement. `aria-current="page"` is the statement, and it is what a screen
+ * reader reads out ("current page") as it moves through the nav. The two are
+ * set together in one place precisely so a future route cannot get one and not
+ * the other; there were already three call sites setting the class by hand
+ * (round seven: no aria-current anywhere in Canon's nav).
+ *
+ * `page`, not `true`: the link points at the route you are on, which is
+ * exactly what `page` means. `true` is for the weaker "somewhere within".
+ */
+function markNav(section) {
+  document.querySelectorAll('#topnav a').forEach((a) => {
+    const here = a.dataset.nav === section;
+    a.classList.toggle('active', here);
+    if (here) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+}
+
+/**
+ * What a route change has to do besides draw.
+ *
+ * Canon had nine routes and one title. `document.title` was set once in
+ * index.html and never reassigned, so the browser tab, the history entry, the
+ * bookmark and the screen reader's window announcement all read "Veryl Canon"
+ * whether you were on the audit log or in an editor. A sighted mouse user
+ * never notices; somebody navigating by tab or by voice has no other signal
+ * that the page moved at all, because the DOM swap under a single-page router
+ * fires nothing.
+ *
+ * Three things, in the order they matter:
+ *
+ *   1. THE TITLE, from the view's own <h1>. Not a hand-maintained table of
+ *      route → name: that is a second copy of every heading in the app and it
+ *      would drift the first time somebody renamed a screen. The heading a
+ *      reader sees IS the name of the place.
+ *   2. FOCUS onto that heading, so the next Tab starts at the content rather
+ *      than back at the top of the chrome — the same 85 tab stops the skip
+ *      link exists for, met from the other side.
+ *   3. AN ANNOUNCEMENT in a polite live region. A title change is not reliably
+ *      spoken in a single-page app; a live region is. It carries the same
+ *      words as the title so the two cannot say different things.
+ *
+ * Only `render()` calls this, and only route() and two retry paths call
+ * `render()` — so an in-page refresh (closing a gap, resolving a comment) does
+ * NOT steal focus. That boundary is the point: focus moves when you have
+ * gone somewhere, and never because a panel redrew under your hands.
+ */
+function announceRoute() {
+  const heading = app.querySelector('h1') ?? app.querySelector('h2');
+  const name = (heading?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  document.title = name ? `${name} · Veryl Canon` : 'Veryl Canon';
+  if (heading) {
+    // Non-interactive, so it needs a tabindex to hold focus, and -1 so it
+    // never becomes a tab stop of its own. preventScroll because the view has
+    // already put the reader where it wants them (a page opened at an anchor,
+    // a restored scroll); focus is about where the CURSOR is.
+    heading.setAttribute('tabindex', '-1');
+    heading.focus({ preventScroll: true });
+  } else {
+    app.focus({ preventScroll: true });
+  }
+  const announcer = document.getElementById('route-announcer');
+  if (announcer) announcer.textContent = name || 'Veryl Canon';
+}
+
+/**
+ * The skip link. Its default is prevented and focus is moved by hand, because
+ * `location.hash` is this app's router: letting `href="#main"` through would
+ * navigate to the route "main", which does not exist, and drop the reader on
+ * the collections list. The link still reads and behaves as a link.
+ */
+function wireSkipLink() {
+  const link = document.getElementById('skip-to-main');
+  if (!link) return;
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    const heading = app.querySelector('h1') ?? app;
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+    heading.scrollIntoView({ block: 'start' });
+  });
+}
+
 async function route() {
   const parts = parseHash();
   if (!state.actor && parts[0] !== 'identity') {
@@ -1339,9 +1684,8 @@ async function route() {
     : parts[0] === 'sources' ? 'sources'
     : parts[0] === 'queue' ? 'queue'
     : 'home';
-  document.querySelectorAll('#topnav a').forEach((a) => {
-    a.classList.toggle('active', a.dataset.nav === section);
-  });
+  markNav(section);
+  closeNavMenu();
   // The badge is refreshed on every navigation, and cached for a few seconds
   // (loadQueue), so moving around the record does not re-run the queue. It is
   // deliberately NOT awaited: a number arriving a moment after the page is a
@@ -1354,6 +1698,7 @@ async function route() {
     if (parts[0] === 'audit') return await render(() => viewAudit(hashQuery()));
     if (parts[0] === 'gaps') return await render(() => viewGaps(hashQuery()));
     if (parts[0] === 'sources') return await render(viewSources);
+    if (parts[0] === 'search') return await render(() => viewSearch(hashQuery()));
     if (parts[0] === 'ask') return await render(() => viewAsk(parts[1] ?? null));
     if (parts[0] === 'map') return await render(() => viewMap(parts[1] ?? null));
     if (parts[0] === 'collections' && parts[1] && parts[2] === 'map') {
@@ -1386,6 +1731,9 @@ async function render(view) {
   } catch (err) {
     renderErrorPage(err);
   }
+  // After the failure path too: "Not found" is a place you arrived at, and it
+  // is the one a lost reader most needs told to them.
+  announceRoute();
 }
 
 function renderErrorPage(err) {
@@ -1651,6 +1999,16 @@ async function refreshQueueNav({ force = false } = {}) {
   count.textContent = total > 99 ? '99+' : String(total);
   // The number is announced, because it is the whole point of putting it here.
   link.setAttribute('aria-label', total ? `My queue, ${total} waiting` : 'My queue');
+  // The same number on the phone-width menu button. Behind a closed menu the
+  // badge is invisible, and a badge nobody sees is a badge that does not work
+  // — the reason to open the menu has to be on the outside of it.
+  const toggleCount = document.getElementById('nav-toggle-count');
+  const toggle = document.getElementById('nav-toggle');
+  if (toggleCount) {
+    toggleCount.hidden = total === 0;
+    toggleCount.textContent = count.textContent;
+  }
+  if (toggle) toggle.setAttribute('aria-label', total ? `Menu, ${total} waiting in your queue` : 'Menu');
 }
 
 /**
@@ -1713,7 +2071,7 @@ function queuePageRow(page, collections, right, note = null) {
 }
 
 async function viewQueue() {
-  document.querySelectorAll('#topnav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === 'queue'));
+  markNav('queue');
   let queue;
   try {
     queue = await loadQueue({ force: true });
@@ -1827,6 +2185,26 @@ async function viewQueue() {
     ),
   ];
 
+  // WAITING ON SOMEBODY ELSE, and outside the count.
+  //
+  // "Your drafts" leaves out a page that is In Review, because the move is the
+  // approver's — right about whose turn it is, wrong about what the author
+  // needs. Someone who submitted a policy on Tuesday read "You have no drafts
+  // in progress" on Wednesday: true, and it reads as "nothing of yours is in
+  // flight" while their work sits in somebody else's queue with no way to find
+  // out whose or for how long.
+  //
+  // Uncounted for the same reason the notices are: the badge is a number of
+  // things waiting on YOU, and this is the one strand that is explicitly not.
+  const submitted = (queue.awaitingSomebodyElse ?? []).map((p) => queuePageRow(
+    p,
+    collections,
+    `submitted ${esc(fmtAgo(p.updatedAt) ?? '')}`,
+    // The approver by name, because "who do I chase" is the whole question. A
+    // type that names no single approver says so rather than inventing one.
+    p.approverId ? `Waiting on ${actorName(p.approverId)}.` : 'Waiting on anyone who can approve it.',
+  ));
+
   // Notices last, and outside the count. The outbox has no read state, so a
   // number counting these would never go down; what they add is the sentence —
   // who asked, who sent it back, what they said — beside the work itself.
@@ -1853,8 +2231,17 @@ async function viewQueue() {
         <div class="empty-state">
           <h2>Nothing is waiting on you</h2>
           <p>No approvals, no pages of yours past review, no contradictions against anything you own, and
-          no drafts in progress.</p>
+          no drafts in progress.${submitted.length
+            ? ' You do have work with somebody else — it is below.'
+            : ''}</p>
         </div>` : strands.join('')}
+      ${submitted.length ? `
+        <section class="queue-strand">
+          <h2 class="queue-strand-head">Waiting on somebody else</h2>
+          <p class="muted queue-strand-blurb">Work you submitted. It is not counted above: the number is what
+          the record is waiting on <strong>you</strong> for, and these are waiting on someone else.</p>
+          <table class="queue-table"><tbody>${submitted.join('')}</tbody></table>
+        </section>` : ''}
       ${notices.length ? `
         <section class="queue-strand">
           <h2 class="queue-strand-head">Notices</h2>
@@ -1892,6 +2279,22 @@ function flattenTree(nodes, depth = 0, out = []) {
 // sidebar is wider, the title takes the lines it needs, and the badge follows
 // the last word of it rather than competing with it for the row. Nothing is
 // ever cut.
+//
+// A BRANCH IS A BUTTON BESIDE A LINK, not a link inside a <summary>.
+//
+// It was `<summary><a …></summary>`, which is invalid: <summary> has an
+// implicit button role and interactive content may not be nested inside it
+// (round seven). A browser renders it, and it half works — which is why it
+// survived — but what it hands assistive technology is a button whose accessible
+// name is a link, one control claiming two jobs, and a click that had to be
+// intercepted globally to stop navigation from also collapsing the branch.
+//
+// The two jobs are now two controls: a toggle that opens and closes the
+// children, and the link to the page. Both are reachable, both say what they
+// do, and `aria-expanded`/`aria-controls` state the relationship the <details>
+// element used to imply. The cost is that the open/closed state is ours to
+// keep rather than the browser's — worth it to stop shipping markup that is
+// invalid in the one place a keyboard user has to live.
 function treeHTML(nodes, currentPageId) {
   if (!nodes.length) return '<p class="muted tree-empty">No pages yet.</p>';
   const item = (n) => {
@@ -1899,7 +2302,17 @@ function treeHTML(nodes, currentPageId) {
     const link = `<a class="tree-link${active}" href="#/pages/${esc(n.id)}"
       >${esc(n.title)} ${badge(n.status, 'sm')}</a>`;
     if (n.children.length) {
-      return `<li><details open><summary>${link}</summary>${treeHTML(n.children, currentPageId)}</details></li>`;
+      const kids = `tree-kids-${esc(n.id)}`;
+      return `<li class="branch">
+        <div class="tree-row">
+          ${/* The name is the branch's title, so a screen reader hears what is
+                being collapsed rather than "button, triangle". */ ''}
+          <button type="button" class="tree-branch-toggle" aria-expanded="true"
+            aria-controls="${kids}" aria-label="Pages under ${esc(n.title)}"></button>
+          ${link}
+        </div>
+        <div id="${kids}">${treeHTML(n.children, currentPageId)}</div>
+      </li>`;
     }
     return `<li class="leaf">${link}</li>`;
   };
@@ -4102,7 +4515,13 @@ function normalizeComment(c) {
     body: c.body ?? c.text ?? c.content ?? '',
     authorId: c.authorId ?? c.actorId ?? c.author ?? null,
     createdAt: c.createdAt ?? c.at ?? null,
-    resolved: c.resolved ?? c.resolvedAt ?? false,
+    resolved: Boolean(c.resolved ?? c.resolvedAt ?? false),
+    // WHO resolved it and WHEN. The server has carried both since resolve was
+    // written; the client dropped them, so "resolved" was a bare tag — a
+    // conversation closed by nobody, at no time. On a record whose whole claim
+    // is that you can see who decided what, that is the wrong kind of gap.
+    resolvedAt: c.resolvedAt ?? null,
+    resolvedBy: c.resolvedBy ?? null,
     // An approver's send-back reason is a comment (USER-TESTING.md T4.3), and
     // the most consequential sentence on the page should not read as an
     // ordinary remark. The server derives it from the event that recorded the
@@ -4115,6 +4534,35 @@ function normalizeComment(c) {
 // in `page.abilities.comment` shape, or null on a server that serves none. A
 // refusal replaces the box with the reason rather than leaving a form that
 // 403s at the last click (T4.4).
+/**
+ * A comment's resolution: who closed it and when, plus the way to close or
+ * reopen it.
+ *
+ * `POST /comments/:id/resolve` and `/reopen` have existed since resolve was
+ * written, and `resolved_at`/`resolved_by` are stored — but nothing rendered a
+ * button, so the send-back banner's promise that a comment "can be replied to
+ * and resolved" was half true: you could reply, and there was no way to
+ * resolve. A conversation that cannot be closed is one that stays open on the
+ * page forever, which is how a page ends up with a wall of remarks nobody can
+ * tell the live ones from.
+ *
+ * Both routes take the `comment` role — the same one that let you write the
+ * comment — so the gate the composer already computes is exactly the right
+ * gate here, and a reader without it sees the state and no buttons.
+ */
+function commentResolutionHTML(c, canComment) {
+  const who = c.resolvedBy ? actorLabel(c.resolvedBy) : null;
+  const when = c.resolvedAt ? fmtDateTime(c.resolvedAt) : null;
+  const provenance = c.resolved && (who || when)
+    ? `<span class="muted comment-resolved-by">Resolved${who ? ` by ${who}` : ''}${when ? ` on ${esc(when)}` : ''}.</span>`
+    : '';
+  if (!canComment) return provenance ? `<div class="comment-actions">${provenance}</div>` : '';
+  const button = c.resolved
+    ? `<button class="btn subtle" type="button" data-reopen="${esc(c.id)}">Reopen</button>`
+    : `<button class="btn subtle" type="button" data-resolve="${esc(c.id)}">Resolve</button>`;
+  return `<div class="comment-actions">${provenance}${button}</div>`;
+}
+
 /**
  * Who this reader can mention, and how.
  *
@@ -4186,6 +4634,8 @@ async function renderCommentsPanel(pageId, ability = null, collectionId = null) 
       <p class="muted">Comments could not be loaded: ${esc(err.message)}</p></section>`;
     return;
   }
+  // The same gate the composer uses: resolve and reopen both take `comment`.
+  const canComment = !(ability && ability.can === false);
   host.innerHTML = `
     <section class="panel" id="comments-panel">
       <h2 class="h-small">Comments</h2>
@@ -4199,6 +4649,7 @@ async function renderCommentsPanel(pageId, ability = null, collectionId = null) 
                 ${c.sentBack ? '<span class="role-tag">sent this back</span>' : ''}
                 ${c.resolved ? '<span class="role-tag">resolved</span>' : ''}</div>
               <div class="comment-body">${esc(c.body)}</div>
+              ${commentResolutionHTML(c, canComment)}
             </li>`).join('')}
         </ul>` : '<p class="muted">No comments yet.</p>'}
       ${ability && !ability.can
@@ -4210,6 +4661,24 @@ async function renderCommentsPanel(pageId, ability = null, collectionId = null) 
            </form>`}
     </section>`;
   wireMentionChips(host);
+  for (const btn of host.querySelectorAll('[data-resolve], [data-reopen]')) {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.resolve ?? btn.dataset.reopen;
+      const verb = btn.dataset.resolve ? 'resolve' : 'reopen';
+      btn.disabled = true;
+      try {
+        await api('POST', `/comments/${id}/${verb}`);
+        renderCommentsPanel(pageId, ability, collectionId);
+      } catch (err) {
+        btn.disabled = false;
+        // A Canon that does not serve these routes is not a broken one — say
+        // so once rather than leaving a button that silently does nothing.
+        if (err.status === 404 || err.status === 405) {
+          toast('Resolving a comment is not available on this Canon yet.', 'info');
+        } else toastError(err);
+      }
+    });
+  }
   host.querySelector('#comment-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = e.target.body.value.trim();
@@ -4472,8 +4941,9 @@ async function openSubmitReviewDialog(page, draftFields, afterSubmit) {
           await api('PUT', `/pages/${page.id}/draft`, { fields: { approverId: chosen } });
         }
       }
-      await api('POST', `/pages/${page.id}/submit`);
+      const submitted = await api('POST', `/pages/${page.id}/submit`);
       toast('Submitted for review.', 'ok');
+      raiseLinkWarnings(submitted);
       afterSubmit();
     },
   });
@@ -4521,6 +4991,34 @@ function aliasFieldNotice(value) {
  * every save rather than fading — because a mis-steered search stays
  * mis-steered for as long as the name is shared.
  */
+/**
+ * WHAT THE AUTHOR IS TOLD ABOUT WHO CAN FOLLOW THEIR LINKS.
+ *
+ * Policy question 3, Canon's half. `withheldLinks` already stops a link's
+ * LABEL reaching a reader who may not open the target — but the sentence
+ * around the link is prose, and prose is the author's. "As set out in the
+ * workforce reduction plan" gives away exactly what the withheld label was
+ * protecting, and no permission check will ever find it.
+ *
+ * So the author is told the fact and left with the judgement: how many of the
+ * people who can read this page cannot open that link. It is persistent for
+ * the same reason the alias collisions are — the condition does not go away
+ * when the notice does — and it is never a block, because a cross-collection
+ * link is a normal, useful thing and a product that refuses one is a product
+ * that stops people writing down what is true.
+ */
+function linkWarningsHTML(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return '';
+  return `<p class="notice notice-stale link-audience">${warnings.map((w) => esc(w)).join('<br>')}</p>`;
+}
+
+/** The same sentences, after the act, where the editor is no longer on screen. */
+function raiseLinkWarnings(response) {
+  const warnings = response?.linkWarnings;
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  for (const w of warnings) toast(w, 'warn');
+}
+
 function aliasWarningsHTML(warnings) {
   if (!Array.isArray(warnings) || warnings.length === 0) return '';
   return `<p class="notice notice-stale alias-collision">${warnings.map((w) => esc(w)).join('<br>')}<br>
@@ -4683,6 +5181,7 @@ async function viewEditor(id) {
               the record's official answers use them only while the page holds the Canonical mark.</p>
             <p id="alias-live" class="muted type-help" aria-live="polite"></p>
             <div id="alias-warnings" aria-live="polite"></div>
+            <div id="link-warnings" aria-live="polite"></div>
             ${!rules.owner && !rules.approver && !rules.effectiveDate && !rules.reviewDate ? '<p class="muted">A Note carries no required fields.</p>' : ''}
           </div>
           <div id="editor-refs"></div>
@@ -4715,6 +5214,7 @@ async function viewEditor(id) {
   // carries, so a collision that predates this editing session is on screen
   // from the first paint rather than after the first save.
   app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(draft.warnings);
+  app.querySelector('#link-warnings').innerHTML = linkWarningsHTML(draft.linkWarnings);
 
   // The toolbar and the preview. The preview is the same renderMarkdown() the
   // page view uses, inside the same .doc-body, because a preview that renders
@@ -4768,6 +5268,7 @@ async function viewEditor(id) {
     // it is about — replaced wholesale each save, so a collision the editor
     // just removed stops being claimed.
     app.querySelector('#alias-warnings').innerHTML = aliasWarningsHTML(d.warnings);
+    app.querySelector('#link-warnings').innerHTML = linkWarningsHTML(d.linkWarnings);
     return d;
   };
 
@@ -4805,8 +5306,12 @@ async function viewEditor(id) {
         // is marked failed too — cancelling the dialog must not land the
         // editor back on a stale "Draft saved …".
         try { await save(); } catch (err) { markSaveFailed(err); throw err; }
-        await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
+        const published = await api('POST', `/pages/${id}/publish`, mform.note.value.trim() ? { note: mform.note.value.trim() } : {});
         toast('Published.', 'ok');
+        // After the navigation, and persistent: the editor that was showing
+        // this is gone, and the page the author lands on has no reason to say
+        // it. Publishing is the moment the text stops being theirs alone.
+        raiseLinkWarnings(published);
         location.hash = `#/pages/${id}`;
       },
     });
@@ -4973,10 +5478,49 @@ async function renderEditorReferences(pageId, collectionId) {
 // ---------------------------------------------------------------------------
 // Version history
 
+// A VERSION NOTE IS NEVER EDITED, EVEN WHEN IT IS WRONG.
+//
+// Round seven, policy question 4. A page in the record carries the note
+// "Approved by Dana Whitfield (compliance). Note: no baseline diff was
+// available; body is identical to published v1" on a version that changed four
+// lines — free text an approver typed, in good faith, because the approve pane
+// had told them there was no baseline (that half is fixed; this note is not,
+// and must not be).
+//
+// The decision was to leave it. Canon's whole claim is that the record is what
+// people actually wrote, with its history; a product that silently corrects a
+// human's sentence teaches exactly the wrong thing about itself, and it would
+// be indistinguishable, later, from a product that silently corrects anything
+// else. So the note stands and the correction is filed ALONGSIDE it, by a
+// person, with their name and the date on it — which is the mechanism Canon
+// already has for "this is wrong and we are not deleting it".
+//
+// The half that was missing was not the mechanism, it was the pointer:
+// somebody reading a version note is on THIS screen, and the corrections are
+// on the page. The sentence below is what joins them, and it carries the count
+// so it is not a link into an empty room.
+//
+// The link is to the page and NOT to `#/pages/<id>#comments`: the hash IS the
+// router here, so a fragment on the end of a route is read as part of the page
+// id and the link resolves to nothing (the same trap noticeHref documents).
+function versionNoteStandingHTML(id, comments) {
+  const n = Array.isArray(comments) ? comments.length : null;
+  return `
+    <p class="muted">A note is what somebody wrote when they published or approved, and it is kept
+      exactly as they wrote it — Canon never edits one, even when it turns out to be wrong. A
+      correction is added beside it${n === null ? '' : n === 0
+        ? ', as a comment on the page. There are none on this page.'
+        : `, as a comment on the page — <a href="#/pages/${esc(id)}">there ${n === 1 ? 'is 1' : `are ${n}`}
+           on this page</a>.`}</p>`;
+}
+
 async function viewHistory(id) {
-  const [page, versions] = await Promise.all([
+  const [page, versions, comments] = await Promise.all([
     api('GET', `/pages/${id}`),
     api('GET', `/pages/${id}/versions`),
+    // Not fatal: a deployment without comments still has a history, and the
+    // sentence simply says less rather than the screen failing over a pointer.
+    api('GET', `/pages/${id}/comments`).catch(() => null),
     loadActors().catch(() => null),
   ]);
   const desc = [...versions].reverse();
@@ -4996,6 +5540,7 @@ async function viewHistory(id) {
       <p class="muted">Versions are what was published. For everything that happened to this page —
       views of restricted material, submissions, send-backs, approvals —
       <a href="#/audit?page=${encodeURIComponent(id)}">see its audit log</a>.</p>
+      ${versionNoteStandingHTML(id, comments)}
       ${/* Six columns, so the table scrolls inside its own container on a narrow
             screen rather than pushing the page sideways — the same treatment
             the collection's contents table has, for the same reason: nothing in
@@ -5362,7 +5907,18 @@ async function viewGaps(query = {}) {
         asker&rsquo;s word (its &ldquo;Also known as&rdquo; field), write the missing page, or record that this
         record owes no answer. No asker is shown here, and none is stored in this list; operators can
         read who asked what in the audit log, which has its own rule.</p>
-      ${gaps.length ? rows : `<div class="empty-state"><p>No ${esc(status)} gaps. Every question the record refused has been looked at.</p></div>`}
+      ${/* One sentence used to serve all three tabs: "No <status> gaps. Every
+            question the record refused has been looked at." True on the OPEN
+            tab and false on the other two — an empty Resolved tab means
+            nothing has been resolved, and the sentence claimed the opposite of
+            what it was describing. The tabs are three different filters over
+            one list, and only one of them can say anything about the whole of
+            it (round seven, Phase 5). */ ''}
+      ${gaps.length ? rows : `<div class="empty-state"><p>${status === 'open'
+        ? 'No open gaps. Every question the record refused has been looked at.'
+        : status === 'resolved'
+          ? 'No gap has been resolved yet. Open gaps, if there are any, are on the Open tab.'
+          : 'No gap has been dismissed. Open gaps, if there are any, are on the Open tab.'}</p></div>`}
     </div>`;
 
   app.querySelectorAll('[data-close]').forEach((btn) => {
@@ -5386,6 +5942,46 @@ async function viewGaps(query = {}) {
       } catch (err) { toastError(err); }
     });
   });
+}
+
+/**
+ * The one sentence under the audit filters, from BOTH of the numbers it is
+ * describing at once.
+ *
+ * The log draws from two routes — `/audit` for the rows and `/audit/summary`
+ * for the size of the population — and the screen used to let them speak
+ * separately. The count line was written only where rows existed, so narrowing
+ * a filter to nothing left the previous filter's sentence standing over a
+ * fresh "No matching events" panel: "168 events match these filters" and "No
+ * matching events", on screen together, both about different filters, one of
+ * them a lie (round seven, Phase 5). An auditor deciding a population is empty
+ * is exactly the reader who must not be shown a stale number.
+ *
+ * So the sentence is computed from the pair, always, including when there are
+ * no rows — and the disagreement case is stated rather than resolved in
+ * either direction. Two answers from two queries that cannot both be true is
+ * not something a screen may quietly pick a winner for; the honest move is to
+ * say the walk is unreliable and let the reader reload, because the wrong
+ * guess here ("show the count", "show the emptiness") produces a confident
+ * false claim in a compliance artefact.
+ */
+function auditCountLine(shownCount, matching) {
+  const n = Number(matching);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n === 0) return 'No events in the log match these filters.';
+  if (shownCount === 0) {
+    return `These filters match ${n.toLocaleString()} event${n === 1 ? '' : 's'}, but none of them came back ` +
+      'with this page of the log. Reload before treating this as an empty result.';
+  }
+  return shownCount >= n
+    ? `${n.toLocaleString()} event${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} these filters. All of them are shown.`
+    : `Showing the ${shownCount.toLocaleString()} most recent of ${n.toLocaleString()} matching events.`;
+}
+
+/** The heading over an empty table, which may only claim absence when the
+ *  count agrees that the population is empty. */
+function auditEmptyHeading(matching) {
+  return Number(matching) > 0 ? 'These events did not load' : 'No matching events';
 }
 
 async function viewAudit(query = {}) {
@@ -5415,7 +6011,14 @@ async function viewAudit(query = {}) {
               exists for (third round, Ruth). The click goes through
               downloadFromApi, which attaches identity the way api() does in
               both auth modes. */ ''}
-        <div class="actions"><button class="btn" id="audit-export" type="button">Export CSV</button></div>
+        ${/* Disabled until the summary lands. The export carries the FILTERS,
+              not the rows on screen, so before the first load nobody — not the
+              auditor, not this screen — knows how many events the click is
+              about; an export whose size is unknown is the shape of finding a
+              sample in a working paper labelled as a population. It enables
+              the moment the count that describes it exists. */ ''}
+        <div class="actions"><button class="btn" id="audit-export" type="button" disabled
+          title="Enables when the log has loaded.">Export CSV</button></div>
       </div>
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
       material, attributed to its actor.</p>
@@ -5513,10 +6116,15 @@ async function viewAudit(query = {}) {
     // Learn every page title on screen before any row is drawn, so a detail
     // that names another row's page can name it rather than print its id.
     for (const e of shown) if (e.pageId && e.pageTitle) pageTitles.set(e.pageId, e.pageTitle);
+    // The count line is written FIRST and unconditionally, because the branch
+    // that used to skip it is the branch where a stale one does the damage.
+    countHost.textContent = auditCountLine(shown.length, matching);
     if (!shown.length) {
       tableHost.innerHTML = `
-        <div class="empty-state"><h2>No matching events</h2>
-        <p>Nothing in the log matches these filters.</p></div>`;
+        <div class="empty-state"><h2>${esc(auditEmptyHeading(matching))}</h2>
+        <p>${matching > 0
+          ? 'The count above and this listing disagree. Reload the log rather than reporting an empty result.'
+          : 'Nothing in the log matches these filters.'}</p></div>`;
       moreHost.innerHTML = '';
       return;
     }
@@ -5534,14 +6142,19 @@ async function viewAudit(query = {}) {
     // The sentence that was missing. A screen showing a page and saying
     // nothing about the rest asserts a completeness it does not have.
     const all = shown.length >= matching;
-    countHost.textContent = all
-      ? `${matching.toLocaleString()} event${matching === 1 ? '' : 's'} match these filters. All of them are shown.`
-      : `Showing the ${shown.length.toLocaleString()} most recent of ${matching.toLocaleString()} matching events.`;
     moreHost.innerHTML = all
       ? ''
       : `<button class="btn" id="audit-older">Show older (${(matching - shown.length).toLocaleString()} more)</button>`;
     const older = moreHost.querySelector('#audit-older');
     if (older) older.addEventListener('click', () => load({ append: true }));
+  };
+
+  const exportBtn = app.querySelector('#audit-export');
+  /** Neither the count nor the export may outlive the filters they describe. */
+  const clearPopulation = (why) => {
+    countHost.textContent = '';
+    exportBtn.disabled = true;
+    exportBtn.title = why;
   };
 
   const load = async ({ append = false } = {}) => {
@@ -5550,6 +6163,10 @@ async function viewAudit(query = {}) {
       shown = [];
       tableHost.innerHTML = '<div class="loading">Loading…</div>';
       moreHost.innerHTML = '';
+      // The previous filters' count described a different population. Holding
+      // it over the new one is how "168 events match" ended up above "No
+      // matching events" — it was true a request ago.
+      clearPopulation('Enables when the log has loaded.');
       // The link an auditor can keep. Replaced rather than pushed, so paging
       // does not fill the back button with filter states.
       const q = paramsOf(f).toString();
@@ -5566,10 +6183,13 @@ async function viewAudit(query = {}) {
       shown = append ? shown.concat(events) : events;
       fillActions(summary.actions, f.action);
       render(summary.matching);
-      const exportBtn = app.querySelector('#audit-export');
+      exportBtn.disabled = false;
       exportBtn.title = `Downloads all ${summary.matching.toLocaleString()} matching events, not just the ones shown.`;
     } catch (err) {
       tableHost.innerHTML = `<div class="empty-state"><h2>Could not load the log</h2><p>${esc(err.message)}</p></div>`;
+      // A failed load knows nothing about the population, so it may neither
+      // describe it nor offer to download it.
+      clearPopulation('The log did not load, so the size of this export is unknown.');
     }
   };
 
@@ -8032,7 +8652,7 @@ async function viewMap(scopeParam) {
     app.innerHTML = `<div class="page-wide">${mapUnavailableHTML()}</div>`;
     return;
   }
-  document.querySelectorAll('#topnav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === 'map'));
+  markNav('map');
 
   const collections = await api('GET', '/collections').catch(() => []);
   const list = Array.isArray(collections) ? collections : [];
@@ -8740,13 +9360,20 @@ function openAttestationModal(subject) {
 // ---------------------------------------------------------------------------
 // Global wiring
 
-// Tree links live inside <summary>; navigate without toggling the branch.
+// A tree branch opens and closes. This used to be the <details> element's job,
+// and the handler here was the opposite one — intercepting a link click so
+// navigating did not also collapse the branch it sat in. Two controls instead
+// of one overloaded one means the link is now an ordinary link and needs
+// nothing; only the toggle is wired, and it is delegated because the tree is
+// re-rendered on every navigation.
 document.addEventListener('click', (e) => {
-  const link = e.target.closest('summary a.tree-link');
-  if (link) {
-    e.preventDefault();
-    location.hash = link.getAttribute('href');
-  }
+  const toggle = e.target.closest?.('.tree-branch-toggle');
+  if (!toggle) return;
+  const kids = document.getElementById(toggle.getAttribute('aria-controls'));
+  if (!kids) return;
+  const open = toggle.getAttribute('aria-expanded') !== 'true';
+  toggle.setAttribute('aria-expanded', String(open));
+  kids.hidden = !open;
 });
 
 // Moving down a page without touching the address bar. Every "show me the rest
@@ -8812,5 +9439,7 @@ window.addEventListener('hashchange', route);
 loadAuth().finally(() => {
   renderChrome();
   wireSearch();
+  wireSkipLink();
+  wireNavToggle();
   route();
 });

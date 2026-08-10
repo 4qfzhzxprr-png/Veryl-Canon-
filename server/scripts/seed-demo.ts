@@ -1511,6 +1511,75 @@ export async function seedDemo(store: CanonStore, options: SeedOptions = {}): Pr
     relations += 1;
   }
 
+  // ---- a version note that is wrong, and stays ---------------------------
+  //
+  // Round seven, policy question 4, answered and shown rather than described.
+  //
+  // A compliance approver, told by a pane that there was no baseline to diff
+  // against, typed that into the note they signed: "no baseline diff was
+  // available; body is identical to published v1" — on a version that had
+  // changed four lines. The pane was wrong and has been fixed. The NOTE was
+  // written by a person, and it is not fixed, because the alternative is a
+  // record product that edits what a human wrote when the record turns out to
+  // be embarrassing. Canon's entire claim is that the record is what people
+  // actually wrote, with its history; a silent correction here is
+  // indistinguishable, six months later, from a silent correction anywhere
+  // else.
+  //
+  // So the corpus carries the wrong note AND the correction beside it — the
+  // mechanism Canon already has for "this is wrong and we are not deleting
+  // it": a comment, by a named person, at a stated time, on the page. A
+  // reader of the note is pointed at it from the version history.
+  //
+  // Seeded here rather than left as a one-off in somebody's database, because
+  // this is the shape of a thing that WILL happen in a real deployment, and a
+  // demo that only ever shows a tidy record does not show the product.
+  //
+  // The page is CHOSEN rather than pinned, and it draws no random numbers. Two
+  // reasons, both learned the hard way here: a new entry in PINNED_PAGES skips
+  // a `targetStatus` roll and shifts every dice throw after it, which moved the
+  // labelled retrieval eval by two and a half points for a change that has
+  // nothing to do with retrieval; and regenerating the body with `bodyFor`
+  // would draw from the same stream again. So it takes the first Canonical,
+  // non-pinned Compliance page in creation order and appends to the body the
+  // record already holds. Deterministic, and inert.
+  const misnoted = pages.find(
+    (p) =>
+      p.collectionKey === 'compliance' &&
+      p.target === 'canonical' &&
+      p.type !== 'note' &&
+      !PINNED_PAGES[key('compliance', p.title)],
+  );
+  if (misnoted) {
+    const author = actors.get(misnoted.ownerKey)!;
+    const approver = actors.get(misnoted.approverKey)!;
+    const published = store.getPage(operator, misnoted.id);
+    if ((published.currentVersion ?? 0) >= 1) {
+      const current = store.getVersion(operator, misnoted.id, published.currentVersion!);
+      store.editDraft(author, misnoted.id, {
+        body:
+          `${current.body}\n\n## Escalation to the Committee chair\n\n` +
+          'A finding rated high is reported to the chair of the Audit Committee within five working ' +
+          'days of the fieldwork closing, rather than waiting for the quarterly pack. The pack still ' +
+          'records it.',
+      });
+      store.submitForReview(author, misnoted.id);
+      store.approve(approver, misnoted.id, {
+        note: 'Approved. Note: no baseline diff was available, so the body is identical to published v1.',
+      });
+      // The correction. It names what actually changed and who is saying so;
+      // it does not touch the note, and it quotes the note so the two read
+      // together.
+      store.createComment(approver, misnoted.id, {
+        body:
+          'Correcting my own note on this version: it says the body is identical to v1, and that is ' +
+          'wrong. The approve pane told me there was no baseline to compare against and I wrote that ' +
+          'down as though it meant nothing had changed. This version adds the five-working-day ' +
+          'escalation to the Committee chair. The note stays as I wrote it — this is the correction.',
+      });
+    }
+  }
+
   // ---- federation: facts other systems own -------------------------------
   const fixtureConnector = staticConnectorOf(store.connectors);
   const sourceIds = new Map<string, string>();

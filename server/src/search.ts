@@ -75,6 +75,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS page_search USING fts5(
   aliases,
   tokenize = '${TOKENIZER}'
 );
+-- The index's own vocabulary: every distinct token it holds, with how many
+-- rows carry it. FTS5 maintains it; it stores nothing of its own. It is what
+-- suggest() below reads to answer "did you mean", and it is a view of the
+-- terms, never of the pages -- see suggest() for what stops it becoming an
+-- oracle for material the asker may not read.
+CREATE VIRTUAL TABLE IF NOT EXISTS page_search_vocab USING fts5vocab(page_search, 'row');
 `;
 
 const PAGE_STATUSES: readonly PageStatus[] = ['draft', 'in_review', 'canonical', 'needs_update', 'archived'];
@@ -182,6 +188,19 @@ export interface SearchFilter {
   alsoVisibleTo?: string;
   /** An allow-list of collection ids; absent means no such bound. */
   collectionIds?: string[];
+  /**
+   * Match the LAST term as a prefix, for a box somebody is still typing in.
+   * Off by default and on only for the interactive search surface — see
+   * toMatchQuery for why the last term and no other, and see below for why
+   * retrieval does not get it.
+   *
+   * Retrieval (answers.ts, retrieval.ts) deliberately does NOT set this. It is
+   * handed a finished question, not a half-typed word, and its pool selection
+   * is measured against a labelled set (scripts/eval-retrieval.ts). Widening
+   * what an answer may be grounded in is a change to what Canon will state as
+   * fact, and it does not get made as a side effect of fixing a search box.
+   */
+  prefix?: boolean;
 }
 
 export class SearchIndex {
@@ -325,6 +344,127 @@ export class SearchIndex {
     return out;
   }
 
+  /**
+   * "Did you mean …" — the one alternative query that would actually have
+   * found something, or null.
+   *
+   * Canon had no typo tolerance of any kind: one letter wrong and the answer
+   * was "Nothing you can see matches", which reads as a statement about the
+   * record rather than about the spelling (round seven). It is also how a
+   * stemmed prefix fails — see toMatchQuery — so both are answered here.
+   *
+   * THREE RULES, and the second and third are the load-bearing ones.
+   *
+   * 1. IT SUGGESTS, IT NEVER SUBSTITUTES. The results shown are always the
+   *    results for what was typed. A search box that quietly answers a
+   *    different question than the one asked is the same failure as a record
+   *    that quietly corrects what somebody wrote: it is convenient, and it
+   *    means the reader can no longer trust that what they see is what they
+   *    asked for. The caller renders this as an offer with the original still
+   *    on screen.
+   *
+   * 2. A SUGGESTION IS ONLY EVER MADE WHEN IT WOULD FIND SOMETHING THIS ASKER
+   *    CAN SEE. The vocabulary table is corpus-wide and unfiltered — it has to
+   *    be, it is a property of the index — so offering a word straight out of
+   *    it would leak the existence of terms that appear only in collections the
+   *    asker holds no role in. Type "zeph", get back "did you mean zephyrus",
+   *    and you have learned a codename by guessing at it, one letter at a time.
+   *    That is precisely the oracle the record's disclosure rule refuses
+   *    (REMEDIATION-PLAN.md, policy question 1: existence is disclosed where
+   *    the record states a relationship to a page you HOLD, never in answer to
+   *    an arbitrary term anybody can type). So every candidate is run through
+   *    the ordinary permission-filtered `search` before it is offered, and only
+   *    a candidate that returns a page the asker could have found by typing it
+   *    themselves survives. The suggestion discloses nothing new by
+   *    construction.
+   *
+   * 3. IT COSTS AT MOST A HANDFUL OF QUERIES. Candidates are drawn from the
+   *    vocabulary by document frequency and capped; each verification is a
+   *    LIMIT 1 search. A query that already finds something is answered `null`
+   *    before any of that happens — nothing second-guesses a search that
+   *    worked.
+   *
+   * WHAT IT OFFERS IS A STEM, and that is a wart worth naming rather than
+   * hiding. The vocabulary of an FTS5 index tokenized with Porter holds
+   * `retent`, not `retention`, so a suggestion for a mistyped "retention"
+   * reads "did you mean retent". It is the word the index actually holds, it
+   * finds the right pages when it is taken, and the alternative is a second
+   * unstemmed vocabulary carried for the sake of the spelling of a hint.
+   */
+  suggest(actorId: string, filter: SearchFilter): string | null {
+    // Mirrors what the caller did before asking: the interactive surface
+    // searches with prefix matching on, so "already found something" has to
+    // mean the same thing here or a working query gets a pointless hint.
+    if (this.search(actorId, { ...filter, prefix: true, limit: 1 }).length > 0) return null;
+    const terms = (filter.q ?? '')
+      .split(/\s+/)
+      .map((t) => t.replace(/"/g, '').toLowerCase())
+      .filter((t) => t.length > 0);
+    if (!terms.length || terms.length > 6) return null;
+
+    // Longest term first: it carries the most meaning, and it is the one a
+    // misspelling does the most damage to.
+    const order = terms.map((t, i) => ({ t, i })).sort((a, b) => b.t.length - a.t.length);
+    for (const { t, i } of order) {
+      if (t.length < 3) continue;
+      for (const candidate of this.nearTerms(t)) {
+        const alt = terms.slice();
+        alt[i] = candidate;
+        const q = alt.join(' ');
+        if (q === filter.q) continue;
+        // The real search, with the real permission filter. A candidate that
+        // shows this asker nothing is not offered — see rule 2.
+        if (this.search(actorId, { ...filter, q, prefix: false, limit: 1 }).length > 0) return q;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Vocabulary terms that are plausibly the word somebody meant. Three shapes,
+   * because three different things go wrong:
+   *
+   *   * the vocabulary term starts with what was typed — an unfinished word
+   *     that the stemmer put out of reach of a prefix query;
+   *   * what was typed starts with the vocabulary term — typing PAST the stem,
+   *     the failure toMatchQuery documents;
+   *   * a small edit distance — an ordinary typo. Measured against the typed
+   *     word cut to the vocabulary term's length, because the vocabulary holds
+   *     STEMS: "retentoin" is three edits from `retent` as whole words and one
+   *     edit from it as far as `retent` goes, and the second number is the one
+   *     that describes what went wrong.
+   *
+   * Ordered by how many pages hold the term, because the commonest word in the
+   * record is the likeliest thing a reader was reaching for, and capped.
+   */
+  private nearTerms(term: string): string[] {
+    const max = slack(term);
+    // A cheap SQL narrowing before any distance is computed: nothing more than
+    // two characters different in length can be within two edits, and the
+    // vocabulary of a real record is large.
+    const rows = this.db
+      .prepare(
+        `SELECT term, doc FROM page_search_vocab
+         WHERE length(term) BETWEEN ? AND ?
+         ORDER BY doc DESC LIMIT 4000`,
+      )
+      .all(Math.max(2, term.length - 4), term.length + max) as { term: string; doc: number }[];
+    const near: string[] = [];
+    for (const row of rows) {
+      if (row.term === term) continue;
+      const head = term.slice(0, Math.min(term.length, row.term.length + max));
+      if (
+        row.term.startsWith(term) ||
+        term.startsWith(row.term) ||
+        (max > 0 && editDistance(head, row.term, max) <= max)
+      ) {
+        near.push(row.term);
+        if (near.length >= 6) break;
+      }
+    }
+    return near;
+  }
+
   private get insert() {
     return this.db.prepare('INSERT INTO page_search (page_id, title, body, aliases) VALUES (?, ?, ?, ?)');
   }
@@ -337,7 +477,7 @@ export class SearchIndex {
     const actor = this.db.prepare('SELECT id FROM actors WHERE id = ?').get(actorId);
     if (!actor) throw new CanonError('not_found', `No such actor: ${actorId}`);
 
-    const match = toMatchQuery(filter.q);
+    const match = toMatchQuery(filter.q, { prefix: filter.prefix === true });
     if (!match) throw new CanonError('invalid', 'Search requires a query (q)');
     if (filter.type && !DOC_TYPES.includes(filter.type as DocType)) {
       throw new CanonError('invalid', `Unknown document type: ${filter.type}`);
@@ -429,11 +569,68 @@ export class SearchIndex {
 // Users type words, not FTS5 syntax. Each whitespace-separated term becomes
 // a quoted phrase (all terms must match), so operators and punctuation in
 // the input can never break or subvert the MATCH expression.
-function toMatchQuery(q: string | undefined): string | null {
+//
+// PREFIX MATCHING, AND ONLY ON THE LAST TERM.
+//
+// Every term was quoted whole and nothing carried a `*`, so a search box that
+// answers as you type answered nothing until the last letter of the last word
+// was in place: "reten" found nothing, "retention" found the policy (round
+// seven). Somebody who does not already know the exact word the record uses
+// never gets to the end of it.
+//
+// The last term, and no other, because the last term is the one under the
+// cursor. The earlier ones were finished by the person typing a space after
+// them, and treating a finished word as a prefix widens a query for no reason
+// — "cost" would drag in "costume".
+//
+// WHAT THIS STILL CANNOT DO, stated rather than glossed. The index is stemmed
+// (Porter, see TOKENIZER) and a prefix query is matched against the STEM, so
+// the typed prefix has to be a prefix of the stem and not of the word:
+// "reten*" reaches `retent` and finds the page, and "retenti*" does not,
+// because `retenti` is longer than the stem it is trying to be a prefix of.
+// Typing further into a word can therefore lose the match it had two letters
+// ago. That is a real edge and it is why `suggest` exists: over-typing a stem
+// looks exactly like a typo to the vocabulary, and it is answered the same
+// way. The alternative — a second, unstemmed index to run prefixes against —
+// doubles the index to fix a case one suggestion already covers.
+export function toMatchQuery(q: string | undefined, { prefix = false } = {}): string | null {
   const terms = (q ?? '')
     .split(/\s+/)
     .map((t) => t.replace(/"/g, ''))
-    .filter((t) => t.length > 0)
-    .map((t) => `"${t}"`);
-  return terms.length ? terms.join(' ') : null;
+    .filter((t) => t.length > 0);
+  if (!terms.length) return null;
+  return terms
+    .map((t, i) => (prefix && i === terms.length - 1 ? `"${t}"*` : `"${t}"`))
+    .join(' ');
+}
+
+/**
+ * Levenshtein distance, bounded: it stops as soon as every cell in a row is
+ * over `max`, because the only question ever asked of it here is "within two?"
+ * and a long pair of unrelated words should not be walked to the end to say no.
+ */
+export function editDistance(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    const row = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const v = Math.min(row[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
+      row.push(v);
+      if (v < best) best = v;
+    }
+    if (best > max) return max + 1;
+    prev = row;
+  }
+  return prev[b.length]!;
+}
+
+/** How far off a word of this length is still recognisably the same word. One
+ *  edit on a short word is most of it; two on a long one is a slip. */
+function slack(term: string): number {
+  if (term.length <= 3) return 0;
+  if (term.length <= 5) return 1;
+  return 2;
 }

@@ -923,7 +923,7 @@ export class CanonStore {
    * a save: a collision that predates this editing session belongs on screen
    * from the first paint, not after the first keystroke.
    */
-  openDraft(actorId: string, pageId: string): Draft & { warnings: string[] } {
+  openDraft(actorId: string, pageId: string): Draft & { warnings: string[]; linkWarnings: string[] } {
     const { page, existing } = this.editablePage(actorId, pageId);
     const base = existing ?? this.draftSeed(page);
     const fields = JSON.parse(base.fields_json as string) as PageFields;
@@ -936,6 +936,13 @@ export class CanonStore {
       baseVersion: existing ? ((existing.base_version as number) ?? null) : page.currentVersion,
       updatedAt: (existing?.updated_at as string) ?? now(),
       warnings: this.aliasCollisionWarnings(pageId, page.collectionId, fields.aliases ?? []),
+      // Its own field, not folded into `warnings`: the two say different things
+      // to different parts of the screen — a collision is about the names
+      // field, this is about the body — and a caller that merges them ends up
+      // appending one's explanation to the other's sentence. On screen from the
+      // first paint, for the same reason the collisions are: it is a fact about
+      // text that is already written, not about the next keystroke.
+      linkWarnings: this.linkAudienceWarnings(actorId, page.collectionId, base.body as string),
     };
   }
 
@@ -943,7 +950,7 @@ export class CanonStore {
     actorId: string,
     pageId: string,
     input: { title?: string; body?: string; fields?: PageFields },
-  ): Draft & { warnings: string[] } {
+  ): Draft & { warnings: string[]; linkWarnings: string[] } {
     const { page, existing } = this.editablePage(actorId, pageId);
 
     // The patch is validated against what the draft already carries, not on its
@@ -978,7 +985,88 @@ export class CanonStore {
     return {
       ...this.getDraft(actorId, pageId)!,
       warnings: this.aliasCollisionWarnings(pageId, page.collectionId, fields.aliases ?? []),
+      linkWarnings: this.linkAudienceWarnings(actorId, page.collectionId, body),
     };
+  }
+
+  /**
+   * WHO THIS PAGE'S OWN READERS ARE, FOR EACH PAGE ITS BODY LINKS TO.
+   *
+   * Policy question 3, Canon's half. `withheldLinks` (75c5166) closed the
+   * reader's half: a link to a page the READER cannot open loses its label, so
+   * a title is not handed over in the body of a page somebody was granted. What
+   * that deliberately could not reach is prose — a sentence that merely NAMES a
+   * restricted page is indistinguishable from any other sentence, and no
+   * permission check will ever find it.
+   *
+   * The only person who can judge the sentence is the person writing it, and
+   * nothing told them. So this is what the author is told: for every page this
+   * body links to, how many of the people who can read THIS page cannot open
+   * that one. It is prose around the link — "as set out in the workforce plan"
+   * — that gives the game away, and an author who knows the link is dark to
+   * eleven of their fourteen readers can write the sentence differently, or
+   * not write it.
+   *
+   * A WARNING, NEVER A BLOCK. A cross-collection link is a normal, useful thing
+   * — the record hangs together — and refusing one would make Canon a product
+   * that stops people writing down what is true. The author is told a fact and
+   * decides.
+   *
+   * TWO THINGS IT DELIBERATELY DOES NOT DO.
+   *
+   *   * It says nothing about a link whose target the AUTHOR cannot open.
+   *     Reporting "this link goes somewhere your readers cannot follow" about a
+   *     page the author was themselves refused would confirm that the page
+   *     exists — the same oracle the disclosure rule refuses everywhere else.
+   *     Those links are already handled at the far end, for the reader.
+   *   * It does not gate on a majority. "Most readers cannot see it" was the
+   *     shape of the finding, and a threshold would turn a fact into a verdict
+   *     with an invented number in it: 6 of 14 is worth knowing and 7 of 14 is
+   *     not, for no reason anybody could defend. The count is stated and the
+   *     lines are ordered worst-first, so the author reads the serious ones
+   *     first and judges the rest.
+   */
+  linkAudienceWarnings(actorId: string, collectionId: string, body: string): string[] {
+    const linked = parsePageLinks(body ?? '');
+    if (!linked.length) return [];
+    const readers = (
+      this.db.prepare('SELECT actor_id FROM collection_members WHERE collection_id = ?').all(collectionId) as {
+        actor_id: string;
+      }[]
+    ).map((r) => r.actor_id);
+    if (!readers.length) return [];
+
+    // One line per target COLLECTION, not per link: three links into the same
+    // restricted collection are one thing to know, said once.
+    const blockedByCollection = new Map<string, { name: string; blocked: number; links: number }>();
+    for (const id of linked) {
+      const row = this.db
+        .prepare(
+          `SELECT p.collection_id AS collection_id, c.name AS name
+           FROM pages p JOIN collections c ON c.id = p.collection_id WHERE p.id = ?`,
+        )
+        .get(id) as { collection_id: string; name: string } | undefined;
+      // An id naming no page is text, exactly as retrieval treats it.
+      if (!row) continue;
+      if (row.collection_id === collectionId) continue;
+      // The author's own sight of the target is the gate — see above.
+      if (!this.roleOf(actorId, row.collection_id)) continue;
+      const blocked = readers.filter((reader) => !this.roleOf(reader, row.collection_id)).length;
+      if (blocked === 0) continue;
+      const seen = blockedByCollection.get(row.collection_id);
+      if (seen) seen.links += 1;
+      else blockedByCollection.set(row.collection_id, { name: row.name, blocked, links: 1 });
+    }
+
+    return [...blockedByCollection.values()]
+      .sort((a, b) => b.blocked - a.blocked || a.name.localeCompare(b.name))
+      .map(
+        (c) =>
+          `${c.links === 1 ? 'A link' : `${c.links} links`} in this page ` +
+          `${c.links === 1 ? 'goes' : 'go'} to “${c.name}”, which ${c.blocked} of the ${readers.length} ` +
+          `${readers.length === 1 ? 'person' : 'people'} who can read this page cannot open. They will see ` +
+          'that a link is there and not what it points at — so the sentence around it has to stand on its own.',
+      );
   }
 
   /**
@@ -1132,7 +1220,10 @@ export class CanonStore {
       // explain, that is a mistake worth naming; if the patch CLEARS the date,
       // the basis it explained goes with it rather than being left dangling.
       if (out.effectiveDateBasis) {
-        throw new CanonError('invalid', 'effectiveDateBasis explains an effective date; this page states none');
+        throw new CanonError(
+          'invalid',
+          '"Where the effective date comes from" explains an effective date; this page states none',
+        );
       }
       out.effectiveDateBasis = null;
     }
@@ -1215,14 +1306,14 @@ export class CanonStore {
       throw new CanonError(
         'workflow',
         `A ${type} requires an effective date before it can publish: the day what it says began to apply. ` +
-          'If it predates this record, say where the date comes from in `effectiveDateBasis`.',
+          'If it predates this record, fill in "Where the effective date comes from" as well.',
       );
     }
   }
 
   // ---- publishing and history ------------------------------------------
 
-  publish(actorId: string, pageId: string, input: { note?: string } = {}): Page {
+  publish(actorId: string, pageId: string, input: { note?: string } = {}): Page & { linkWarnings?: string[] } {
     const row = this.pageRow(pageId);
     const page = this.toPage(row);
     this.requireRole(actorId, page.collectionId, 'edit');
@@ -1237,12 +1328,18 @@ export class CanonStore {
     }
     const fields = JSON.parse(draft.fields_json as string) as PageFields;
     this.validateReadyToPublish(page.type, fields);
-    return this.writeVersion(actorId, page, {
+    // Computed BEFORE the draft is cleared, because writeVersion clears it —
+    // and carried out on the response, because publishing is the moment the
+    // text stops being the author's alone. Additive: the page is exactly the
+    // page every existing caller reads. See linkAudienceWarnings.
+    const linkWarnings = this.linkAudienceWarnings(actorId, page.collectionId, draft.body as string);
+    const published = this.writeVersion(actorId, page, {
       title: draft.title as string,
       body: draft.body as string,
       fields,
       note: input.note ?? null,
     });
+    return linkWarnings.length ? { ...published, linkWarnings } : published;
   }
 
   // Creates the next immutable version, updates the current pointer and the
@@ -1493,7 +1590,7 @@ export class CanonStore {
     return row ? { actorId: row.actor_id, at: row.at } : null;
   }
 
-  submitForReview(actorId: string, pageId: string): Page {
+  submitForReview(actorId: string, pageId: string): Page & { linkWarnings?: string[] } {
     const row = this.pageRow(pageId);
     const page = this.toPage(row);
     this.requireRole(actorId, page.collectionId, 'edit');
@@ -1527,7 +1624,12 @@ export class CanonStore {
     this.db.prepare("UPDATE pages SET status = 'in_review' WHERE id = ?").run(pageId);
     this.audit(actorId, 'page.submit', { collectionId: page.collectionId, pageId });
     this.notifier.reviewRequested(actorId, pageId);
-    return this.getPage(actorId, pageId);
+    // The other moment the author is committing the text: from here it is an
+    // approver's to accept, and the person who can still change a sentence is
+    // about to stop being the person holding it.
+    const linkWarnings = this.linkAudienceWarnings(actorId, page.collectionId, draft.body as string);
+    const submitted = this.getPage(actorId, pageId);
+    return linkWarnings.length ? { ...submitted, linkWarnings } : submitted;
   }
 
   /**

@@ -720,3 +720,37 @@ test('comments: a failed member lookup costs the hint, never the comment box', (
   const fn = source.slice(source.indexOf('async function mentionableIn('), source.indexOf('async function renderCommentsPanel('));
   assert.match(fn, /catch \{\s*return \[\];/);
 });
+
+// ---------------------------------------------------------------------------
+// Resolving a comment (Phase 4)
+//
+// `POST /comments/:id/resolve` and `/reopen` have existed since resolve was
+// written, and `resolved_at`/`resolved_by` are stored — but nothing rendered a
+// button, so the send-back banner's promise that a comment "can be replied to
+// and resolved" was half true. A conversation that cannot be closed stays open
+// on the page forever.
+
+test('comments: resolve and reopen are reachable, and gated on the comment role', () => {
+  const fn = source.slice(source.indexOf('function commentResolutionHTML('), source.indexOf('/**\n * Who this reader can mention'));
+  assert.match(fn, /data-resolve=/);
+  assert.match(fn, /data-reopen=/);
+  // A reader who cannot comment sees the state and no buttons — the same gate
+  // the server applies, so the UI never offers what the server will refuse.
+  assert.match(fn, /if \(!canComment\)/);
+});
+
+test('comments: a resolved comment says who closed it and when', () => {
+  // The server has carried both since resolve was written; the client dropped
+  // them, so "resolved" was a conversation closed by nobody at no time.
+  const norm = source.slice(source.indexOf('function normalizeComment('), source.indexOf('async function renderCommentsPanel('));
+  assert.match(norm, /resolvedAt: c\.resolvedAt/);
+  assert.match(norm, /resolvedBy: c\.resolvedBy/);
+  const fn = source.slice(source.indexOf('function commentResolutionHTML('), source.indexOf('/**\n * Who this reader can mention'));
+  assert.match(fn, /Resolved\$\{who/);
+});
+
+test('comments: a Canon without the resolve routes says so once', () => {
+  const wire = source.slice(source.indexOf("data-resolve], [data-reopen]"), source.indexOf("#comment-form')?.addEventListener"));
+  assert.match(wire, /404 \|\| err\.status === 405/);
+  assert.match(wire, /not available on this Canon yet/);
+});

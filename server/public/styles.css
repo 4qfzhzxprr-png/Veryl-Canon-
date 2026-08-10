@@ -12,6 +12,13 @@
   --accent: #2e6e5c;
   --accent-ink: #ffffff;
   --accent-soft: #e4efeb;
+  /* THE FOCUS RING IS NOT --accent-soft. It was, everywhere, and
+     #e4efeb against #ffffff is 1.08:1 — WCAG SC 1.4.11 asks for 3:1, so the
+     one indicator a keyboard user has was effectively invisible on 112
+     controls (round seven). --accent is 5.5:1 on the light surfaces and 4.8:1
+     on the dark ones; it is a token of its own so that a future palette change
+     to --accent-soft cannot quietly take the ring back down with it. */
+  --focus-ring: #2e6e5c;
   --amber: #8a6116;
   --amber-soft: #f6ecd7;
   --danger: #9c3a30;
@@ -38,6 +45,7 @@
     --accent: #4f9a84;
     --accent-ink: #10231d;
     --accent-soft: #22352f;
+    --focus-ring: #6fc0a6;
     --amber: #d3a44a;
     --amber-soft: #33301f;
     --danger: #d1746a;
@@ -69,6 +77,47 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* ONE FOCUS INDICATOR, FOR EVERYTHING, AND IT PASSES SC 1.4.11.
+   Most controls here had no focus rule at all and fell back to whatever the
+   engine draws, and the handful that DID have one used --accent-soft, which is
+   1.08:1 against white — measured at 1.08:1 across 112 controls in round
+   seven, against the 3:1 the success criterion asks for.
+
+   :focus-visible, not :focus: a mouse click on a button should not leave a ring
+   behind it, and the browsers' own heuristic for "is this person navigating by
+   keyboard" is better than any rule this stylesheet could write. Anything that
+   still needs its own treatment overrides it below with a heavier selector —
+   nothing switches it off. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The way past 85 tab stops. Off-screen until it is focused, then it is the
+   first thing on the page — which is the only moment it is any use. It must
+   NOT be `display: none` or `visibility: hidden`: both take it out of the tab
+   order, which is the one thing it exists to be in. */
+.skip-link {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  transform: translateY(-120%);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 0 0 8px 0;
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+  transition: transform 0.12s ease;
+}
+.skip-link:focus { transform: translateY(0); text-decoration: none; }
+
+/* The heading a route change moves focus to (announceRoute). It is not a
+   control, so a ring around it is noise for a mouse user and a signal for a
+   keyboard one — which is exactly the distinction :focus-visible draws. */
+[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
+
 code {
   font-family: var(--mono);
   font-size: 0.86em;
@@ -78,6 +127,20 @@ code {
 }
 
 hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+
+/* SIXTEEN PIXELS IS NOT A DESIGN CHOICE, IT IS A FLOOR.
+   iOS Safari zooms the whole page in when it focuses a text field whose text
+   is under 16px, and it does not zoom back out afterwards — so one tap on the
+   search box left a compliance director reading a policy at 1.2× with the
+   right-hand third of every line off screen, and the only way back was a
+   pinch (round seven). Canon's body text is 15px and every field inherited
+   it; a bare <input> with no rule at all inherits nothing and takes the UA's
+   13.33px, which is worse.
+
+   The floor is set here, once, on the elements rather than per screen, so a
+   field added later is over the line by default. Anything that deliberately
+   wants larger says so with a heavier selector; nothing may go under. */
+input, textarea, select { font-family: inherit; font-size: 16px; }
 
 /* ---------- top bar -------------------------------------------------- */
 
@@ -116,7 +179,17 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   vertical-align: 2px;
 }
 
+/* An author `display` rule outranks the UA's `[hidden] { display: none }` —
+   the same trap .tree-toggle[hidden] documents below — so the nav has to say
+   this itself. Without it the nav's links were on screen for somebody who is
+   not signed in, pointing at routes that bounce straight back to the sign-in
+   screen. */
+.topnav[hidden] { display: none; }
 .topnav { display: flex; gap: 0.25rem; margin-left: auto; }
+
+/* The phone-width disclosure for the nav. Not rendered at all above 640px,
+   where the nav fits on the bar beside everything else. */
+.nav-toggle { display: none; }
 .topnav a {
   color: var(--muted);
   padding: 0.35rem 0.7rem;
@@ -142,9 +215,33 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   border-radius: 8px;
   background: var(--bg);
   color: var(--text);
-  font: inherit;
+  /* Not `font: inherit` — that is where the 15px came from. */
+  font-family: inherit;
+  font-size: 16px;
 }
-.search-slot input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.search-slot input:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
+/* The dropdown's foot: the way to a page that holds more than twelve hits and
+   can be linked to. Styled as a row of the list rather than as a button —
+   it is where the list continues. */
+.search-more {
+  display: block;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.86rem;
+  font-weight: 550;
+  color: var(--accent);
+}
+.search-more:hover { background: var(--surface-2); text-decoration: none; }
+/* "Did you mean" — an offer, never an applied correction. Quiet, and never
+   styled as a result: the results on screen are the results for what was
+   actually typed. */
+.search-suggest { margin: 0.6rem 0 0; padding: 0 0.75rem; font-size: 0.9rem; }
+.search-page-form { display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 1rem; }
+.search-page-form label { flex: 1 1 20rem; margin: 0; }
+.search-count { margin: 0 0 0.6rem; }
+.search-results-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.search-results-list .search-hit { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+
 .search-results {
   position: absolute;
   top: calc(100% + 6px);
@@ -266,13 +363,34 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
 .tree ul { padding-left: 0.95rem; border-left: 1px solid var(--border); margin-left: 0.45rem; }
 .tree li { margin: 0.1rem 0; }
-.tree summary { cursor: pointer; }
-.tree summary::marker { color: var(--muted); font-size: 0.8em; }
+/* A branch is a toggle beside a link, not a link inside a <summary> (which is
+   invalid markup — see treeHTML). The row is the two of them; the triangle is
+   drawn here rather than by ::marker, because a <button> has no marker. */
+.tree-row { display: flex; align-items: flex-start; gap: 0.1rem; }
+.tree-branch-toggle {
+  flex: none;
+  /* 24px of target on a phone. The visual triangle is smaller than the box it
+     is in, which is the point: the tap area is the box. */
+  width: 24px;
+  min-height: 24px;
+  margin-top: 0.06rem;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.tree-branch-toggle::before { content: "\25B8"; display: inline-block; font-size: 0.8em; transition: transform 0.12s ease; }
+.tree-branch-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+.tree-branch-toggle:hover { background: var(--surface-2); color: var(--text); }
+.tree-row .tree-link { flex: 1 1 auto; }
 /* The title wraps and the badge follows it. Nothing here truncates: a page
    whose title reads "Escal…" is a page nobody can navigate to. */
 .tree-link {
-  /* inline-block, not block: inside a <summary> it has to sit beside the
-     disclosure marker, and it still wraps its own text at max-width. */
+  /* inline-block, not block: it sits beside the branch toggle in a flex row
+     and still wraps its own text at max-width. */
   display: inline-block;
   max-width: 100%;
   padding: 0.22rem 0.45rem;
@@ -419,7 +537,10 @@ label input, label textarea, label select {
   display: block;
   width: 100%;
   margin-top: 0.3rem;
-  font: inherit;
+  /* `font: inherit` here put every form field in the product at the body's
+     15px, which is under the iOS zoom floor. See the rule near the top. */
+  font-family: inherit;
+  font-size: 16px;
   font-weight: 400;
   color: var(--text);
   background: var(--bg);
@@ -428,7 +549,8 @@ label input, label textarea, label select {
   padding: 0.45rem 0.65rem;
 }
 label input:focus, label textarea:focus, label select:focus {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent);
 }
 label.check { display: flex; align-items: baseline; gap: 0.5rem; font-weight: 500; }
@@ -805,7 +927,8 @@ label.check input { width: auto; display: inline; margin: 0; }
   padding: 0.7rem 0.85rem;
 }
 .editor-body:focus {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent);
 }
 /* `display: block` above outranks the browser's own rule for the hidden
@@ -912,7 +1035,18 @@ label.check input { width: auto; display: inline; margin: 0; }
   padding: 0.9rem 1.1rem 0.8rem;
   transition: border-color 0.12s ease;
 }
-.ask-form:focus-within { border-color: var(--accent); }
+/* The ring is drawn on the FORM, not the textarea: the question box is a
+   borderless field inside a card, and an outline on the field alone would be a
+   rectangle floating inside another rectangle. Drawing it on the immediate
+   container is what an indicator has to be — visible and 3:1 against what is
+   next to it. What it may not be is nothing, which is what
+   `.ask-question:focus { outline: none }` made it: the ONE control on the Ask
+   screen, with no focus indicator at all (round seven). */
+.ask-form:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 .ask-question {
   display: block;
@@ -927,6 +1061,9 @@ label.check input { width: auto; display: inline; margin: 0; }
   resize: vertical;
   min-height: 3.4rem;
 }
+/* Suppressed here ONLY because .ask-form:focus-within above draws the ring
+   around this field's own container. Never remove that rule and leave this
+   one. */
 .ask-question:focus { outline: none; }
 .ask-question::placeholder { color: var(--muted); opacity: 0.75; }
 
@@ -1266,6 +1403,11 @@ label.check input { width: auto; display: inline; margin: 0; }
    an affordance for a feature, not a call to action. */
 .comment-mention-hint { font-size: 0.85rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; }
 .mention-chip { padding: 0 0.35rem; font-size: 0.85rem; }
+/* A comment's footer: who closed it, and the one control that closes or
+   reopens it. Right-aligned and quiet — resolving is bookkeeping, not the
+   point of the conversation. */
+.comment-actions { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 0.5rem; margin-top: 0.35rem; }
+.comment-resolved-by { font-size: 0.85rem; margin-right: auto; }
 .rel-note { margin: 0.35rem 0 0; font-size: 0.9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rel-meta { margin: 0.35rem 0 0; font-size: 0.8rem; }
 .rel-withdraw { font-size: 0.8rem; padding: 0 0.35rem; }
@@ -2035,8 +2177,20 @@ label.check input { width: auto; display: inline; margin: 0; }
 .toast-ok { background: var(--accent); color: var(--accent-ink); }
 .toast-info { background: var(--text); color: var(--bg); }
 /* "It worked, and here is what you should know about it" — the withdrawal that
-   leaves a directory group still granting access (SECURITY.md R10). */
-.toast-warn { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber); }
+   leaves a directory group still granting access (SECURITY.md R10), and the
+   published page whose links most of its readers cannot follow. Dismissed by
+   hand, like a refusal and unlike good news: the act HAPPENED, so there is
+   nothing to retry, and the sentence is the only thing that will send the
+   author back to look. At two and a half seconds it was on screen while its
+   reader was three actions further on. */
+.toast-warn {
+  background: var(--amber-soft);
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
 .toast.leaving { opacity: 0; transition: opacity 0.3s ease; }
 @keyframes toast-in { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
@@ -2312,6 +2466,58 @@ label.check input { width: auto; display: inline; margin: 0; }
   .map-scope select { max-width: 100%; }
   .map-legend-grid { gap: 0.7rem 1rem; }
 }
+
+/* A STICKY HEADER MAY NOT BE A THIRD OF THE SCREEN.
+   At 375×667 the bar wrapped into four rows — brand, search, seven nav entries
+   over three lines, identity chip — and measured 37.5% of the viewport, stuck
+   there, on every screen in the product (round seven). A reader approving a
+   policy on a phone was reading it through a letterbox.
+
+   The nav is the bulk of it, so the nav collapses behind one control. Nothing
+   is cut and nothing is moved off the bar: every entry is still there, one tap
+   away, and the count on My queue rides along on the toggle so the reason to
+   open it is visible while it is closed.
+
+   Deliberately NOT done with `order`: putting the identity chip up onto the
+   first row would have taken thirty pixels off and made the visual order
+   differ from the tab order, which is precisely the kind of thing the rest of
+   this round has been removing. The chip keeps its own line. The bar is about
+   21% now instead of 37.5%, and the sequence a keyboard reads is the sequence
+   an eye reads. */
+@media (max-width: 640px) {
+  .nav-toggle:not([hidden]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    /* 44px of tap target, which is the floor for a control on a phone. */
+    min-height: 44px;
+    padding: 0 0.7rem;
+    margin-left: auto;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 550;
+    cursor: pointer;
+  }
+  .topbar { padding: 0.4rem 0.9rem; gap: 0.4rem 0.6rem; }
+  /* Its own row, full width: a search box sharing a line with a brand and a
+     button is a search box nobody can read what they typed into. */
+  .search-slot { flex: 1 0 100%; margin-left: 0; }
+  .topnav { display: none; }
+  /* One tap opens it as a column. A column, not a wrapped row, because a
+     wrapped row of seven entries is the four-line bar this replaced. */
+  .topbar.is-nav-open .topnav:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex: 1 0 100%;
+    margin-left: 0;
+    gap: 0;
+  }
+  .topbar.is-nav-open .topnav a { padding: 0.6rem 0.7rem; min-height: 44px; display: flex; align-items: center; }
+}
+
 
 /* The stated basis for a backdated effective date, shown wherever the date is
    (USER-TESTING.md, second round). Quiet, because it is provenance rather than

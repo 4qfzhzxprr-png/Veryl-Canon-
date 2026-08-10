@@ -267,8 +267,33 @@ const routes: Route[] = [
       status: query.get('status') ?? undefined,
       ownerId: query.get('owner') ?? undefined,
       limit: countParam(query.get('limit'), 'limit'),
+      // The interactive surface, and the only caller that gets prefix
+      // matching: somebody is typing here. Retrieval and the Knowledge API
+      // are handed finished questions and are measured against a labelled
+      // set — see SearchFilter.prefix.
+      prefix: true,
     }),
   ),
+
+  // "Did you mean" — one alternative query that would have found something,
+  // or null. Its own route rather than a field on /search, for the reason
+  // /audit/summary is its own route: /search answers with an array and every
+  // caller and test in this repository reads it that way.
+  //
+  // Only ever consulted when a search came back empty, and it never rewrites
+  // the query it was given: the results on screen are always the results for
+  // what was typed. See SearchIndex.suggest for why a candidate is verified
+  // through the permission-filtered search before it is offered — an
+  // unverified suggestion drawn from the index vocabulary is an oracle for
+  // words that appear only in collections the asker cannot open.
+  route('GET', '/search/suggest', ({ store, actorId, query }) => ({
+    query: store.searchIndex.suggest(actorId, {
+      q: query.get('q') ?? '',
+      collectionId: query.get('collection') ?? undefined,
+      type: query.get('type') ?? undefined,
+      status: query.get('status') ?? undefined,
+    }),
+  })),
 
   // One page of the log, newest first. `?before=<event id>` walks older: the
   // cursor for the next page is the id of the last event in this one. The

@@ -377,3 +377,93 @@ test('aliases: indexed with the title’s weight, and an old index re-derives it
   const again = reopened.searchIndex.search(dana.id, { q: 'COB' });
   assert.deepEqual(again.map((h) => h.pageId), [page.id], 'the reopened store rebuilt the index with aliases in it');
 });
+
+// ---------------------------------------------------------------------------
+// Round seven, Phase 8. Search was the weakest surface in the product and the
+// findings were about the shape of it rather than about ranking:
+//
+//   * `toMatchQuery` quoted every term whole and put no `*` on any of them, so
+//     the box answered nothing until the last letter of the last word was in
+//     place. Somebody who does not already know the word the record uses never
+//     gets to the end of it.
+//   * One letter wrong and the answer was "Nothing you can see matches",
+//     which reads as a fact about the record rather than about the spelling.
+//   * Enter did nothing and there was no results page — the dropdown was the
+//     whole surface, so a search could not be kept, linked, or read past
+//     twelve hits.
+
+test('search: a word half typed finds the page, and only the last word is a prefix', () => {
+  const { store, marc, collection } = setup();
+  publishNote(store, marc.id, collection.id, 'Retention periods', 'Vendor contracts are kept for seven years.');
+  publishNote(store, marc.id, collection.id, 'Costume policy', 'What to wear at the holiday party.');
+
+  // The finding, as its fix: "reten" is a page nobody could reach.
+  assert.equal(store.searchIndex.search(marc.id, { q: 'reten' }).length, 0, 'without the flag, unchanged');
+  assert.equal(store.searchIndex.search(marc.id, { q: 'reten', prefix: true }).length, 1);
+
+  // And only the LAST term, because the earlier ones were finished by the
+  // person typing a space after them. "cost" is a word; it must not drag in
+  // "costume" while somebody is still typing the term after it.
+  const both = store.searchIndex.search(marc.id, { q: 'cost vendor', prefix: true });
+  assert.deepEqual(both.map((r) => r.title), [], 'the finished first term stays a whole word');
+});
+
+test('search: retrieval does not silently inherit prefix matching', () => {
+  // Widening the pool an ANSWER may be grounded in is a change to what Canon
+  // will state as fact. It does not get made as a side effect of fixing a
+  // search box, and the default is what pins that.
+  const { store, marc, collection } = setup();
+  publishNote(store, marc.id, collection.id, 'Retention periods', 'Vendor contracts are kept for seven years.');
+  assert.equal(store.searchIndex.search(marc.id, { q: 'reten' }).length, 0);
+});
+
+test('search: a typo is answered with an offer, not with an empty record', () => {
+  const { store, marc, collection } = setup();
+  publishNote(store, marc.id, collection.id, 'Retention periods', 'Vendor contracts are kept for seven years.');
+  assert.equal(store.searchIndex.search(marc.id, { q: 'vendr', prefix: true }).length, 0);
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'vendr' }), 'vendor');
+  // Typing PAST the stem looks identical to a typo from here, and is answered
+  // the same way — see toMatchQuery for why "retenti" cannot match `retent`.
+  assert.equal(store.searchIndex.search(marc.id, { q: 'retenti', prefix: true }).length, 0);
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'retenti' }), 'retent');
+  // A query that already works is never second-guessed.
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'retention' }), null);
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'reten' }), null, 'nor one the prefix already answers');
+});
+
+test('search: a suggestion never discloses a word from a collection the asker cannot open', () => {
+  // THE LOAD-BEARING ONE. The FTS5 vocabulary table is corpus-wide and cannot
+  // be permission-filtered — it is a property of the index. Offering a term
+  // straight out of it would turn the search box into an oracle: type "zeph",
+  // be told "did you mean zephyrus", and you have learned a codename out of a
+  // collection you hold no role in, one letter at a time. That is exactly the
+  // disclosure the record's rule refuses (policy question 1: existence is
+  // disclosed where the record states a relationship to a page you HOLD, never
+  // in answer to an arbitrary term anybody can type).
+  const { store, dana, marc, collection } = setup();
+  const secret = store.createCollection(dana.id, { name: 'Corporate development' });
+  publishNote(store, dana.id, secret.id, 'Project Zephyrus', 'The acquisition of Northwind closes in March.');
+  publishNote(store, marc.id, collection.id, 'Retention periods', 'Vendor contracts are kept for seven years.');
+
+  // Dana holds the restricted collection and is helped. (The offer is the
+  // index's stem, `zephyru` — see SearchIndex.suggest for why that is the
+  // honest thing to hand back rather than a prettier word it does not hold.)
+  assert.equal(store.searchIndex.suggest(dana.id, { q: 'zepyrus' }), 'zephyru');
+  assert.equal(store.searchIndex.suggest(dana.id, { q: 'nortwind' }), 'northwind');
+  // Marc does not, and is told nothing — not the word, not that it exists.
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'zepyrus' }), null);
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'nortwind' }), null);
+  // He is still helped with material he can read, so this is a filter and not
+  // a switch that turns the feature off.
+  assert.equal(store.searchIndex.suggest(marc.id, { q: 'vendr' }), 'vendor');
+});
+
+test('search: the suggestion route answers with a query, never with results', () => {
+  const { store, marc, collection } = setup();
+  publishNote(store, marc.id, collection.id, 'Retention periods', 'Vendor contracts are kept for seven years.');
+  const suggested = store.searchIndex.suggest(marc.id, { q: 'vendr contract' });
+  // It replaces the word it can name and leaves the rest of the query alone —
+  // a search box that quietly answers a different question than the one asked
+  // is the same failure as a record that quietly corrects what somebody wrote.
+  assert.equal(suggested, 'vendor contract');
+});

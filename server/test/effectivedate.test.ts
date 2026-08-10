@@ -481,3 +481,38 @@ test('register: the effective date is a column, and a pre-dating claim is marked
   assert.match(html, /pre-dates the record · no basis/);
   assert.match(html, /Board resolution 2018-12/);
 });
+
+// Round seven, Phase 8. The standing non-technical-voice rule — no HTTP verbs,
+// no paths, no protocol vocabulary in copy a person reads — had been applied to
+// install and setup strings and missed on refusals. A policy owner backdating a
+// date was told to fill in `effectiveDateBasis`, which is a name that appears on
+// no screen in the product: the editor's label reads "Where the effective date
+// comes from".
+test('copy: a refusal names the field the way the person filling it in sees it', () => {
+  const { store, marc, iris, collection } = setup();
+  const page = store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'Migrated policy' });
+  const refused = expectCode(
+    () =>
+      store.editDraft(marc.id, page.id, {
+        fields: { ownerId: marc.id, approverId: iris.id, reviewDate: '2099-01-01', effectiveDate: '2019-01-01' },
+      }),
+    'invalid',
+  );
+  assert.doesNotMatch(refused!.message, /effectiveDateBasis/, 'no raw field name in prose a person reads');
+  assert.match(refused!.message, /Where the effective date comes from/);
+  // The machine-readable half is untouched: an API caller needs the real field
+  // name, and a structured detail is not prose.
+  assert.equal(refused!.details.needs, 'effectiveDateBasis');
+
+  // The other two doors into the same requirement say it the same way.
+  const publishRefused = expectCode(
+    () => store.publish(marc.id, store.createPage(marc.id, { collectionId: collection.id, type: 'policy', title: 'No date' }).id),
+    'workflow',
+  );
+  assert.doesNotMatch(publishRefused!.message, /effectiveDateBasis/);
+  const orphanBasis = expectCode(
+    () => store.editDraft(marc.id, page.id, { fields: { effectiveDateBasis: 'A committee minute' } }),
+    'invalid',
+  );
+  assert.doesNotMatch(orphanBasis!.message, /effectiveDateBasis/);
+});
