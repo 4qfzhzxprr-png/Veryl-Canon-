@@ -2263,6 +2263,15 @@ label.check input { width: auto; display: inline; margin: 0; }
    nobody was told that 25 drafts were waiting — so it reads as a number, not
    as decoration, and it disappears entirely at zero rather than showing a
    confident 0 somebody has to parse. */
+/* And it disappears by being TOLD to: `display: inline-block` below is an
+   author rule, and an author rule for `display` outranks the user agent's
+   `[hidden] { display: none }` — the same trap `label[hidden]`,
+   `.topnav[hidden]` and `.tree-toggle[hidden]` each document. Without this
+   line the badge the paragraph above promises to hide sat in the nav reading
+   a confident "0" for every reader with an empty queue, which is precisely
+   what it says it must not do. Found by the browser proof, on the first run:
+   `[hidden]` said so, `querySelector` agreed, and the pixels did not. */
+.nav-count[hidden] { display: none; }
 .nav-count {
   display: inline-block;
   margin-left: 0.4rem;
