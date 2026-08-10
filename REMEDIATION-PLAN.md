@@ -161,6 +161,32 @@ changes stashed) and not fixed here: I could not reproduce it deterministically,
 fix I cannot verify against the actual failure is a guess. Recorded so it is not
 mistaken for noise.
 
+### 3.9 — landed, and honest about the half it cannot reach
+
+A body is prose, and prose names things. A page written by somebody with wider access
+can say "superseded by [Q3 Workforce Reduction Plan](/pages/…)" and Canon showed that
+sentence verbatim to every reader of *this* page — in the page, in a search snippet, and
+inside an extractive answer that quotes the passage.
+
+Link *traversal* was already correct (`retrieval.ts` hydrates every hop through the
+asker's permissions). The leak was the label. So: a link whose target the reader cannot
+open loses its label and its href, replaced by "a page you do not have access to". Both
+link forms, including the wiki form that carries a bare id — an id is a handle.
+
+**What it does not fix, stated rather than glossed:** a body that merely *mentions* a
+title in prose is indistinguishable from any other sentence, and no permission check can
+find it. The link is the findable half because it carries an id that can be tested. The
+rest needs a publish-time warning to the **author**, who is the only one who can judge
+prose — worth building, not built here.
+
+Two things that could have gone wrong and are pinned instead:
+
+- **Never a rewritten body.** The withheld ids are served as a list for the renderer to
+  match on. Redacting the stored text on read would mean an author loading the same
+  version in the editor and saving their own link away.
+- **Never the author's own draft.** The editor's live preview renders from the textarea
+  and never applies the list. A hole where their link is would invite them to "fix" it.
+
 ---
 
 ## Phase 5 — Loading and empty-state discipline
@@ -242,12 +268,32 @@ Each of these blocked a tester outright.
 These came out of the test and should be answered by a person, not chosen by whoever
 picks up the ticket.
 
-1. **Canon: does a reader learn that something exists they cannot see?** Ask discloses
-   contested-ness without naming the page; the relations panel deliberately discloses
-   nothing (`relations.ts:89-92` and a test pinning it); search says "Nothing in the
-   record matches" where a permission-scoped hit exists. Two surfaces, opposite
-   policies. Testers argued the disclosing one is more honest — *"it teaches people the
-   record is empty when it is actually locked"* — but that is a security decision.
+1. **Canon: does a reader learn that something exists they cannot see?** — **ANSWERED:
+   existence, never identity.** Ask disclosed contested-ness without naming the page;
+   the relations panel deliberately disclosed nothing (`relations.ts:89-92`, pinned by a
+   test); search claimed "Nothing in the record matches" over a permission-scoped result
+   set. Two surfaces, opposite policies, and the one that disclosed was the one built
+   after a compliance director found the gap.
+
+   The rule now, in all four places: **a relationship the record states about a page you
+   hold is disclosed; nothing identifying about the far page is.** No id, no title, no
+   type, no status, no collection — and not the asserter's *note* either, because a note
+   explaining why two pages contradict is a description of the page being withheld. The
+   asserter's **name** does travel: that is a structured fact about an assertion made
+   against a page you hold, not prose about one you were refused.
+
+   Two boundaries the answer deliberately does **not** cross:
+
+   - **Search is scoped, not widened.** "Nothing you can see matches" replaces the
+     absolute claim, and no hidden-match count is reported. Search takes an arbitrary
+     term, so a count is an oracle you could binary-search titles with. Existence is
+     disclosed where the record *states a relationship to something you hold* — not in
+     answer to any question anyone can type.
+   - **The knowledge map still draws only what it can place.** Same reason: its node
+     selection is a broad query, and phantom nodes there would count and cluster hidden
+     pages. The legend now points at the page panel for the rest.
+
+   Landed in `ed3a4c9` (relations, Ask, search) and `75c5166` (3.9, body links).
 2. **Registry: is the demo meant to simulate enforcement, or to be visibly a demo?**
    Determines whether 1.16/1.17 get real implementations or honest labels.
 3. **Studio: should Text components be classifiable at all,** or is authored prose
