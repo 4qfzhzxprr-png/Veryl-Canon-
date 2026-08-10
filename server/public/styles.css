@@ -427,6 +427,12 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
    has been flagged — so it must not read like a draft. */
 .badge-needs_update { color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber); }
 .badge-archived { color: var(--muted); background: var(--surface-2); border: 1px solid var(--surface-2); }
+/* Superseded is not a status — a superseded page keeps whichever of the five
+   it had — so it is drawn as a second chip beside the first, in the caution
+   colour the record already uses for "there is something here to know", and
+   outlined rather than filled so it never outweighs the standing it sits
+   next to. */
+.badge-superseded { color: var(--amber); border: 1px dashed var(--amber); background: transparent; }
 /* Federated values: stale is a caution, not an alarm — the same amber the
    record already uses for "waiting on someone". */
 .badge-stale { color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft); }
