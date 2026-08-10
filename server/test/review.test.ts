@@ -446,3 +446,35 @@ test('abilities: nothing reported as refused is actually accepted', () => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// The workflow's own messages name a machine as a machine (Phase 9)
+//
+// Canon's headline claim is that people and approved agents keep one record
+// together, and an approver's inbox is where the two meet. Round seven found
+// "Submitted by…" and the notification bodies among the lines that never say
+// which of the two it was. `review_requested` is the one that matters most:
+// it asks a person to act.
+test('review: an approver asked by an agent is told it was an agent', () => {
+  const fx = setup();
+  const { store, dana, nadia, collection } = fx;
+  const bot = store.createActor({ kind: 'agent', name: 'ClauseBot', registryRef: 'passport:clause-2' });
+  store.setMember(dana.id, collection.id, bot.id, 'edit');
+
+  const page = store.createPage(bot.id, { collectionId: collection.id, type: 'policy', title: 'Retention' });
+  store.editDraft(bot.id, page.id, {
+    body: 'Claims records are kept for seven years.',
+    fields: { ownerId: bot.id, approverId: nadia.id, effectiveDate: TODAY, reviewDate: NEXT_YEAR },
+  });
+  store.submitForReview(bot.id, page.id);
+
+  const asked = store.listNotifications(nadia.id).filter((n) => n.kind === 'review_requested');
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.body, 'ClauseBot (agent) submitted "Retention" for review.');
+
+  // Sent back by a person: unchanged, byte for byte.
+  store.sendBack(nadia.id, page.id, { comment: 'The backup-tape exception is missing.' });
+  const back = store.listNotifications(bot.id).filter((n) => n.kind === 'draft_sent_back');
+  assert.equal(back.length, 1);
+  assert.equal(back[0]!.body, 'Nadia Haddad sent "Retention" back: The backup-tape exception is missing.');
+});

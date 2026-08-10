@@ -2942,9 +2942,26 @@ export class CanonStore {
       .prepare("SELECT 1 AS ok FROM collection_members WHERE actor_id = ? AND role = 'admin' LIMIT 1")
       .get(actorId) as { ok: number } | undefined;
     if (!admin) {
-      throw new CanonError('forbidden', 'Verifying the audit chain requires admin on a collection', {
-        needed: 'admin' satisfies Role,
-      });
+      // THE SECOND VOCABULARY, one survivor of it. "Requires admin on a
+      // collection" is the sentence the second round of testing spent a whole
+      // pass removing: it names no act, says nothing about what the caller
+      // holds, and gives nobody to ask. It survived here because this is the
+      // one check that is about NO collection in particular — the chain spans
+      // all of them — so `forbiddenRole` has nothing to name and the call site
+      // wrote its own words instead.
+      //
+      // It says the same three things the rest of the product's refusals say,
+      // in the shape this check's own rule takes. Who holds admin somewhere is
+      // deliberately NOT named: that list would be assembled across every
+      // collection, including ones the caller holds no role in, and a refusal
+      // is not a place to hand out a membership list they were refused.
+      throw new CanonError(
+        'forbidden',
+        'Checking the audit chain needs the admin role on a collection — any one of them, because the chain ' +
+          'spans them all and a partial walk is not an answer. You hold it on none. An administrator of a ' +
+          'collection can grant it.',
+        { needed: 'admin' satisfies Role },
+      );
     }
     return verifyAuditChain(this.db, options);
   }

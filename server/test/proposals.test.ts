@@ -617,3 +617,37 @@ test('API: rejecting takes a comment, and a stale proposal answers 409', async (
     r.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// A message about an agent's act says it was an agent's
+//
+// Round seven: the `[agent]` tag is on Owner, on Approver, on comments and on
+// every audit row — everywhere an auditor looks — and missing from every line
+// a busy reader reads. A notification is the worst of them, because it is the
+// one that arrives when nobody went looking: "Freshness Agent proposed a
+// change to 'Q2 figures'" reads exactly like a colleague did it, and the
+// proposal loop is the DESIGNED path for agent co-authorship, so it is the
+// message most likely to be about a machine.
+//
+// A notification body is plain text — it goes out through the outbox to a mail
+// relay, where there is no chip to render — so the marker is a word, and it is
+// the same word the actor pickers already use.
+test('proposals: a notification about an agent’s act says an agent did it', () => {
+  const { store, marc, bot, collection } = setup();
+  const page = publishedNote(store, marc.id, collection.id);
+  store.createProposal(bot.id, page.id, { rationale: 'The source figure changed.', body: 'Revenue was $4.4M.' });
+
+  const opened = ofKind(store, marc.id, 'proposal_opened');
+  assert.equal(opened.length, 1);
+  assert.match(opened[0]!.body, /^Freshness Agent \(agent\) proposed a change/);
+
+  // And a person's message is byte-identical to what it always was: the marker
+  // exists to say something is NOT a person, and "(person)" on nearly every
+  // message would teach a reader to skip the parenthesis, which is the habit
+  // that makes "(agent)" invisible.
+  const proposal = store.createProposal(bot.id, page.id, { rationale: 'And again.', body: 'Revenue was $4.5M.' });
+  store.rejectProposal(marc.id, proposal.id, { comment: 'Not yet.' });
+  const rejected = ofKind(store, bot.id, 'proposal_rejected');
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0]!.body, 'Marc rejected your proposed change to "Q2 figures": Not yet.');
+});

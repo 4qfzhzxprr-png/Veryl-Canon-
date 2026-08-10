@@ -427,6 +427,19 @@ function kindTag(kind) {
   return '<span class="kind-tag">person</span>';
 }
 
+// The `restricted` chip, and what it is allowed to claim.
+//
+// It used to say "Views are logged to the audit log" on two of its three
+// renderings and nothing at all on the third. Beside a word as loaded as
+// "restricted" that reads as an aside to the real point — and the real point
+// was untrue: `restricted` is read by no permission check anywhere in the
+// server. Membership decides who may open a collection, restricted or not
+// (round seven, tester 47, who proved it against two collections). So the chip
+// says the two things the flag DOES do, and says the thing it does not.
+function restrictedTagHTML() {
+  return `<span class="restricted-tag" title="Reads of these pages are recorded in the audit log, refusals included, and they are kept from any outside AI service. Who may open the collection is decided by its members, here as everywhere.">restricted</span>`;
+}
+
 function actorLabel(id) {
   if (isSystemActor(id)) return `${esc(SYSTEM_ACTOR_NAME)} ${kindTag('system')}`;
   const a = actorById(id);
@@ -1889,7 +1902,7 @@ async function viewHome() {
         <div class="card-grid">
           ${collections.map((c) => `
             <a class="card collection-card" href="#/collections/${esc(c.id)}">
-              <h3>${esc(c.name)} ${c.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h3>
+              <h3>${esc(c.name)} ${c.restricted ? restrictedTagHTML() : ''}</h3>
               <p class="muted">${esc(c.description || 'No description.')}</p>
               <p class="card-foot muted">Created ${fmtDateTime(c.createdAt)}</p>
             </a>`).join('')}
@@ -1909,8 +1922,25 @@ async function viewHome() {
     body: `
       <label>Name <input name="name" required maxlength="120" placeholder="e.g. Compliance"></label>
       <label>Description <textarea name="description" rows="2" placeholder="What this collection holds (optional)"></textarea></label>
+      ${/* WHAT "RESTRICTED" ACTUALLY DOES, because the word promises the one
+            thing it does not do.
+
+            Round seven, tester 47: a restricted and an unrestricted collection
+            are IDENTICALLY invisible to a non-member — membership is the whole
+            of access control, on every collection. A department head reading
+            "Restricted" beside a checkbox reasonably concludes it is what keeps
+            people out, and the only helper text under it talked about the audit
+            log. Two of the three sentences below were nowhere in the product:
+            that this grants no access control (store.ts: no permission check
+            reads the flag), and that it holds these pages back from an outside
+            model (answers.ts `egressWithheld`, embeddings.ts `enqueue`, both
+            keyed on the same column). */ ''}
       <label class="check"><input type="checkbox" name="restricted"> Restricted
-        <span class="muted">page views are recorded in the audit log</span></label>`,
+        <span class="muted">extra scrutiny, not extra access control</span></label>
+      <p class="muted type-help">Who can open a collection is decided by its members, restricted or
+        not. Ticking this records every read of a page here in the audit log — including reads that
+        were refused — and keeps these pages from being sent to an outside AI service, unless this
+        Canon has been set up to allow that.</p>`,
     onSubmit: async (form) => {
       const c = await api('POST', '/collections', {
         name: form.name.value.trim(),
@@ -2352,7 +2382,7 @@ function sidebarHTML(collection, tree, currentPageId) {
   return `
     <aside class="sidebar" data-refusal-host>
       <a class="sidebar-collection" href="#/collections/${esc(collection.id)}">${esc(collection.name)}</a>
-      ${collection.restricted ? '<span class="restricted-tag">restricted</span>' : ''}
+      ${collection.restricted ? restrictedTagHTML() : ''}
       <button class="btn subtle tree-toggle" id="tree-toggle" type="button" hidden
         aria-expanded="true" aria-controls="sidebar-tools"></button>
       <div id="sidebar-tools">
@@ -2614,7 +2644,7 @@ async function viewCollection(id) {
         <div class="page-head">
           <div>
             <h1>${esc(collection.name)}
-              ${collection.restricted ? '<span class="restricted-tag" title="Views are logged to the audit log">restricted</span>' : ''}</h1>
+              ${collection.restricted ? restrictedTagHTML() : ''}</h1>
             <p class="muted">${esc(collection.description || 'No description.')}</p>
           </div>
           <div class="actions">
@@ -3244,7 +3274,7 @@ function reviewBannerHTML(review, typeNamesApprover) {
     waiting = `Waiting on the named approver, <strong>${esc(actorName(review.approverId))}</strong>.`;
   } else waiting = 'Waiting on an approver: this draft names none.';
   const submitted = review.submittedById
-    ? ` Submitted by ${esc(actorName(review.submittedById))}${
+    ? ` Submitted by ${actorLabel(review.submittedById)}${
         review.submittedAt ? ` on ${fmtDateTime(review.submittedAt)}` : ''
       }.`
     : '';
@@ -3418,7 +3448,12 @@ async function viewPage(id) {
                 so here is what makes the warning true in the window before the
                 sweep reaches it (USER-TESTING.md T1.4). */ ''}
           ${rules.reviewDate || page.reviewDate ? `<div><dt>Review date</dt><dd>${pendingFieldCell(page.reviewDate, pendingOf('reviewDate'), fmtDate, hasPublished)}${isPastReview(page.reviewDate) ? ' · <span class="past-review">past review</span>' : ''}</dd></div>` : ''}
-          <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${esc(actorName(current.authorId))}` : 'Never published'}</dd></div>
+          ${/* actorLabel, not the bare name: the `agent` and `system` tags were
+                on Owner, on Approver and on every audit row — everywhere an
+                auditor looks — and missing from the bylines a reader passes on
+                the way to the text (round seven). Who wrote a version is
+                exactly where the distinction matters. */ ''}
+          <div><dt>Version</dt><dd>${current ? `v${page.currentVersion} · published ${fmtDateTime(current.createdAt)} by ${actorLabel(current.authorId)}` : 'Never published'}</dd></div>
           ${references.map(referencePlaceholderHTML).join('')}
         </dl>
 
@@ -5641,7 +5676,7 @@ async function viewVersion(id, n) {
       <p class="breadcrumb"><a href="#/pages/${esc(id)}/history">← Version history</a></p>
       <div class="notice ${isCurrent ? '' : 'notice-version'}">
         Viewing <strong>v${n}</strong> of <strong>${esc(page.title)}</strong>,
-        published ${fmtDateTime(version.createdAt)} by ${esc(actorName(version.authorId))}.
+        published ${fmtDateTime(version.createdAt)} by ${actorLabel(version.authorId)}.
         ${isCurrent ? 'This is the current version.' : `The current version is v${page.currentVersion ?? '—'}.
           ${page.status !== 'archived' ? `<button class="btn subtle" id="restore-here">Restore this version</button>` : ''}`}
       </div>
@@ -5711,8 +5746,8 @@ async function viewCompare(id, a, b) {
       ${fieldRowsHTML(fieldRows)}
       ${diffTableHTML(
         rows,
-        `v${a} · ${fmtDateTime(va.createdAt)} · ${esc(actorName(va.authorId))}`,
-        `v${b} · ${fmtDateTime(vb.createdAt)} · ${esc(actorName(vb.authorId))}`,
+        `v${a} · ${fmtDateTime(va.createdAt)} · ${actorLabel(va.authorId)}`,
+        `v${b} · ${fmtDateTime(vb.createdAt)} · ${actorLabel(vb.authorId)}`,
       )}
     </div>`;
 }
@@ -5984,6 +6019,61 @@ function auditEmptyHeading(matching) {
   return Number(matching) > 0 ? 'These events did not load' : 'No matching events';
 }
 
+/**
+ * What `GET /audit/verify` came back with, said to a person.
+ *
+ * TWO RULES, both taken from the response itself rather than invented here.
+ *
+ * A CLEAN RESULT IS NOT A CLAIM OF AUTHENTICITY. `auditchain.ts` is explicit
+ * that a competently forged log — an event deleted and every later link
+ * recomputed — answers this check `ok: true`, and that this was actually done
+ * to a Canon record during review. So the verdict line never stands alone: the
+ * response's own `proves` and `limits` sentences travel with it, and they are
+ * printed as the server wrote them rather than paraphrased, because a
+ * paraphrase in a client is exactly where a caveat goes quietly missing.
+ *
+ * A PARTIAL WALK SAYS NOTHING ABOUT THE REST. `partial` means a limit stopped
+ * the walk, and "no break in what was walked" is a weaker sentence than "no
+ * break". They are drawn as two different verdicts.
+ */
+function chainVerdictHTML(r) {
+  const n = (v) => Number(v ?? 0).toLocaleString();
+  const unchained = Number(r.unchained ?? 0);
+  const before = unchained
+    ? ` ${n(unchained)} event${unchained === 1 ? '' : 's'} ${unchained === 1 ? 'was' : 'were'} written before the
+        chain existed, so the chain has never covered ${unchained === 1 ? 'it' : 'them'} and never will.`
+    : '';
+  const head = r.head
+    ? `<p class="muted chain-head">The chain's head is event ${n(r.head.eventId)}. Compare it against a copy kept
+        outside Canon — that comparison, and nothing on this screen, is what turns this into a statement about
+        whether the log is genuine.</p>`
+    : '';
+  const verdict = r.ok
+    ? r.partial
+      ? `<p class="chain-verdict chain-partial"><strong>No break in the part that was walked.</strong>
+          The walk stopped before the end of the log, so this says nothing about the events beyond it.</p>`
+      : `<p class="chain-verdict chain-ok"><strong>The chain joins up.</strong> ${n(r.verified)} of
+          ${n(r.events)} event${Number(r.events) === 1 ? '' : 's'} were re-hashed and every link still
+          matches.${before}</p>`
+    : `<p class="chain-verdict chain-broken"><strong>The chain is broken.</strong>
+        ${r.firstBreak ? `First at event ${n(r.firstBreak.eventId)}${
+            r.firstBreak.at ? ` (${esc(fmtDateTime(r.firstBreak.at))})` : ''
+          }${r.firstBreak.action ? `, <code class="action-code">${esc(r.firstBreak.action)}</code>` : ''}.
+          ${esc(r.firstBreak.explanation ?? '')}` : ''}
+        Only the first break is reported: after one, every later link is computed against a hash that is
+        already wrong.</p>`;
+  return `
+    <section class="panel chain-check">
+      ${verdict}
+      ${r.proves ? `<p class="muted">What a clean walk proves: ${esc(r.proves)}</p>` : ''}
+      ${r.limits ? `<p class="muted"><strong>What it does not:</strong> ${esc(r.limits)}</p>` : ''}
+      ${head}
+      ${r.externalAnchor ? `<details class="chain-anchor"><summary>Keeping the head where Canon cannot rewrite it</summary>
+        <p class="muted">${esc(r.externalAnchor)}</p></details>` : ''}
+      <p class="muted chain-when">Checked ${esc(fmtDateTime(r.checkedAt))}.</p>
+    </section>`;
+}
+
 async function viewAudit(query = {}) {
   await loadActors().catch(() => null);
   let collections = [];
@@ -6020,8 +6110,24 @@ async function viewAudit(query = {}) {
         <div class="actions"><button class="btn" id="audit-export" type="button" disabled
           title="Enables when the log has loaded.">Export CSV</button></div>
       </div>
+      ${/* THE ONE CLAIM CANON MAKES WITHOUT SHOWING ITS EVIDENCE.
+            Round seven, tester 13, who credited the product for volunteering
+            the attack that defeats its own chain and for shipping twelve
+            numbered self-disclosed limits: "the single place it asserts
+            without evidence is the word 'Append-only.' at the top of the audit
+            page."
+
+            The evidence was already built and already refused to overclaim —
+            `GET /audit/verify` walks the chain, names the first break, and
+            carries `proves` and `limits` in the same object as its verdict. It
+            had one caller in this client and it was a FEATURE PROBE:
+            `?limit=1`, one link, thrown away, used only to decide whether to
+            draw the Attestation button. So the check ran on this screen and
+            nobody was ever shown what it said. */ ''}
       <p class="muted">Append-only. Every write, workflow step, and view of restricted
-      material, attributed to its actor.</p>
+      material, attributed to its actor.
+      <button class="btn subtle" id="audit-verify" type="button">Check the chain</button></p>
+      <div id="audit-verdict" aria-live="polite"></div>
       <form id="audit-filters" class="inline-form">
         <label>Action <select name="action"><option value="">All actions</option></select></label>
         <label>Actor
@@ -6054,6 +6160,26 @@ async function viewAudit(query = {}) {
   const tableHost = app.querySelector('#audit-table');
   const countHost = app.querySelector('#audit-count');
   const moreHost = app.querySelector('#audit-more');
+
+  // The evidence behind "Append-only." A full walk, not the probe's single
+  // link: the probe answers "does this endpoint exist", and the reader is
+  // asking a different question. The refusal is drawn IN PLACE rather than
+  // toasted, because the sentence names who can check and that is worth
+  // reading twice, not for three seconds in a corner.
+  const verifyBtn = app.querySelector('#audit-verify');
+  const verdictHost = app.querySelector('#audit-verdict');
+  verifyBtn?.addEventListener('click', async () => {
+    verifyBtn.disabled = true;
+    verdictHost.innerHTML = '<div class="loading">Walking the chain…</div>';
+    try {
+      verdictHost.innerHTML = chainVerdictHTML(await api('GET', '/audit/verify'));
+    } catch (err) {
+      verdictHost.innerHTML = `<div class="panel chain-check"><p class="chain-verdict chain-refused">${
+        esc(err?.message ?? 'The chain could not be checked.')}</p></div>`;
+    } finally {
+      verifyBtn.disabled = false;
+    }
+  });
 
   const current = () => ({
     action: form.action.value,
@@ -9249,7 +9375,7 @@ function attestationPreviewHTML(asOf) {
       <div><dt>Title then</dt><dd>${esc(asOf.title ?? '—')}</dd></div>
       <div><dt>Status then</dt><dd>${badge(asOf.status)}</dd></div>
       <div><dt>Canonical then</dt><dd>${asOf.canonical ? 'Yes' : 'No'}</dd></div>
-      <div><dt>Version then</dt><dd>${v ? `v${esc(v.number)} · ${fmtDateTime(v.createdAt)} · ${esc(actorName(v.authorId))}` : 'None published'}</dd></div>
+      <div><dt>Version then</dt><dd>${v ? `v${esc(v.number)} · ${fmtDateTime(v.createdAt)} · ${actorLabel(v.authorId)}` : 'None published'}</dd></div>
       <div><dt>Approved by</dt><dd>${asOf.approval
         ? `${esc(actorName(asOf.approval.approverId))} · ${fmtDateTime(asOf.approval.at)}`
         : '<span class="muted">no approval covers the version standing then</span>'}</dd></div>

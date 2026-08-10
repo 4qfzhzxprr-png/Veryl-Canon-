@@ -286,19 +286,74 @@ page standing as real text everywhere, never colour-only.
 
 ## Phase 7 — Surfaces that do not exist
 
-Each of these blocked a tester outright.
+Each of these blocked a tester outright. **This section is now a proposal, not an
+inventory.** Every row was re-verified against the code before being costed, and that
+pass changed the shape of the phase materially: two rows are withdrawn, one is
+reclassified as copy, and the frozen-contract ask shrinks from three items to one and a
+half. The original nine rows are preserved below under their outcome.
 
-| Product | Missing |
+### Withdrawn — the surface exists
+
+| Was | Evidence |
 |---|---|
-| Canon | Import UI (server routes exist, nothing renders them); no retry for the failed import; imported pages land with no owner/approver/review date |
-| Canon | Gaps for collection stewards (operator-only; the prescribed remedy lives in the steward's editor) |
-| Canon | Per-page visibility; request-access from a refusal; an admin inbox for those requests |
-| Studio | Guest administration (no guest surface in 13 admin tabs) and guest invitation (gated behind four hidden, currently unsatisfiable preconditions) |
-| Studio | Directory surface; group control of any kind |
-| Studio | Which apps bind the most sensitive class (`viaApps: []` for drafts) |
-| Registry | "Sell an agent" has no form behind its primary CTA; external agents can never be verified, so never sold |
-| Registry | Calendar has no attendees (`ScheduledMeetingOut` has no field — frozen contract) |
-| Registry | Buyer-side invoices; spend attribution (`PurchaseOut` has no buyer/approver/cost-centre — frozen contract); `actor` on connector grants (`ConnectorGrantOut`) |
+| Registry: *"Sell an agent" has no form behind its primary CTA* | `components/marketplace/SellAgentDialog.tsx` exists and all three sell CTAs open real dialogs — `Marketplace.tsx:72` → `setSelling(true)`, `Catalog.tsx:207-217` → agent/tool/workflow dialogs rendered at `Catalog.tsx:218-220`. Landed in `b4af7f2`. **Re-test rather than rebuild** — if a tester still reports a dead CTA, the defect is discoverability or an error path inside the dialog, and it is a Phase 9 row. |
+| Registry: `actor` on connector grants (`ConnectorGrantOut`) — *frozen contract* | **Not a contract problem.** `AgentMcpGrant` (`db/models.py:1258`) has no `granted_by` column, but the actor is already audited on every grant: `mcp_connectors.py:333` takes `actor_id` and passes it to `_recheck_on_egress_change`, which records it with `connector_id` and `agent_version_id` in the detail (`mcp_connectors.py:235-248`, and again on the drop path). Recoverable by reading the audit log — the same technique already shipped for session provenance in `api/auth.py`. **No migration, no authorisation, no `db/models.py` edit.** |
+
+### Reclassified — a policy consequence that is never explained
+
+| Was | What it actually is |
+|---|---|
+| Registry: *external agents can never be verified, so never sold* | Deliberate and enforced on both sides: `AgentProfile.tsx:448-453` suppresses submit for `isExternal`, and the backend refuses with `reason: external_agent`. Verification exercises an agent; an external record cannot be exercised. The defect is that **nobody is told this** — the owner of an external record sees a sale path that silently dead-ends. That is one explanatory line at the point of refusal, i.e. a Phase 9 row, not a surface to build. |
+
+### Recommended to build, in order
+
+1. **Canon: the import UI.** Highest value for the least work — the server is finished
+   and unreachable. `POST /imports` and `GET /imports` are wired (`server/src/api.ts:372,
+   388`) over a complete `ImportService` (`import.ts:650`) with Confluence and Google Docs
+   discovery, a 2000-file/4MB cap, per-file outcomes and run records. `server/public/app.js`
+   contains **zero** references to `imports`. Everything a tester was blocked by — no
+   retry, no visible failure reason — is already in `ImportFileResult`/`ImportRunRecord`
+   and simply has no renderer. Build the run list, the per-file outcome table and a
+   re-run action against what already returns.
+   *Carry-in:* imported pages landing with no owner/approver/review date is a real gap and
+   should be settled in the same change — either the import asks for them once per run, or
+   the pages land visibly incomplete rather than silently unowned.
+2. **Canon: request-access from a refusal.** This is the natural completion of policy
+   question 1, already answered: a refusal now discloses that something exists without
+   identifying it, which is exactly what makes "ask for access" a coherent action rather
+   than a fishing expedition. Deliberately narrow: the request carries the refusal's own
+   context, not a page the asker names. Pair it with the admin inbox — a request nobody
+   can see is worse than no request.
+3. **Studio: guest administration.** The API is complete — invite, list, revoke, binding
+   lookup, expiry cap and mail all live in `app/api/apps/[id]/guests/route.ts`, with the
+   four-eyes gate and the "a guest surface IS a run-as-app publish" rule already argued in
+   its header. What is missing is the builder's screen and an admin view across apps. The
+   "four hidden, unsatisfiable preconditions" a tester hit are real preconditions
+   (`guestRights`: builder role, app exists, ownership or admin; plus a live publication
+   carrying a `guestBinding`) — the defect is that they are enforced silently. Show them
+   as a checklist with the unmet one named.
+4. **Canon: gaps for collection stewards.** Operator-only today, and the prescribed
+   remedy lives in the steward's editor — so the person who can act cannot see the
+   finding. Scope to surfacing existing gap output to the steward; do not build a second
+   gap engine.
+5. **Studio: `viaApps` for drafts.** Currently `[]`. This one is unowned and still
+   unscoped: "which app *definitions* bind this field" is a different question from
+   "which published apps read it", and the answer determines whether this is a query or a
+   new index. **Needs a decision before it can be costed.**
+6. **Studio: directory and group control.** The largest genuinely-new build in the phase,
+   and the one I would defer. Groups touch every grant path; done badly they become a
+   second, weaker authorisation system beside the one that survived three independent
+   attacks in the test. Worth doing properly later, not squeezed in here.
+
+### Needs your authorisation — frozen contracts
+
+Down from three items to one and a half, after the re-verification above.
+
+| Ask | What it costs |
+|---|---|
+| **Calendar attendees** (`ScheduledMeetingOut`) | The only true `db/models.py` restructuring left. `ScheduledMeeting` (`models.py:1014`) records `created_by` and invited *agents* via `ScheduledMeetingAgent` (`models.py:1054`) — there is no human attendee anywhere. Needs a new join table, a migration, and the mirrored `contracts.py` ⇆ `api.ts` change. **This is the one that needs an explicit yes.** |
+| **Purchase buyer** (`PurchaseOut`) | Half an ask. `Purchase` already stores `buyer_org_id` and `buyer_user_id` (`models.py:1843-1844`) — exposing the buyer is a mirrored `contracts.py` ⇆ `api.ts` addition in a single commit, which the standing rules already permit. No migration. |
+| **Purchase approver and cost-centre** | Genuinely absent — no columns exist. Same class as attendees: new fields, a migration, and a decision about where a cost centre comes from in the first place. I would **not** bundle this with the buyer field; spend attribution is a finance model, not a display gap. |
 
 ---
 
@@ -474,11 +529,12 @@ All verified by re-running each suite rather than taking the reports on trust.
 
 ### Not done
 
-**Phase 7** (Canon's import UI, per-page visibility and request-access; Studio's guest
-administration, directory and group control; Registry's "Sell an agent" form and external-
-agent verification) — deliberately skipped rather than half-built. Three Registry items
-are confirmed blocked on frozen contracts: `ScheduledMeetingOut` has no attendees field,
-`PurchaseOut` has no buyer/approver/cost-centre, `ConnectorGrantOut` has no actor.
+**Phase 7** — deliberately not half-built. It has since been re-verified row by row and
+rewritten as a costed proposal (see the Phase 7 section above): two rows withdrawn
+because the surface already exists or the data is already recoverable, one reclassified
+as copy, six recommended in order, and the frozen-contract ask reduced from three items
+to one clear one (calendar attendees) plus a half (purchase buyer, which needs no
+migration).
 
 **Phase 9** (~271 minor and cosmetic rows) — untouched.
 
@@ -650,11 +706,21 @@ own state.
 1.12 also moved the predicate into `lib/generation-relevance.ts`: it lived inside the
 route handler, which is why the existing generation suite could not have caught it.
 
+**Correction (found in Phase 9): 1.6 landed one of its three halves, not all three.**
+`af3acf2` fixed the *banner* — a supersession pointing at a page Ask cannot use now says
+so. The rest of the row — "show supersession state in search, the collection table and
+Related panels" — did not land: `searchHitHTML` (`app.js:1364`) still draws `status`
+alone, so a reader arriving through search sees a plain chip on a superseded page exactly
+as the tester reported. This is not cosmetic and needs new fields on two endpoints, so it
+stays out of Phase 9 and re-opens as major work. Recording it here rather than quietly
+fixing it, because the scorecard below counts 1.6 as fixed and that count was wrong.
+
 ---
 
 ## Phase 1 scorecard
 
-**15 fixed** — 1.1, 1.2, 1.3, 1.5, 1.6, 1.7 (Canon); 1.8, 1.9, 1.10, 1.11a, 1.12
+**15 fixed** — 1.1, 1.2, 1.3, 1.5, 1.6 (partial — see the correction above), 1.7
+(Canon); 1.8, 1.9, 1.10, 1.11a, 1.12
 (Studio); 1.15, 1.16, 1.17, 1.18, 1.19, 1.20 (Registry).
 
 **6 withdrawn after reading the code they accused** — 1.4, 1.13, 1.14, plus Registry's

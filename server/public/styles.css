@@ -867,6 +867,18 @@ label.check input { width: auto; display: inline; margin: 0; }
 .detail-kv { margin-right: 0.8rem; display: inline-block; }
 .action-code { font-size: 0.78rem; }
 
+/* The evidence behind "Append-only." A verdict that reads as reassurance and
+   nothing else would be the opposite of what this check is for, so the
+   verdict line is the only coloured thing here and the caveats beneath it are
+   ordinary body text at ordinary weight — not fine print under a green tick. */
+.chain-check p { margin: 0.5rem 0; }
+.chain-verdict { font-size: 0.95rem; }
+.chain-ok { color: var(--accent); }
+.chain-partial, .chain-refused { color: var(--amber); }
+.chain-broken { color: var(--danger); }
+.chain-anchor summary { cursor: pointer; font-size: 0.9rem; }
+.chain-when { font-size: 0.82rem; }
+
 /* ---------- diff -------------------------------------------------------- */
 
 .diff-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }

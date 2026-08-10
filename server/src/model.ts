@@ -169,6 +169,34 @@ export interface Actor {
   createdAt: string;
 }
 
+/**
+ * An actor's name, for a sentence that reports something they did.
+ *
+ * WHY A NAME IS NOT ENOUGH. Round seven: the `agent` tag is on Owner, on
+ * Approver, on a comment and on every audit row — everywhere an auditor looks —
+ * and absent from every line a busy reader actually reads. A notification
+ * saying *"ClauseBot submitted 'Coverage criteria' for review"* is
+ * indistinguishable from a colleague doing it, and the proposal notice — the
+ * whole designed-safe path for agent co-authorship — was the worst of them.
+ * The system actor has the same problem from the other side: system.ts says
+ * "every surface that already renders `agent` beside an actor now has a third
+ * case to render, which is the point: it shows up everywhere", and these
+ * sentences were not showing it anywhere.
+ *
+ * A NOTIFICATION BODY IS PLAIN TEXT — it goes out through the outbox to a mail
+ * relay, where there is no chip to render and no colour to lean on — so the
+ * marker is a word in parentheses, which is the same form the actor pickers
+ * already use ("Dana Whitfield (agent)").
+ *
+ * A PERSON'S SENTENCE IS UNCHANGED, byte for byte. The marker exists to say
+ * that something is not a person; adding "(person)" to the overwhelming
+ * majority of messages would be noise that teaches a reader to skip the
+ * parenthesis, which is exactly the habit that makes "(agent)" invisible.
+ */
+export function actorNameForMessage(actor: { kind: ActorKind; name: string }): string {
+  return actor.kind === 'person' ? actor.name : `${actor.name} (${actor.kind})`;
+}
+
 export interface Collection {
   id: string;
   name: string;
