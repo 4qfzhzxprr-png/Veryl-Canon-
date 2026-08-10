@@ -32,6 +32,7 @@ import {
   styleClassesOf,
   textContent,
   toMarkdown,
+  truncationNote,
   walk,
 } from './html.js';
 
@@ -894,9 +895,22 @@ export class ImportService {
       // A document that yields neither a title of its own nor any body text is
       // not a page: it is a truncated or non-HTML file. Reported, never fatal.
       if (converted.titleSource === 'filename' && !converted.body.trim()) {
+        // "The file parsed to an empty document" is true and points the
+        // operator at the wrong thing: the one real failure in the round-seven
+        // corpus was a TRUNCATED export ending inside an unclosed comment, and
+        // an operator reading "empty" goes back to the source system looking
+        // for a page that is not empty. Where the tail of the file says why,
+        // it says why.
+        const why = truncationNote(html);
         return this.record(
           ctx.runId,
-          { ...base, outcome: 'failed', reason: 'no readable content: the file parsed to an empty document' },
+          {
+            ...base,
+            outcome: 'failed',
+            reason: why
+              ? `no readable content: ${why} — the export looks truncated, so re-export this page`
+              : 'no readable content: the file parsed to an empty document',
+          },
           hash,
         );
       }

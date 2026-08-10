@@ -190,6 +190,37 @@ test('import: a file that fails to parse is reported and the run carries on', ()
   assert.equal(summary.counts.imported, 6, 'every other page in the export still arrived');
 });
 
+// Round seven, tester 25, whose one failed import was discoverable only
+// through the audit log and, when found, said this:
+//
+//   "no readable content: the file parsed to an empty document"
+//
+// True, and pointing at the wrong thing. The file has plenty of content; it
+// ends inside an unclosed HTML comment, so `parseHtml` — correctly — swallows
+// everything from the last `<!--` to the end of the file. An operator told
+// "empty document" goes back to the source system looking for a page that is
+// not empty. An operator told the file stops mid-comment re-exports it.
+test('import: a truncated export is named as truncated, not as an empty page', () => {
+  const { store, marc, collection } = setup();
+  const summary = store.runImport(marc.id, { source: 'confluence', path: CONFLUENCE, collectionId: collection.id });
+  const broken = byFile(summary, 'Broken+Export_65607.html');
+
+  assert.match(broken.reason ?? '', /stops inside a comment that is never closed/, 'the cause, not the symptom');
+  assert.match(broken.reason ?? '', /looks truncated/);
+  assert.match(broken.reason ?? '', /re-export this page/, 'and what to do about it');
+  // Still a failure, still not fatal to the run, and still nothing invented:
+  // guessing where a truncated file was meant to end would put made-up
+  // structure into the record.
+  assert.equal(broken.outcome, 'failed');
+  assert.equal(broken.pageId, null);
+
+  // The operator meets this sentence in the audit log, which is where the one
+  // failed import was findable at all.
+  const events = store.queryAudit(marc.id, { action: 'import.page' });
+  const logged = events.find((e) => e.details.file === 'Broken+Export_65607.html')!;
+  assert.equal(logged.details.reason, broken.reason);
+});
+
 test('import: re-running a run id is idempotent, and changed files become new versions', () => {
   const { store, marc, collection } = setup();
   const scratch = mkdtempSync(join(tmpdir(), 'canon-import-'));

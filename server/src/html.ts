@@ -234,6 +234,44 @@ function element(tag: string, attrs: Record<string, string> = {}): ElementNode {
 }
 
 /**
+ * WHY A DOCUMENT CAME OUT EMPTY, when the file plainly was not.
+ *
+ * A migration engineer's one failed import (round seven, tester 25) reported
+ * *"no readable content: the file parsed to an empty document"*, which is
+ * accurate and points at the wrong thing: the file had plenty of content, and
+ * it ended inside an unclosed HTML comment. `parseHtml` below does the only
+ * sane thing with `<!--` that never closes — `i = src.length`, swallow the
+ * rest — so a truncated export loses everything after the last comment opener
+ * and arrives here looking like a blank page. An operator told "empty
+ * document" goes looking at the source system for a page that is not empty;
+ * an operator told the file stops mid-comment re-exports it.
+ *
+ * Reported, never repaired. Guessing where a truncated file was meant to end
+ * would put invented structure into the record.
+ *
+ * Returns null when nothing about the tail explains it, because a wrong
+ * diagnosis is worse than a vague one.
+ */
+export function truncationNote(source: string): string | null {
+  const src = String(source ?? '');
+  const comment = src.lastIndexOf('<!--');
+  if (comment !== -1 && src.indexOf('-->', comment + 4) === -1) {
+    return 'the file stops inside a comment that is never closed, so everything after it was unreadable';
+  }
+  const cdata = src.lastIndexOf('<![CDATA[');
+  if (cdata !== -1 && src.indexOf(']]>', cdata + 9) === -1) {
+    return 'the file stops inside a raw-data block that is never closed, so everything after it was unreadable';
+  }
+  const lt = src.lastIndexOf('<');
+  // A bare "<" in prose — "3 < 4" — is not an unfinished tag, and calling it
+  // one would send somebody to re-export a file that is whole.
+  if (lt !== -1 && /^<\/?[a-zA-Z!?]/.test(src.slice(lt, lt + 3)) && src.indexOf('>', lt + 1) === -1) {
+    return 'the file stops in the middle of a tag';
+  }
+  return null;
+}
+
+/**
  * Parse a document into a node tree. Never throws: anything that is not
  * recognisable markup becomes text.
  */
