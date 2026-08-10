@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <!-- 85 tab stops stood between the top of the document and the page somebody
+       had navigated to: the whole sidebar tree is links, and it is first in the
+       source on every collection and page route (round seven). This is the way
+       out, and it is FIRST, before the brand.
+
+       It is an anchor for the semantics and its default is prevented, because
+       in this app `location.hash` IS the router — an href="#main" that was
+       allowed through would be parsed as the route "main" and land the reader
+       on the collections list. Same trap the [data-scroll-to] handler exists
+       for. See wireSkipLink in app.js. -->
+  <a class="skip-link" href="#main" id="skip-to-main">Skip to the page</a>
   <header class="topbar">
     <a class="brand" href="#/">Veryl Canon<span class="stage">alpha</span></a>
     <div class="search-slot" id="search-slot" hidden>
@@ -28,7 +39,17 @@
     </nav>
     <div class="actor-chip" id="actor-chip"></div>
   </header>
-  <main id="app" class="app"></main>
+  <!-- tabindex="-1" so the skip link and every route change have somewhere to
+       put focus. It is not in the tab order; only script and the skip link
+       reach it. -->
+  <main id="app" class="app" tabindex="-1"></main>
+  <!-- Route changes are silent in a single-page app: the URL moves, the DOM is
+       replaced, and a screen reader is still sitting where it was with nothing
+       to tell it otherwise. This is what says so. Separate from #toasts on
+       purpose — a toast is the result of an act, a route change is a change of
+       place, and one queue for both means a save confirmation can be swallowed
+       by a navigation that happened at the same moment. -->
+  <div id="route-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="modal-root"></div>
   <script type="module" src="/app.js"></script>

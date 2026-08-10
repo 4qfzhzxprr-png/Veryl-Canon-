@@ -583,9 +583,33 @@ function refusalGroup(what = 'these') {
 // A refusal raised in here is drawn IN here. It used to go to a toast in the
 // far corner, behind this dialog's own backdrop, and disappear — which is how a
 // contributor came to believe she had asserted a conflict she had not.
+//
+// It said `aria-modal="true"` and behaved like nothing of the kind (round
+// seven): Tab walked straight out of the dialog into the page behind it, which
+// a screen reader has been told is not there; Escape did nothing, so the one
+// key everybody tries to dismiss a dialog with left them hunting for Cancel;
+// and closing it dropped focus on the body, so the next Tab started again from
+// the top of the document — 85 stops from where they had been working.
+//
+// Deliberately NOT a `<dialog>` element with showModal(), which would give all
+// three for free. The dialog is rendered as a string into #modal-root like
+// everything else in this client, several callers reach into `#modal-root form`
+// afterwards to wire their own fields, and `<dialog>`'s top-layer rendering
+// changes how the backdrop and the sticky header stack. Three real behaviours
+// are worth more than the elegance of a rewrite that touches nine call sites.
+
+/** What can hold focus inside a dialog. `:not([disabled])` matters: the submit
+ *  button disables itself while a save is in flight, and a trap that cycled
+ *  onto it would strand the reader on a control that does nothing. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', danger = false, onSubmit }) {
   const root = document.getElementById('modal-root');
+  // Whoever opened it. Focus goes back here when it closes — the button that
+  // opened a dialog is where the reader was, and it is where the next thing
+  // they do begins.
+  const opener = document.activeElement;
   root.innerHTML = `
     <div class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -603,7 +627,46 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
   const backdrop = root.querySelector('.modal-backdrop');
   const form = root.querySelector('form');
   const problem = form.querySelector('[data-modal-error]');
-  const close = () => { root.innerHTML = ''; };
+  const dialog = root.querySelector('.modal');
+  const close = () => {
+    document.removeEventListener('keydown', onKeydown, true);
+    root.innerHTML = '';
+    // Only if the opener is still in the document: a dialog whose submit
+    // re-rendered the view behind it has no opener left to go back to, and
+    // focusing a detached node silently focuses the body instead. The route's
+    // own focus move (announceRoute) covers that case.
+    if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+  };
+  // Capture phase, on the document: the dialog's own fields stop keys from
+  // reaching a listener bound to the dialog (the editor's textarea handles
+  // Tab itself), and a trap that can be escaped by one field is not a trap.
+  const onKeydown = (e) => {
+    if (e.key === 'Escape') {
+      // Escape closes without acting. That is the whole contract: it is the
+      // "I did not mean to open this" key, and a dialog that submits on it
+      // would be a destructive act triggered by a reflex.
+      e.preventDefault();
+      close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const stops = [...dialog.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+    if (!stops.length) { e.preventDefault(); return; }
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    const active = document.activeElement;
+    if (!dialog.contains(active)) {
+      // Focus got out some other way (a click on the page behind, an
+      // extension). Bring it back rather than letting the cycle continue
+      // outside a dialog that claims to be modal.
+      e.preventDefault();
+      first.focus();
+      return;
+    }
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', onKeydown, true);
   backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
   root.querySelector('[data-cancel]').addEventListener('click', close);
   form.addEventListener('submit', async (e) => {
@@ -623,8 +686,13 @@ function openModal({ title, body, submitLabel = 'Save', cancelLabel = 'Cancel', 
       problem.scrollIntoView({ block: 'nearest' });
     }
   });
-  const first = form.querySelector('input, textarea, select');
+  // The first field if there is one, otherwise the first control of any kind:
+  // a confirm dialog is all buttons, and it used to open with focus still on
+  // the page behind it — which is a dialog you cannot answer from the keyboard
+  // without tabbing through the whole document to find it.
+  const first = form.querySelector('input, textarea, select') ?? dialog.querySelector(FOCUSABLE);
   if (first) first.focus();
+  else { dialog.setAttribute('tabindex', '-1'); dialog.focus(); }
   return { close, form, showRefusal: (message) => { problem.textContent = message; problem.hidden = false; } };
 }
 
@@ -1317,6 +1385,93 @@ function hashQuery() {
   return Object.fromEntries(new URLSearchParams(location.hash.slice(at + 1)));
 }
 
+/**
+ * Which nav entry is the place you are standing in.
+ *
+ * `.active` was the whole of it, which is a colour — and a colour is not a
+ * statement. `aria-current="page"` is the statement, and it is what a screen
+ * reader reads out ("current page") as it moves through the nav. The two are
+ * set together in one place precisely so a future route cannot get one and not
+ * the other; there were already three call sites setting the class by hand
+ * (round seven: no aria-current anywhere in Canon's nav).
+ *
+ * `page`, not `true`: the link points at the route you are on, which is
+ * exactly what `page` means. `true` is for the weaker "somewhere within".
+ */
+function markNav(section) {
+  document.querySelectorAll('#topnav a').forEach((a) => {
+    const here = a.dataset.nav === section;
+    a.classList.toggle('active', here);
+    if (here) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+}
+
+/**
+ * What a route change has to do besides draw.
+ *
+ * Canon had nine routes and one title. `document.title` was set once in
+ * index.html and never reassigned, so the browser tab, the history entry, the
+ * bookmark and the screen reader's window announcement all read "Veryl Canon"
+ * whether you were on the audit log or in an editor. A sighted mouse user
+ * never notices; somebody navigating by tab or by voice has no other signal
+ * that the page moved at all, because the DOM swap under a single-page router
+ * fires nothing.
+ *
+ * Three things, in the order they matter:
+ *
+ *   1. THE TITLE, from the view's own <h1>. Not a hand-maintained table of
+ *      route → name: that is a second copy of every heading in the app and it
+ *      would drift the first time somebody renamed a screen. The heading a
+ *      reader sees IS the name of the place.
+ *   2. FOCUS onto that heading, so the next Tab starts at the content rather
+ *      than back at the top of the chrome — the same 85 tab stops the skip
+ *      link exists for, met from the other side.
+ *   3. AN ANNOUNCEMENT in a polite live region. A title change is not reliably
+ *      spoken in a single-page app; a live region is. It carries the same
+ *      words as the title so the two cannot say different things.
+ *
+ * Only `render()` calls this, and only route() and two retry paths call
+ * `render()` — so an in-page refresh (closing a gap, resolving a comment) does
+ * NOT steal focus. That boundary is the point: focus moves when you have
+ * gone somewhere, and never because a panel redrew under your hands.
+ */
+function announceRoute() {
+  const heading = app.querySelector('h1') ?? app.querySelector('h2');
+  const name = (heading?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  document.title = name ? `${name} · Veryl Canon` : 'Veryl Canon';
+  if (heading) {
+    // Non-interactive, so it needs a tabindex to hold focus, and -1 so it
+    // never becomes a tab stop of its own. preventScroll because the view has
+    // already put the reader where it wants them (a page opened at an anchor,
+    // a restored scroll); focus is about where the CURSOR is.
+    heading.setAttribute('tabindex', '-1');
+    heading.focus({ preventScroll: true });
+  } else {
+    app.focus({ preventScroll: true });
+  }
+  const announcer = document.getElementById('route-announcer');
+  if (announcer) announcer.textContent = name || 'Veryl Canon';
+}
+
+/**
+ * The skip link. Its default is prevented and focus is moved by hand, because
+ * `location.hash` is this app's router: letting `href="#main"` through would
+ * navigate to the route "main", which does not exist, and drop the reader on
+ * the collections list. The link still reads and behaves as a link.
+ */
+function wireSkipLink() {
+  const link = document.getElementById('skip-to-main');
+  if (!link) return;
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    const heading = app.querySelector('h1') ?? app;
+    heading.setAttribute('tabindex', '-1');
+    heading.focus();
+    heading.scrollIntoView({ block: 'start' });
+  });
+}
+
 async function route() {
   const parts = parseHash();
   if (!state.actor && parts[0] !== 'identity') {
@@ -1339,9 +1494,7 @@ async function route() {
     : parts[0] === 'sources' ? 'sources'
     : parts[0] === 'queue' ? 'queue'
     : 'home';
-  document.querySelectorAll('#topnav a').forEach((a) => {
-    a.classList.toggle('active', a.dataset.nav === section);
-  });
+  markNav(section);
   // The badge is refreshed on every navigation, and cached for a few seconds
   // (loadQueue), so moving around the record does not re-run the queue. It is
   // deliberately NOT awaited: a number arriving a moment after the page is a
@@ -1386,6 +1539,9 @@ async function render(view) {
   } catch (err) {
     renderErrorPage(err);
   }
+  // After the failure path too: "Not found" is a place you arrived at, and it
+  // is the one a lost reader most needs told to them.
+  announceRoute();
 }
 
 function renderErrorPage(err) {
@@ -1713,7 +1869,7 @@ function queuePageRow(page, collections, right, note = null) {
 }
 
 async function viewQueue() {
-  document.querySelectorAll('#topnav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === 'queue'));
+  markNav('queue');
   let queue;
   try {
     queue = await loadQueue({ force: true });
@@ -1921,6 +2077,22 @@ function flattenTree(nodes, depth = 0, out = []) {
 // sidebar is wider, the title takes the lines it needs, and the badge follows
 // the last word of it rather than competing with it for the row. Nothing is
 // ever cut.
+//
+// A BRANCH IS A BUTTON BESIDE A LINK, not a link inside a <summary>.
+//
+// It was `<summary><a …></summary>`, which is invalid: <summary> has an
+// implicit button role and interactive content may not be nested inside it
+// (round seven). A browser renders it, and it half works — which is why it
+// survived — but what it hands assistive technology is a button whose accessible
+// name is a link, one control claiming two jobs, and a click that had to be
+// intercepted globally to stop navigation from also collapsing the branch.
+//
+// The two jobs are now two controls: a toggle that opens and closes the
+// children, and the link to the page. Both are reachable, both say what they
+// do, and `aria-expanded`/`aria-controls` state the relationship the <details>
+// element used to imply. The cost is that the open/closed state is ours to
+// keep rather than the browser's — worth it to stop shipping markup that is
+// invalid in the one place a keyboard user has to live.
 function treeHTML(nodes, currentPageId) {
   if (!nodes.length) return '<p class="muted tree-empty">No pages yet.</p>';
   const item = (n) => {
@@ -1928,7 +2100,17 @@ function treeHTML(nodes, currentPageId) {
     const link = `<a class="tree-link${active}" href="#/pages/${esc(n.id)}"
       >${esc(n.title)} ${badge(n.status, 'sm')}</a>`;
     if (n.children.length) {
-      return `<li><details open><summary>${link}</summary>${treeHTML(n.children, currentPageId)}</details></li>`;
+      const kids = `tree-kids-${esc(n.id)}`;
+      return `<li class="branch">
+        <div class="tree-row">
+          ${/* The name is the branch's title, so a screen reader hears what is
+                being collapsed rather than "button, triangle". */ ''}
+          <button type="button" class="tree-branch-toggle" aria-expanded="true"
+            aria-controls="${kids}" aria-label="Pages under ${esc(n.title)}"></button>
+          ${link}
+        </div>
+        <div id="${kids}">${treeHTML(n.children, currentPageId)}</div>
+      </li>`;
     }
     return `<li class="leaf">${link}</li>`;
   };
@@ -8192,7 +8374,7 @@ async function viewMap(scopeParam) {
     app.innerHTML = `<div class="page-wide">${mapUnavailableHTML()}</div>`;
     return;
   }
-  document.querySelectorAll('#topnav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === 'map'));
+  markNav('map');
 
   const collections = await api('GET', '/collections').catch(() => []);
   const list = Array.isArray(collections) ? collections : [];
@@ -8900,13 +9082,20 @@ function openAttestationModal(subject) {
 // ---------------------------------------------------------------------------
 // Global wiring
 
-// Tree links live inside <summary>; navigate without toggling the branch.
+// A tree branch opens and closes. This used to be the <details> element's job,
+// and the handler here was the opposite one — intercepting a link click so
+// navigating did not also collapse the branch it sat in. Two controls instead
+// of one overloaded one means the link is now an ordinary link and needs
+// nothing; only the toggle is wired, and it is delegated because the tree is
+// re-rendered on every navigation.
 document.addEventListener('click', (e) => {
-  const link = e.target.closest('summary a.tree-link');
-  if (link) {
-    e.preventDefault();
-    location.hash = link.getAttribute('href');
-  }
+  const toggle = e.target.closest?.('.tree-branch-toggle');
+  if (!toggle) return;
+  const kids = document.getElementById(toggle.getAttribute('aria-controls'));
+  if (!kids) return;
+  const open = toggle.getAttribute('aria-expanded') !== 'true';
+  toggle.setAttribute('aria-expanded', String(open));
+  kids.hidden = !open;
 });
 
 // Moving down a page without touching the address bar. Every "show me the rest
@@ -8972,5 +9161,6 @@ window.addEventListener('hashchange', route);
 loadAuth().finally(() => {
   renderChrome();
   wireSearch();
+  wireSkipLink();
   route();
 });

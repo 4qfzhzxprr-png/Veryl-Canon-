@@ -12,6 +12,13 @@
   --accent: #2e6e5c;
   --accent-ink: #ffffff;
   --accent-soft: #e4efeb;
+  /* THE FOCUS RING IS NOT --accent-soft. It was, everywhere, and
+     #e4efeb against #ffffff is 1.08:1 — WCAG SC 1.4.11 asks for 3:1, so the
+     one indicator a keyboard user has was effectively invisible on 112
+     controls (round seven). --accent is 5.5:1 on the light surfaces and 4.8:1
+     on the dark ones; it is a token of its own so that a future palette change
+     to --accent-soft cannot quietly take the ring back down with it. */
+  --focus-ring: #2e6e5c;
   --amber: #8a6116;
   --amber-soft: #f6ecd7;
   --danger: #9c3a30;
@@ -38,6 +45,7 @@
     --accent: #4f9a84;
     --accent-ink: #10231d;
     --accent-soft: #22352f;
+    --focus-ring: #6fc0a6;
     --amber: #d3a44a;
     --amber-soft: #33301f;
     --danger: #d1746a;
@@ -68,6 +76,47 @@ body {
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+/* ONE FOCUS INDICATOR, FOR EVERYTHING, AND IT PASSES SC 1.4.11.
+   Most controls here had no focus rule at all and fell back to whatever the
+   engine draws, and the handful that DID have one used --accent-soft, which is
+   1.08:1 against white — measured at 1.08:1 across 112 controls in round
+   seven, against the 3:1 the success criterion asks for.
+
+   :focus-visible, not :focus: a mouse click on a button should not leave a ring
+   behind it, and the browsers' own heuristic for "is this person navigating by
+   keyboard" is better than any rule this stylesheet could write. Anything that
+   still needs its own treatment overrides it below with a heavier selector —
+   nothing switches it off. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The way past 85 tab stops. Off-screen until it is focused, then it is the
+   first thing on the page — which is the only moment it is any use. It must
+   NOT be `display: none` or `visibility: hidden`: both take it out of the tab
+   order, which is the one thing it exists to be in. */
+.skip-link {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  transform: translateY(-120%);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 0 0 8px 0;
+  padding: 0.6rem 1rem;
+  font-weight: 600;
+  transition: transform 0.12s ease;
+}
+.skip-link:focus { transform: translateY(0); text-decoration: none; }
+
+/* The heading a route change moves focus to (announceRoute). It is not a
+   control, so a ring around it is noise for a mouse user and a signal for a
+   keyboard one — which is exactly the distinction :focus-visible draws. */
+[tabindex="-1"]:focus:not(:focus-visible) { outline: none; }
 
 code {
   font-family: var(--mono);
@@ -144,7 +193,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
   color: var(--text);
   font: inherit;
 }
-.search-slot input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.search-slot input:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
 .search-results {
   position: absolute;
   top: calc(100% + 6px);
@@ -266,13 +315,34 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
 .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
 .tree ul { padding-left: 0.95rem; border-left: 1px solid var(--border); margin-left: 0.45rem; }
 .tree li { margin: 0.1rem 0; }
-.tree summary { cursor: pointer; }
-.tree summary::marker { color: var(--muted); font-size: 0.8em; }
+/* A branch is a toggle beside a link, not a link inside a <summary> (which is
+   invalid markup — see treeHTML). The row is the two of them; the triangle is
+   drawn here rather than by ::marker, because a <button> has no marker. */
+.tree-row { display: flex; align-items: flex-start; gap: 0.1rem; }
+.tree-branch-toggle {
+  flex: none;
+  /* 24px of target on a phone. The visual triangle is smaller than the box it
+     is in, which is the point: the tap area is the box. */
+  width: 24px;
+  min-height: 24px;
+  margin-top: 0.06rem;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.tree-branch-toggle::before { content: "\25B8"; display: inline-block; font-size: 0.8em; transition: transform 0.12s ease; }
+.tree-branch-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+.tree-branch-toggle:hover { background: var(--surface-2); color: var(--text); }
+.tree-row .tree-link { flex: 1 1 auto; }
 /* The title wraps and the badge follows it. Nothing here truncates: a page
    whose title reads "Escal…" is a page nobody can navigate to. */
 .tree-link {
-  /* inline-block, not block: inside a <summary> it has to sit beside the
-     disclosure marker, and it still wraps its own text at max-width. */
+  /* inline-block, not block: it sits beside the branch toggle in a flex row
+     and still wraps its own text at max-width. */
   display: inline-block;
   max-width: 100%;
   padding: 0.22rem 0.45rem;
@@ -428,7 +498,8 @@ label input, label textarea, label select {
   padding: 0.45rem 0.65rem;
 }
 label input:focus, label textarea:focus, label select:focus {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent);
 }
 label.check { display: flex; align-items: baseline; gap: 0.5rem; font-weight: 500; }
@@ -805,7 +876,8 @@ label.check input { width: auto; display: inline; margin: 0; }
   padding: 0.7rem 0.85rem;
 }
 .editor-body:focus {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--accent);
 }
 /* `display: block` above outranks the browser's own rule for the hidden
@@ -912,7 +984,18 @@ label.check input { width: auto; display: inline; margin: 0; }
   padding: 0.9rem 1.1rem 0.8rem;
   transition: border-color 0.12s ease;
 }
-.ask-form:focus-within { border-color: var(--accent); }
+/* The ring is drawn on the FORM, not the textarea: the question box is a
+   borderless field inside a card, and an outline on the field alone would be a
+   rectangle floating inside another rectangle. Drawing it on the immediate
+   container is what an indicator has to be — visible and 3:1 against what is
+   next to it. What it may not be is nothing, which is what
+   `.ask-question:focus { outline: none }` made it: the ONE control on the Ask
+   screen, with no focus indicator at all (round seven). */
+.ask-form:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 .ask-question {
   display: block;
@@ -927,6 +1010,9 @@ label.check input { width: auto; display: inline; margin: 0; }
   resize: vertical;
   min-height: 3.4rem;
 }
+/* Suppressed here ONLY because .ask-form:focus-within above draws the ring
+   around this field's own container. Never remove that rule and leave this
+   one. */
 .ask-question:focus { outline: none; }
 .ask-question::placeholder { color: var(--muted); opacity: 0.75; }
 
