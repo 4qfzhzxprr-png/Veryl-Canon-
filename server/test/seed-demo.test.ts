@@ -5,6 +5,19 @@ import { CanonStore } from '../src/store.js';
 import type { NotificationTransport } from '../src/notify.js';
 import type { RecordGraph } from '../src/graph.js';
 import { parseArgs, recordHasContent, seedDemo, type SeedReport } from '../scripts/seed-demo.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function findPublicFile(name: string): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let up = 0; up < 8; up += 1) {
+    const candidate = join(dir, 'public', name);
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error(`server/public/${name} not found above the compiled test file`);
+}
 
 // The demo seeder (scripts/seed-demo.ts, `npm run seed:demo`). It is a
 // development tool, and it is tested for one reason above all others: a
@@ -332,4 +345,73 @@ test('seeder: the command line says what it means', () => {
   assert.equal(parseArgs(['--seed=7']).seed, 7);
   assert.throws(() => parseArgs(['--wipe']), /Unknown argument/);
   assert.throws(() => parseArgs(['--seed', 'soon']), /--seed takes a number/);
+});
+
+// Round seven, policy question 4 — answered, and the answer is in the corpus
+// rather than in a document about the corpus.
+//
+// A compliance approver, told by a pane that there was no baseline to diff
+// against, typed that into the note they signed: the body "is identical to
+// published v1", on a version that had changed four lines. The pane was wrong
+// and has been fixed. THE NOTE IS NOT FIXED, and that is the decision: Canon's
+// claim is that the record is what people actually wrote, with its history, and
+// a product that silently corrects a human's sentence when it turns out to be
+// embarrassing is indistinguishable — six months later — from one that silently
+// corrects anything else.
+//
+// The correction goes beside it, by a named person, at a stated time, using the
+// mechanism the product already has.
+test('seed: a version note that states a false diff is kept, and corrected beside', async () => {
+  const store = freshStore();
+  const report = await seedDemo(store, { quiet: true });
+  const compliance = report.collections.find((c) => c.name === 'Compliance')!;
+  const flat: { id: string; title: string }[] = [];
+  const walk = (nodes: { id: string; title: string; children?: unknown[] }[]): void => {
+    for (const n of nodes) {
+      flat.push(n);
+      walk((n.children ?? []) as { id: string; title: string; children?: unknown[] }[]);
+    }
+  };
+  walk(store.tree(report.operatorId, compliance.id));
+
+  // The page is chosen deterministically rather than named, because pinning a
+  // title into PINNED_PAGES skips a `targetStatus` roll and shifts every dice
+  // throw after it — which moved the labelled retrieval eval by two and a half
+  // points for a change that has nothing to do with retrieval. So the property
+  // is what is asserted: somewhere in Compliance, exactly one page carries this
+  // note, and it carries the correction with it.
+  const carrying = flat.filter((n) =>
+    store.listVersions(report.operatorId, n.id).some((v) => /identical to published v1/.test(v.note ?? '')),
+  );
+  assert.equal(carrying.length, 1, 'the note stands, word for word, on exactly one page');
+  const page = carrying[0]!;
+
+  const wrong = store.listVersions(report.operatorId, page.id).find((v) => /identical to published v1/.test(v.note ?? ''))!;
+  // And the version it is wrong about really did change, which is what makes
+  // the note false rather than merely unhelpful.
+  const before = store.getVersion(report.operatorId, page.id, wrong.number - 1);
+  const after = store.getVersion(report.operatorId, page.id, wrong.number);
+  assert.notEqual(before.body, after.body);
+
+  // The correction: alongside, attributed, dated, and not touching the note.
+  const comments = store.listComments(report.operatorId, page.id);
+  const correction = comments.find((c) => /Correcting my own note/.test(c.body));
+  assert.ok(correction, 'the correction is filed as a comment on the page');
+  assert.ok(correction!.authorId, 'by somebody with a name');
+  assert.ok(correction!.createdAt, 'at a stated time');
+  assert.match(correction!.body, /five-working-day escalation/, 'and it says what actually changed');
+});
+
+test('a version note is never edited, and the screen that shows one says so', () => {
+  // The other half of the same decision: a correction filed where nobody
+  // reading the note will look is not a correction. Version history states the
+  // rule and points at the page's comments, with the count, so it is not a link
+  // into an empty room.
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const fn = new RegExp('function versionNoteStandingHTML\\(id, comments\\)[\\s\\S]*?\\n\\}').exec(source)![0];
+  assert.match(fn, /Canon never edits one, even when it turns out to be wrong/);
+  assert.match(fn, /as a comment on the page/);
+  // Not `#/pages/<id>#comments`: the hash IS the router, so a fragment on a
+  // route is read as part of the page id.
+  assert.doesNotMatch(fn, /#comments/);
 });

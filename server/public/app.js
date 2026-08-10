@@ -5436,10 +5436,49 @@ async function renderEditorReferences(pageId, collectionId) {
 // ---------------------------------------------------------------------------
 // Version history
 
+// A VERSION NOTE IS NEVER EDITED, EVEN WHEN IT IS WRONG.
+//
+// Round seven, policy question 4. A page in the record carries the note
+// "Approved by Dana Whitfield (compliance). Note: no baseline diff was
+// available; body is identical to published v1" on a version that changed four
+// lines — free text an approver typed, in good faith, because the approve pane
+// had told them there was no baseline (that half is fixed; this note is not,
+// and must not be).
+//
+// The decision was to leave it. Canon's whole claim is that the record is what
+// people actually wrote, with its history; a product that silently corrects a
+// human's sentence teaches exactly the wrong thing about itself, and it would
+// be indistinguishable, later, from a product that silently corrects anything
+// else. So the note stands and the correction is filed ALONGSIDE it, by a
+// person, with their name and the date on it — which is the mechanism Canon
+// already has for "this is wrong and we are not deleting it".
+//
+// The half that was missing was not the mechanism, it was the pointer:
+// somebody reading a version note is on THIS screen, and the corrections are
+// on the page. The sentence below is what joins them, and it carries the count
+// so it is not a link into an empty room.
+//
+// The link is to the page and NOT to `#/pages/<id>#comments`: the hash IS the
+// router here, so a fragment on the end of a route is read as part of the page
+// id and the link resolves to nothing (the same trap noticeHref documents).
+function versionNoteStandingHTML(id, comments) {
+  const n = Array.isArray(comments) ? comments.length : null;
+  return `
+    <p class="muted">A note is what somebody wrote when they published or approved, and it is kept
+      exactly as they wrote it — Canon never edits one, even when it turns out to be wrong. A
+      correction is added beside it${n === null ? '' : n === 0
+        ? ', as a comment on the page. There are none on this page.'
+        : `, as a comment on the page — <a href="#/pages/${esc(id)}">there ${n === 1 ? 'is 1' : `are ${n}`}
+           on this page</a>.`}</p>`;
+}
+
 async function viewHistory(id) {
-  const [page, versions] = await Promise.all([
+  const [page, versions, comments] = await Promise.all([
     api('GET', `/pages/${id}`),
     api('GET', `/pages/${id}/versions`),
+    // Not fatal: a deployment without comments still has a history, and the
+    // sentence simply says less rather than the screen failing over a pointer.
+    api('GET', `/pages/${id}/comments`).catch(() => null),
     loadActors().catch(() => null),
   ]);
   const desc = [...versions].reverse();
@@ -5459,6 +5498,7 @@ async function viewHistory(id) {
       <p class="muted">Versions are what was published. For everything that happened to this page —
       views of restricted material, submissions, send-backs, approvals —
       <a href="#/audit?page=${encodeURIComponent(id)}">see its audit log</a>.</p>
+      ${versionNoteStandingHTML(id, comments)}
       ${/* Six columns, so the table scrolls inside its own container on a narrow
             screen rather than pushing the page sideways — the same treatment
             the collection's contents table has, for the same reason: nothing in
