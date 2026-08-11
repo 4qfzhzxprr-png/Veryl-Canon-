@@ -1186,9 +1186,14 @@ test('ask: a citation carries the standing of the page it quotes', async () => {
     '2026-01-01',
   );
 
+  // The review date (2026-01-01) has already lapsed, but no sweep has run yet, so
+  // the STORED status is still 'canonical'. Ask judges staleness LIVE (the same
+  // basis the page view uses), so the citation already carries the overdue
+  // standing — the sweep only confirms later what the review date already says.
+  assert.equal(store.getPage(marc.id, policy.id).status, 'canonical', 'stored status has not been swept yet');
   const current = await store.ask(marc.id, { question: 'How long are client records retained?' });
   assert.equal(current.citations.length, 1);
-  assert.equal(current.citations[0]!.status, 'canonical');
+  assert.equal(current.citations[0]!.status, 'needs_update', 'a lapsed review date reads past review before the sweep, not after');
 
   store.sweepFreshness(dana.id, { on: '2026-06-01' });
 
@@ -1196,7 +1201,8 @@ test('ask: a citation carries the standing of the page it quotes', async () => {
   assert.equal(stale.refused, false, "a Needs Update page is still the record's own answer");
   assert.deepEqual(stale.citations.map((c) => c.pageId), [policy.id]);
   // The heart of T1.1: the citation says what the page now is. A renderer left
-  // to guess will guess Canonical, and be wrong here.
+  // to guess will guess Canonical, and be wrong here. The sweep does not change
+  // this — Ask already said so live — it only makes the stored status agree.
   assert.equal(stale.citations[0]!.status, 'needs_update');
   // The three ways the same fact reaches a caller agree with each other: the
   // status on the citation, the pastReview list, and the prose.

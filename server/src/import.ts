@@ -500,17 +500,22 @@ export function discoverConfluence(root: string): Discovery {
   const realRoot = realPathOr(root);
   const entries = readDirSafe(root);
   const files: string[] = [];
-  // A genuine Confluence export keeps its pages flat at the top level and puts
-  // supporting files in these sibling dirs; they are legitimately not pages and
-  // are ignored in silence.
-  const isAttachmentDir = (name: string): boolean =>
-    /^(attachments|images|styles|_files|assets|thumbnails)$/i.test(name) || name.startsWith('.');
-  // A subdirectory that is NOT one of those may still hold HTML pages a records
-  // manager zipped into a folder. Confluence has no page tree there, so those
-  // pages are not imported — but they must be ACCOUNTED FOR, not silently
-  // dropped: each becomes a skipped row with a reason. Only HTML entries are
-  // reported (non-HTML in a subfolder is an attachment, and stays silent).
-  const scanSkippedSubtree = (dir: string, depth: number): void => {
+  // `attachments/` holds the files people attached to pages. An HTML file there
+  // is a genuine attached document, not a page in the tree — importing it would
+  // change what actually lands, so it stays silent (and a test pins this). The
+  // OTHER export-support dirs (images/, styles/, assets/, …) hold rendering
+  // assets: an HTML file in one of those is not an asset, it is a page a records
+  // manager zipped into the wrong folder, and dropping it silently is the defect
+  // this guards against.
+  const isSilentAttachmentDir = (name: string): boolean => /^attachments$/i.test(name);
+  const isAssetDir = (name: string): boolean => /^(images|styles|_files|assets|thumbnails)$/i.test(name);
+  // A subdirectory the Confluence page tree does not describe may still hold HTML
+  // pages. Those pages are not imported (there is no tree there to place them in)
+  // — but they must be ACCOUNTED FOR, not silently dropped: each HTML file
+  // becomes a skipped row with a reason. NON-HTML inside any subfolder stays
+  // silent (those are real attachments/assets — correct). `htmlReason` names why
+  // this particular subtree was not imported.
+  const scanSkippedSubtree = (dir: string, depth: number, htmlReason: string): void => {
     if (depth > 6) {
       skipped.push({ file: posix(relative(root, dir)), reason: 'directory nested deeper than 6 levels — not imported' });
       return;
@@ -519,20 +524,25 @@ export function discoverConfluence(root: string): Discovery {
       if (entry.name.startsWith('.')) continue;
       const abs = join(dir, entry.name);
       if (entry.isDirectory) {
-        scanSkippedSubtree(abs, depth + 1);
+        scanSkippedSubtree(abs, depth + 1, htmlReason);
       } else if (isHtmlFile(entry.name)) {
-        skipped.push({
-          file: posix(relative(root, abs)),
-          reason: 'in a subfolder not part of the Confluence page tree — not imported',
-        });
+        skipped.push({ file: posix(relative(root, abs)), reason: htmlReason });
       }
     }
   };
   for (const entry of entries) {
     if (entry.isDirectory) {
-      // attachments/, images/, styles/ and friends: silent. Anything else is
-      // scanned so nested HTML pages are recorded as skipped, never vanished.
-      if (!isAttachmentDir(entry.name)) scanSkippedSubtree(join(root, entry.name), 1);
+      // Dotfile dirs (.git, macOS bundles) are never content: silent.
+      if (entry.name.startsWith('.')) continue;
+      // `attachments/` is silent (its HTML is a genuine attachment). Every other
+      // subfolder — an asset dir OR an ordinary one — is scanned so that any HTML
+      // page inside it is recorded as skipped, never vanished. No `.html` is ever
+      // dropped without a receipt row.
+      if (isSilentAttachmentDir(entry.name)) continue;
+      const htmlReason = isAssetDir(entry.name)
+        ? 'in a supporting-assets subfolder (e.g. images/, styles/) — not imported'
+        : 'in a subfolder not part of the Confluence page tree — not imported';
+      scanSkippedSubtree(join(root, entry.name), 1, htmlReason);
       continue;
     }
     // The index is the tree, not a page: it is consumed for hierarchy below and
