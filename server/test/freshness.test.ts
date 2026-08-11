@@ -260,14 +260,23 @@ test('needs update: grounded answers may cite it, and say it is past review', as
     '2026-01-01',
   );
 
+  // The review date (2026-01-01) has already lapsed, but no sweep has run, so the
+  // stored status is still Canonical. Ask computes staleness LIVE (same basis as
+  // the page view), so it marks the page past review in this pre-sweep window
+  // rather than citing it as a clean Canonical — the sweep only confirms later
+  // what the review date already says.
+  assert.equal(store.getPage(marc.id, policy.id).status, 'canonical', 'stored status has not been swept yet');
   const before = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
   assert.equal(before.refused, false);
-  assert.equal(before.pastReview, undefined); // nothing to flag while it is current
+  assert.match(before.answer!, /past review/);
+  assert.deepEqual(before.pastReview, [{ pageId: policy.id, title: 'Pangolin retention policy' }]);
+  assert.equal(before.citations[0]!.status, 'needs_update', 'the citation carries the overdue standing, not clean Canonical');
 
   store.sweepFreshness(dana.id, { on: '2026-06-01' });
 
-  // The decision, defended in answers.ts: a Needs Update page is still the
-  // record's own answer, so it is still cited — and the answer says so.
+  // Once the sweep catches up, nothing about the answer changes: the decision,
+  // defended in answers.ts, is that a Needs Update page is still the record's own
+  // answer, so it is still cited — and the answer says so, before and after.
   const after = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
   assert.equal(after.refused, false, 'refusing here would punish the owner for setting a review date at all');
   assert.deepEqual(after.citations.map((c) => c.pageId), [policy.id]);
@@ -279,6 +288,57 @@ test('needs update: grounded answers may cite it, and say it is past review', as
   store.archivePage(marc.id, policy.id);
   const archived = await store.ask(marc.id, { question: 'What is the pangolin retention period?' });
   assert.equal(archived.refused, true);
+});
+
+// Fix 2 pin. A Canonical page whose review date has lapsed but which the hourly
+// sweep has NOT yet touched must be cited by Ask as past review, on the same
+// live basis the page view uses — never as a clean, authoritative Canonical. And
+// a genuinely current page (review date still in the future) must stay unmarked,
+// so the live check flags the overdue page and only the overdue page.
+test('ask: an overdue-but-unswept Canonical page is cited as past review, live', async () => {
+  const { store, marc, iris, collection } = setup();
+  // Overdue: review date already lapsed. No sweep is ever run in this test, so
+  // its STORED status is still 'canonical' throughout.
+  const overdue = canonicalPolicy(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Vault access policy',
+    'Every access to the vault is logged for audit.',
+    '2026-01-01',
+  );
+  // Current: review date well in the future, so nothing to flag.
+  const current = canonicalPolicy(
+    store,
+    marc.id,
+    iris.id,
+    collection.id,
+    'Badger handling policy',
+    'Badger handling is documented and reviewed.',
+    '2099-01-01',
+  );
+
+  // Neither page has been swept: both read 'canonical' in storage.
+  assert.equal(store.getPage(marc.id, overdue.id).status, 'canonical');
+  assert.equal(store.getPage(marc.id, current.id).status, 'canonical');
+
+  // The overdue page: cited, marked past review, its citation carrying the
+  // overdue standing rather than a clean Canonical.
+  const stale = await store.ask(marc.id, { question: 'Is vault access logged for audit?' });
+  assert.equal(stale.refused, false);
+  assert.deepEqual(stale.citations.map((c) => c.pageId), [overdue.id]);
+  assert.equal(stale.citations[0]!.status, 'needs_update', 'live staleness marks the citation, not the stored status');
+  assert.match(stale.answer!, /past review/);
+  assert.deepEqual(stale.pastReview, [{ pageId: overdue.id, title: 'Vault access policy' }]);
+
+  // The current page: cited cleanly, no past-review marker anywhere.
+  const fresh = await store.ask(marc.id, { question: 'Is badger handling documented?' });
+  assert.equal(fresh.refused, false);
+  assert.deepEqual(fresh.citations.map((c) => c.pageId), [current.id]);
+  assert.equal(fresh.citations[0]!.status, 'canonical', 'a genuinely current page stays clean Canonical');
+  assert.equal(fresh.pastReview, undefined, 'nothing to flag while it is current');
+  assert.doesNotMatch(fresh.answer!, /past review/);
 });
 
 test('freshness: the sweep over HTTP, and closed to agents by classification', async () => {

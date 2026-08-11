@@ -3,6 +3,7 @@ import { Actor, CanonError, PageStatus } from './model.js';
 import { STOPWORDS } from './embeddings.js';
 import { objectBody, optionalCount, optionalString, optionalStringArray } from './input.js';
 import { ANSWERABLE_STATUSES, DEFAULT_LIMIT, answerShape, type RetrievalCandidate, type RetrievalService } from './retrieval.js';
+import { isPastReview, today } from './freshness.js';
 
 // Grounded answers: step 4 of DATA-BACKBONE.md §5, and the Epic D promise in
 // CORE-PLAN.md. Generation happens under the record's rules, and the rules are
@@ -1985,6 +1986,23 @@ export class AnswerService {
   }
 
   /**
+   * The stored review date of each of these pages, keyed by page id. Read
+   * straight from `pages.review_date` — the same column the page view reads —
+   * so Ask can judge live staleness (`isPastReview`) on exactly the basis the
+   * page view uses, rather than trusting the stored status the hourly sweep has
+   * not caught up to. A page with no review date is simply absent from the map.
+   */
+  private reviewDatesFor(pageIds: string[]): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    if (pageIds.length === 0) return out;
+    const rows = this.db
+      .prepare(`SELECT id, review_date FROM pages WHERE id IN (${pageIds.map(() => '?').join(', ')})`)
+      .all(...pageIds) as { id: string; review_date: string | null }[];
+    for (const row of rows) out.set(row.id, row.review_date ?? null);
+    return out;
+  }
+
+  /**
    * Document frequencies for this question's content terms, or null where the
    * index cannot answer — in which case `isOnTopic` falls back to its
    * unweighted form rather than refusing everything. A relevance gate that
@@ -2200,6 +2218,30 @@ export class AnswerService {
         // come from words the admission decision already weighed.
         ...(bodies.get(c.pageId) ? { fullText: bodies.get(c.pageId)!.slice(0, MAX_FULL_TEXT) } : {}),
       }));
+
+    // STALENESS IS LIVE, NOT STORED. The freshness sweep flips a Canonical page
+    // to Needs Update at most once an hour; between the moment its review date
+    // lapses and the next sweep, the stored status still reads `canonical`. The
+    // PAGE VIEW already computes this window LIVE (queries.ts, `isPastReview`
+    // against today) and warns on it; Ask trusted the stored status and cited
+    // such a page as a clean, authoritative "Canonical", with no past-review
+    // marker and a header reading "drawn from 1 Canonical page" — presenting an
+    // overdue page as fresh for up to an hour. So Ask marks it the same way,
+    // from the same basis: a page whose stored status is Canonical but whose
+    // review date has passed is treated as Needs Update everywhere below — the
+    // generator's "past review" attribution, the `pastReview` list, and the
+    // citation's own standing — exactly as it will read once the sweep catches
+    // up. The sweep itself is untouched; this only stops Ask from lying in the
+    // gap before it runs. In Review is not upgraded here (it is serving its last
+    // approved version, and the page view's own live marker is likewise scoped
+    // to Canonical).
+    const on = today();
+    const reviewDates = this.reviewDatesFor(passages.map((p) => p.pageId));
+    for (const p of passages) {
+      if (p.status === 'canonical' && isPastReview(reviewDates.get(p.pageId) ?? null, on)) {
+        p.status = 'needs_update';
+      }
+    }
 
     // Contradiction awareness, DATA-BACKBONE.md §7. Detection runs over the
     // passages this answer is about to be composed from, and it runs HERE —

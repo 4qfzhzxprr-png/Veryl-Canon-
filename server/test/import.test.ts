@@ -535,6 +535,69 @@ test('import: HTML pages in subfolders are recorded as skipped rows, not silentl
   }
 });
 
+// The round-5 scan only reached subfolders that were NOT export-support dirs, so
+// an HTML page a records manager zipped into `images/` or `assets/` vanished with
+// no receipt row — not imported, not skipped, not counted. An HTML file in a
+// rendering-asset folder is not an asset; it is a misfiled page, and the record
+// must account for it exactly like any other subfolder page. `attachments/` is
+// the one dir that stays silent: an HTML file there is a genuine attachment, and
+// importing (or even listing) it would change what actually lands.
+test('import: HTML pages inside asset-named subfolders (images/, assets/) get a skipped row, not silence', () => {
+  const { store, marc, collection } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'canon-import-assetdir-'));
+  try {
+    const page = (title: string) =>
+      `<html><head><title>${title}</title></head><body><p>Readable content for ${title}.</p></body></html>`;
+    // One real top-level page.
+    writeFileSync(join(root, 'Top+Page_100.html'), page('Top Page'));
+    // HTML pages zipped into export-support (asset) folders: these used to vanish.
+    mkdirSync(join(root, 'images'));
+    writeFileSync(join(root, 'images', 'Zipped+In+Images_200.html'), page('Zipped In Images'));
+    writeFileSync(join(root, 'images', 'diagram.png'), 'not really a png'); // a real asset: stays silent
+    mkdirSync(join(root, 'assets'));
+    writeFileSync(join(root, 'assets', 'Zipped+In+Assets_300.html'), page('Zipped In Assets'));
+    // attachments/: an HTML file here is a genuine attachment and stays silent.
+    mkdirSync(join(root, 'attachments'));
+    writeFileSync(join(root, 'attachments', 'template_9.html'), page('Attachment Fragment'));
+
+    const summary = store.runImport(marc.id, { source: 'confluence', path: root, collectionId: collection.id });
+    const run = store.getImportRun(marc.id, summary.runId);
+    const item = (file: string) => run.items.find((i) => i.file === file);
+
+    // Each asset-folder HTML page is now a persisted skipped row — never dropped.
+    for (const file of ['images/Zipped+In+Images_200.html', 'assets/Zipped+In+Assets_300.html']) {
+      const row = item(file);
+      assert.ok(row, `the asset-folder page ${file} has a row in the read-back receipt`);
+      assert.equal(row.outcome, 'skipped', `${file} is skipped, never dropped`);
+      assert.equal(row.pageId, null, `${file} makes no page`);
+      // The app.js flat-hierarchy note keys on a "subfolder" HTML skip reason, so
+      // the receipt row and the note stay in step.
+      assert.match(row.reason ?? '', /subfolder/i, `${file} explains it sat in a subfolder`);
+    }
+
+    // The one real top-level page still imports.
+    assert.equal(item('Top+Page_100.html')?.outcome, 'imported');
+
+    // The real asset (the PNG) and the genuine attachment (attachments/*.html)
+    // both stay silent: what actually imports is unchanged.
+    assert.equal(item('images/diagram.png'), undefined, 'a real asset stays silent');
+    assert.equal(
+      run.items.some((i) => i.file.startsWith('attachments/')),
+      false,
+      'attachments/ HTML is a genuine attachment and stays silent',
+    );
+
+    // Every HTML page reconciles: 1 imported + 2 asset-folder skips = 3 found.
+    const { found, imported, updated, skipped, failed } = run.counts;
+    assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles');
+    assert.equal(imported, 1);
+    assert.equal(skipped, 2, 'both asset-folder HTML pages are counted as skipped');
+    assert.equal(found, 3, 'no HTML page is an anonymous "+N"');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('import: an export with no index and no breadcrumbs falls back to a flat import', () => {
   const { store, marc, collection } = setup();
   const summary = store.runImport(marc.id, {
