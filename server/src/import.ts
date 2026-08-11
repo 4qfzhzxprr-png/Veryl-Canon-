@@ -500,14 +500,16 @@ export function discoverConfluence(root: string): Discovery {
   const realRoot = realPathOr(root);
   const entries = readDirSafe(root);
   const files: string[] = [];
-  // `attachments/` holds the files people attached to pages. An HTML file there
-  // is a genuine attached document, not a page in the tree — importing it would
-  // change what actually lands, so it stays silent (and a test pins this). The
-  // OTHER export-support dirs (images/, styles/, assets/, …) hold rendering
-  // assets: an HTML file in one of those is not an asset, it is a page a records
-  // manager zipped into the wrong folder, and dropping it silently is the defect
-  // this guards against.
-  const isSilentAttachmentDir = (name: string): boolean => /^attachments$/i.test(name);
+  // THE INVARIANT: every `.html`/`.htm` file anywhere in the import tree is
+  // accounted for — it becomes either an imported page OR a `skipped` receipt row
+  // with a reason. There are NO directory-name exceptions. `attachments/` holds
+  // the files people attached to pages: an HTML file there is a genuine attached
+  // document, not a page, so it is NOT imported as a page — but it still gets a
+  // skipped row so it can never vanish from the receipt. The OTHER export-support
+  // dirs (images/, styles/, assets/, …) hold rendering assets: an HTML file in
+  // one of those is not an asset, it is a page a records manager zipped into the
+  // wrong folder. Either way the HTML is recorded; only the reason differs.
+  const isAttachmentDir = (name: string): boolean => /^attachments$/i.test(name);
   const isAssetDir = (name: string): boolean => /^(images|styles|_files|assets|thumbnails)$/i.test(name);
   // A subdirectory the Confluence page tree does not describe may still hold HTML
   // pages. Those pages are not imported (there is no tree there to place them in)
@@ -534,14 +536,16 @@ export function discoverConfluence(root: string): Discovery {
     if (entry.isDirectory) {
       // Dotfile dirs (.git, macOS bundles) are never content: silent.
       if (entry.name.startsWith('.')) continue;
-      // `attachments/` is silent (its HTML is a genuine attachment). Every other
-      // subfolder — an asset dir OR an ordinary one — is scanned so that any HTML
-      // page inside it is recorded as skipped, never vanished. No `.html` is ever
-      // dropped without a receipt row.
-      if (isSilentAttachmentDir(entry.name)) continue;
-      const htmlReason = isAssetDir(entry.name)
-        ? 'in a supporting-assets subfolder (e.g. images/, styles/) — not imported'
-        : 'in a subfolder not part of the Confluence page tree — not imported';
+      // EVERY subfolder is scanned — attachments/, an asset dir, or an ordinary
+      // one — so that any HTML page inside it is recorded as skipped, never
+      // vanished. No `.html` is ever dropped without a receipt row; only the
+      // reason differs by directory type. NON-HTML inside any subfolder stays
+      // silent (those are genuine attachments/assets — correct).
+      const htmlReason = isAttachmentDir(entry.name)
+        ? 'an HTML file attached to a page — not imported as a page'
+        : isAssetDir(entry.name)
+          ? 'in a supporting-assets subfolder (e.g. images/, styles/) — not imported'
+          : 'in a subfolder not part of the Confluence page tree — not imported';
       scanSkippedSubtree(join(root, entry.name), 1, htmlReason);
       continue;
     }
