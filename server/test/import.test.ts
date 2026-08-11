@@ -398,6 +398,41 @@ test('import: a non-HTML file is reported as skipped, not silently dropped', () 
   assert.equal(skipped, 1);
 });
 
+// The in-memory summary above is not what the receipt view renders — that is
+// read back from the import_items table via getRun. A discovery skip that only
+// bumped the tally but never wrote a row was COUNTED ("1 skipped") yet appeared
+// nowhere in the "Every file" table, and `found` excluded it, so the header read
+// "1 imported · 1 skipped — 1 document found" (2 ≠ 1). A migration lead could not
+// reconcile the receipt, and one file lived nowhere. The read-back must show the
+// skip as a row with its reason, and the counts must reconcile.
+test('import: a discovery skip is a persisted receipt row, and the counts reconcile', () => {
+  const { store, marc, collection } = setup();
+  const summary = store.runImport(marc.id, { source: 'confluence', path: CONFLUENCE_MIXED, collectionId: collection.id });
+
+  // Read the run back through the same path the receipt view uses: import_items.
+  const run = store.getImportRun(marc.id, summary.runId);
+
+  // The non-HTML file has an actual ROW in the receipt, with a human reason —
+  // not merely a number in the header.
+  const notes = run.items.find((i) => i.file === 'loose-notes.txt');
+  assert.ok(notes, 'the skipped non-HTML file has a row in the read-back receipt');
+  assert.equal(notes.outcome, 'skipped');
+  assert.equal(notes.pageId, null);
+  assert.match(notes.reason ?? '', /not an HTML page/i);
+
+  // The imported page is a row too, so the table is the whole story.
+  const runbook = run.items.find((i) => i.file === 'Runbook_100.html');
+  assert.equal(runbook?.outcome, 'imported');
+
+  // The header reconciles: found is the full input total, and no file is an
+  // anonymous "+N" — found == imported + updated + skipped + failed.
+  const { found, imported, updated, skipped, failed } = run.counts;
+  assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles: nothing is orphaned');
+  assert.equal(found, 2, 'both content files the user put in are counted in the total');
+  assert.equal(imported, 1);
+  assert.equal(skipped, 1);
+});
+
 // A binary file (a PDF or image renamed `.html`, or any blob discovery picks up)
 // decodes to non-empty junk and slips past the empty-document guard, importing
 // as a "clean" page. It must be reported instead — a page nobody can read is not
