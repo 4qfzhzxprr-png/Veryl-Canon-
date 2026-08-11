@@ -1310,6 +1310,41 @@ test('ask view: a refusal renders nearest pages as links, never as quotations', 
   assert.ok(!bare.includes('nearest'), 'no pointers, no section');
 });
 
+test('ask view: the refusal headline is permission-scoped, not an absolute claim', () => {
+  // The retrieval behind Ask is ACL-filtered before the canonical check —
+  // exactly like search, which already says "Nothing you can see matches." A
+  // reader merely RESTRICTED from a Canonical page must not read the refusal as
+  // "no policy exists"; the claim is about what THIS reader can see. So the
+  // headline carries the same "you can see" scoping search does.
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const lifted = /function refusalHTML\(result, question, collection\) \{[\s\S]*?\n\}/.exec(source);
+  assert.ok(lifted, 'the refusal view is drawn by refusalHTML');
+  const refusalHTML = new Function(
+    'esc', 'citationBadge', 'state', 'badge',
+    `${lifted[0]}\nreturn refusalHTML;`,
+  )(
+    (x: string) => String(x),
+    () => '',
+    { features: { search: false } },
+    () => '',
+  ) as (result: unknown, question: string, collection: unknown) => string;
+
+  const scoped = refusalHTML({ refused: true, reason: 'no_canonical_match' }, 'urgent claims', {
+    name: 'Member Benefits',
+  });
+  // The claim is scoped to this reader, in the same voice search uses.
+  assert.match(scoped, /Nothing Canonical you can see/, 'the headline scopes the claim to this reader');
+  // And it is NOT the old unscoped absolute claim.
+  assert.ok(!/Nothing Canonical in <strong>/.test(scoped), 'no unscoped "Nothing Canonical in <collection> covers"');
+  assert.ok(!/Nothing Canonical covers/.test(scoped), 'no bare unscoped "Nothing Canonical covers"');
+
+  // The collection-less form scopes too, and still refuses honestly rather than
+  // guessing.
+  const bare = refusalHTML({ refused: true, reason: 'no_canonical_match' }, 'urgent claims', null);
+  assert.match(bare, /Nothing Canonical you can see\s+covers/, 'the no-collection form is scoped as well');
+  assert.match(bare, /cannot cite/, 'the honest "refuses rather than guesses" intent is kept');
+});
+
 test('ask view: "search instead" hands search the question’s terms, not the question', () => {
   // Fifth round, Ada: the button pre-filled the whole question into an FTS
   // MATCH that ANDs every token, so "do I need a sick note?" required a page

@@ -878,16 +878,28 @@ export class ImportService {
     });
 
     const files: ImportFileResult[] = [];
+    // A discovery skip (a non-HTML file the exporter swept in) is a file the
+    // migration lead put in the input, so it earns a ROW in the receipt, not
+    // just a bump to the skipped tally. `record()` is the only thing that
+    // INSERTs into import_items — the table the receipt is read back from — so
+    // a skip that is merely pushed to this in-memory array counts but never
+    // renders, leaving one file with a tally and no row. Persist it.
     for (const skip of discovery.skipped) {
-      files.push({
-        file: skip.file,
-        outcome: 'skipped',
-        pageId: null,
-        title: null,
-        parentFile: null,
-        published: false,
-        reason: skip.reason,
-      });
+      files.push(
+        this.record(
+          runId,
+          {
+            file: skip.file,
+            outcome: 'skipped',
+            pageId: null,
+            title: null,
+            parentFile: null,
+            published: false,
+            reason: skip.reason,
+          },
+          '',
+        ),
+      );
     }
 
     const pageByFile = new Map<string, string>();
@@ -930,19 +942,34 @@ export class ImportService {
     }
 
     for (const doc of overflow) {
-      files.push({
-        file: doc.file,
-        outcome: 'skipped',
-        pageId: null,
-        title: null,
-        parentFile: doc.parentFile,
-        published: false,
-        reason: `run file cap of ${MAX_FILES_PER_RUN} reached`,
-      });
+      // Same reasoning as the discovery skips above: a file dropped for the run
+      // cap is still a file the operator handed us, so it gets a persisted row
+      // in the receipt, not just a silent bump to the skipped count.
+      files.push(
+        this.record(
+          runId,
+          {
+            file: doc.file,
+            outcome: 'skipped',
+            pageId: null,
+            title: null,
+            parentFile: doc.parentFile,
+            published: false,
+            reason: `run file cap of ${MAX_FILES_PER_RUN} reached`,
+          },
+          '',
+        ),
+      );
     }
 
     const counts = {
-      found: discovery.documents.length,
+      // `found` is the full input total, not just the pages we tried to land:
+      // documents plus the non-HTML files discovery skipped. Counting only the
+      // documents made the header contradict itself — "1 imported · 1 skipped"
+      // under "1 document found" — because the skip was tallied but excluded
+      // from `found`. With the skips included, found == imported + updated +
+      // skipped + failed always holds, so no file is an anonymous "+N".
+      found: discovery.documents.length + discovery.skipped.length,
       imported: files.filter((f) => f.outcome === 'imported').length,
       updated: files.filter((f) => f.outcome === 'updated').length,
       skipped: files.filter((f) => f.outcome === 'skipped').length,

@@ -7945,10 +7945,11 @@ function refusalHTML(result, question, collection) {
   return `
     <section class="refusal">
       <h2>The record does not answer this yet.</h2>
-      <p>Nothing Canonical${collection ? ` in <strong>${esc(collection.name)}</strong>` : ''}
-        covers ${question ? `&ldquo;${esc(question)}&rdquo;` : 'this question'}. Canon says so rather
-        than assembling an answer it cannot cite — a confident guess is the one thing a
-        knowledge record must never produce.</p>
+      <p>Nothing Canonical you can see${collection ? ` in <strong>${esc(collection.name)}</strong>` : ''}
+        covers ${question ? `&ldquo;${esc(question)}&rdquo;` : 'this question'}. The search behind Ask is
+        permission-filtered, exactly like search — so this is what the record holds for YOU, not a claim
+        that no policy exists. Canon says so rather than assembling an answer it cannot cite — a confident
+        guess is the one thing a knowledge record must never produce.</p>
       ${nearestHTML}
       ${known ? '' : `<p class="muted">Reported reason: <code>${esc(result.reason)}</code></p>`}
       <p class="refusal-why">Answers are drawn only from ${badge('canonical', 'sm')} pages you are
