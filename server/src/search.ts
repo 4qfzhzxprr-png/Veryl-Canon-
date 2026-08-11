@@ -161,6 +161,15 @@ export interface SearchResult {
    * `revisionUnderReviewStanding`.
    */
   pageStanding: PageStatus | null;
+  /**
+   * The review date on the page, or null. Carried so a result surface can
+   * compute past-review staleness LIVE — the same window the page body and Ask
+   * already close: a Canonical page whose review date has passed reads Needs
+   * Update on the results list at once, not only after the hourly sweep reaches
+   * it. Without it a search hit could show a plain, reassuring CANONICAL for an
+   * overdue page the page it links to already calls past review.
+   */
+  reviewDate: string | null;
   ownerId: string | null;
   snippet: string;
   /**
@@ -597,6 +606,7 @@ export class SearchIndex {
       // page's own standing (CANONICAL) with the revision noted, not the
       // draft's IN REVIEW in place of it (see revisionUnderReviewStanding).
       pageStanding: revisionUnderReviewStanding(r, today),
+      reviewDate: (r.review_date as string) ?? null,
       ownerId: (r.owner_id as string) ?? null,
       snippet: r.snip as string,
       supersededBy: superseded.get(r.id as string) ?? null,

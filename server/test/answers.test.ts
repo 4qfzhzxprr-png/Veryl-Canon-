@@ -1280,6 +1280,38 @@ test('ask view: a citation badge is drawn only from a status the server sent', (
   assert.equal(citationBadge({ status: null }), '', 'no status, no badge');
 });
 
+// A page "Canonical · revision in review" (approved v1 live, a pending v2): Ask
+// cites the APPROVED v1 and the header reads "drawn from 1 Canonical page", but
+// the per-citation badge showed bare "IN REVIEW / proposed, not agreed" — which
+// describes the pending v2, not the version actually cited, and contradicts the
+// header. The server keeps sending status `in_review` (its honest signal that an
+// edit is pending on the page behind the quote — see the sibling server test
+// that pins that contract); the citation BADGE now reads it the way the page
+// view's house compound does: Canonical, with the revision noted beside it.
+test('ask view: a citation of an approved version with a pending revision reads Canonical, not bare IN REVIEW', () => {
+  const source = readFileSync(findPublicFile('app.js'), 'utf8');
+  const lifted = /function citationBadge\(c\) \{[\s\S]*?\n\}/.exec(source);
+  assert.ok(lifted, 'the Ask view draws citation statuses through citationBadge');
+  const citationBadge = new Function('badge', 'esc', `${lifted[0]}\nreturn citationBadge;`)(
+    (status: string, size: string) => `<badge ${status} ${size}>`,
+    (s: string) => s,
+  ) as (c: { status: string | null }) => string;
+
+  const html = citationBadge({ status: 'in_review' });
+  // The standing of the version CITED — the approved, Canonical one — matching
+  // the header's "drawn from N Canonical page".
+  assert.match(html, /<badge canonical sm>/, 'the citation reflects the cited approved version, which is Canonical');
+  assert.match(html, /· revision in review/, 'and notes the pending revision beside it');
+  // Never the pending draft's standing in place of the cited version's.
+  assert.ok(!/<badge in_review/.test(html), 'a cited approved version never wears the pending draft’s IN REVIEW badge');
+
+  // The plain cases are unchanged: a page with no pending revision badges its
+  // own status exactly, and a missing status still renders nothing.
+  assert.equal(citationBadge({ status: 'canonical' }), '<badge canonical sm>');
+  assert.equal(citationBadge({ status: 'needs_update' }), '<badge needs_update sm>');
+  assert.equal(citationBadge({ status: null }), '');
+});
+
 test('ask view: a refusal renders nearest pages as links, never as quotations', () => {
   const source = readFileSync(findPublicFile('app.js'), 'utf8');
   const lifted = /function refusalHTML\(result, question, collection\) \{[\s\S]*?\n\}/.exec(source);
