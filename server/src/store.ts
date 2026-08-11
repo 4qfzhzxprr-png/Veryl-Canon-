@@ -853,6 +853,14 @@ export class CanonStore {
    * for. Everything else in a tree node is the collection's own.
    */
   tree(actorId: string, collectionId: string, options: { alsoVisibleTo?: string } = {}): TreeNode[] {
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to this collection —
+    // one holding NO role in it — is told it does not exist, byte-for-byte as a
+    // nonexistent id reads (`No such collection: <id>`, the same 404
+    // `getCollection` gives), so a hidden collection and a missing one cannot be
+    // told apart. Without this the 403 below named the collection and made this
+    // read an existence oracle (P1). A member refused a stronger act still meets
+    // the informative refusal via requireRole.
+    notFoundIfStranger(this.roleOf(actorId, collectionId), `No such collection: ${collectionId}`);
     this.requireRole(actorId, collectionId, 'view');
     // The pending approver rides along for pages In Review. A compliance
     // director could see his queue but not check it: to prove his sixteen items
@@ -1488,6 +1496,11 @@ export class CanonStore {
 
   listVersions(actorId: string, pageId: string): PageVersion[] {
     const row = this.pageRow(pageId);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist, byte-for-byte as a nonexistent id reads,
+    // rather than a 403 naming the collection that holds it (P1). A member
+    // refused a stronger act still meets the informative refusal below.
+    notFoundIfStranger(this.roleOf(actorId, row.collection_id as string), `No such page: ${pageId}`);
     this.requireRole(actorId, row.collection_id as string, 'view');
     const rows = this.db
       .prepare('SELECT * FROM page_versions WHERE page_id = ? ORDER BY number')
@@ -1497,6 +1510,11 @@ export class CanonStore {
 
   getVersion(actorId: string, pageId: string, number: number): PageVersion {
     const row = this.pageRow(pageId);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger reads the page as
+    // nonexistent, not as a 403 naming its collection (P1). Kept identical to
+    // listVersions so /pages/:id/versions/:n cannot be an existence oracle
+    // either.
+    notFoundIfStranger(this.roleOf(actorId, row.collection_id as string), `No such page: ${pageId}`);
     this.requireRole(actorId, row.collection_id as string, 'view');
     const v = this.db
       .prepare('SELECT * FROM page_versions WHERE page_id = ? AND number = ?')
