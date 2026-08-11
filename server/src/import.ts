@@ -550,7 +550,11 @@ export function discoverConfluence(root: string): Discovery {
       continue;
     }
     // The index is the tree, not a page: it is consumed for hierarchy below and
-    // is not a dropped content file, so it is not reported as skipped.
+    // is NOT imported as a content page. It is not silently dropped either — the
+    // consumption block below writes it an INFORMATIONAL receipt row (read and
+    // used as the page index), so it too is a file the receipt accounts for and
+    // `found` reconciles over. This is the last exception to "every HTML is a
+    // page or a row" closed: here we only decline to import it as a page.
     if (entry.name.toLowerCase() === 'index.html') continue;
     // Every other real file the user included that will not become a page has to
     // be accounted for; a bare `continue` here made a .txt vanish from the
@@ -589,8 +593,13 @@ export function discoverConfluence(root: string): Discovery {
         if (parentOf.size > 0) hierarchy = 'tree';
         else if (indexOrder.length > 0) hierarchy = 'flat';
       }
+      // Read and used as the page index — recorded so the file the importer
+      // consumed is accounted for on the receipt rather than reconciling away
+      // to nothing. It is a `skipped` outcome because nothing was imported as a
+      // page FROM it; the reason says which of the exceptions this is.
+      skipped.push({ file: indexPath.name, reason: 'used as the page index — not imported as a page' });
     } catch (err) {
-      skipped.push({ file: 'index.html', reason: `index unreadable: ${(err as Error).message}` });
+      skipped.push({ file: indexPath.name, reason: `index unreadable: ${(err as Error).message}` });
     }
   }
 

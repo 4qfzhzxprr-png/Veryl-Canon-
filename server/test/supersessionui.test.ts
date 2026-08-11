@@ -54,6 +54,12 @@ const HELPERS = [
   liftObject('STATUS_MEANINGS'),
   liftObject('TYPE_LABELS'),
   lift('badge'),
+  // pageBadge now derives its badge through the shared live-standing helpers, so
+  // they travel with it: a page past its review date reads the same on every
+  // surface pageBadge feeds (search, the tree, the contents table, the header).
+  lift('pageStandingOf'),
+  lift('isPastReview'),
+  lift('displayedStanding'),
   lift('pageBadge'),
   lift('highlightedSnippet'),
   lift('supersededChipHTML'),
@@ -81,7 +87,6 @@ const searchHitHTML = new Function(
 const collectionContentsHTML = new Function(
   `${HELPERS}
    ${lift('flattenTree')}
-   ${lift('isPastReview')}
    function fmtDate(iso) { return String(iso); }
    function actorLabel(id) { return String(id); }
    ${lift('collectionContentsHTML')}
@@ -345,4 +350,87 @@ test('version history: the current version shows the page’s standing, with the
   assert.match(versionStanding(page, false), /superseded/);
   // The history header at the top of the view draws from the same helper.
   assert.match(source, /Version history \$\{pageBadge\(page\)\}/);
+});
+
+// ---------------------------------------------------------------------------
+// Live past-review staleness reaches the GLANCEABLE surfaces, not only the page
+// body and Ask.
+//
+// The sweep is a pass, not a trigger: between a review date lapsing and the next
+// hourly sweep — forever, on a deployment whose timer is off — a Canonical page
+// is overdue but still stored `canonical`. The page body and Ask already compute
+// this window live and call it past review; the collection table, the tree, the
+// search hit and the page header drew a plain, reassuring CANONICAL, tooltip and
+// all ("…you may rely on it and quote it"), which is FALSE of a page the body
+// beside it calls past review. The fix computes displayed standing LIVE in one
+// helper (`displayedStanding`, feeding `pageBadge`), so every surface that badges
+// a page reads the same overdue verdict — and the reassuring tooltip cannot
+// appear on a page past its date.
+
+const RELY = /you may rely on it and quote it/; // the canonical tooltip, false for an overdue page
+const PAST = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString().slice(0, 10); // safely overdue
+const FUTURE = '2099-01-01'; // comfortably current
+
+test('past review is live on every badge surface: an overdue Canonical page never reads a reassuring CANONICAL', () => {
+  const overdue = { status: 'canonical', reviewDate: PAST };
+
+  // The header/tree helper. The badge is Needs Update — the sweep's own word —
+  // with "· past review", and the reassuring Canonical tooltip is gone.
+  const badgeHtml = pageBadge(overdue);
+  assert.match(badgeHtml, />Needs Update</, 'the overdue page reads Needs Update, not Canonical');
+  assert.match(badgeHtml, /· past review/, 'and says the demotion is the calendar');
+  assert.ok(!RELY.test(badgeHtml), 'the "you may rely on it and quote it" tooltip is suppressed for an overdue page');
+  assert.ok(!/class="badge badge-canonical/.test(badgeHtml), 'no bare Canonical badge either');
+
+  // The sidebar tree.
+  const tree = treeHTML([{ id: 'p-clin', title: 'Clinical policy', ...overdue, children: [] }]);
+  assert.match(tree, />Needs Update</);
+  assert.match(tree, /· past review/);
+  assert.ok(!RELY.test(tree), 'no reassuring tooltip in the tree');
+
+  // The search hit (the surface a reader most often arrives through) — which is
+  // why the server now carries reviewDate on a hit at all.
+  const hit = searchHitHTML({ pageId: 'p-clin', title: 'Clinical policy', type: 'policy',
+    status: 'canonical', pageStanding: null, reviewDate: PAST, snippet: 'How claims are handled.', supersededBy: null });
+  assert.match(hit, />Needs Update</);
+  assert.match(hit, /· past review/);
+  assert.ok(!RELY.test(hit), 'no reassuring tooltip in search results');
+
+  // The collection contents table.
+  const table = collectionContentsHTML([{ id: 'p-clin', title: 'Clinical policy', type: 'policy',
+    status: 'canonical', ownerId: 'dana', reviewDate: PAST, children: [], supersededBy: null }]);
+  assert.match(table, />Needs Update</);
+  assert.ok(!RELY.test(table), 'no reassuring tooltip in the contents table');
+});
+
+test('past review is live: a Canonical page still within its review date is unaffected on every surface', () => {
+  const current = { status: 'canonical', reviewDate: FUTURE };
+
+  const badgeHtml = pageBadge(current);
+  assert.match(badgeHtml, /class="badge badge-canonical[^"]*"[^>]*>Canonical</, 'a current page still reads Canonical');
+  assert.ok(!/· past review/.test(badgeHtml), 'and is not marked past review');
+  assert.match(badgeHtml, RELY, 'and keeps the reassuring tooltip it has earned');
+
+  const hit = searchHitHTML({ pageId: 'p-clin', title: 'Clinical policy', type: 'policy',
+    status: 'canonical', pageStanding: null, reviewDate: FUTURE, snippet: 'How claims are handled.', supersededBy: null });
+  assert.match(hit, />Canonical</);
+  assert.ok(!/Needs Update/.test(hit), 'a current page is never demoted on the search hit');
+  assert.match(hit, RELY);
+
+  const table = collectionContentsHTML([{ id: 'p-clin', title: 'Clinical policy', type: 'policy',
+    status: 'canonical', ownerId: 'dana', reviewDate: FUTURE, children: [], supersededBy: null }]);
+  assert.match(table, />Canonical</);
+  assert.ok(!/Needs Update/.test(table));
+});
+
+test('past review is live: every badge surface derives its standing from the one shared helper', () => {
+  // Structural, so the fix cannot recur surface-by-surface: the surfaces badge a
+  // page through pageBadge, and pageBadge derives the shown standing through
+  // displayedStanding — the single place live past-review is computed.
+  assert.match(bodyOf('pageBadge'), /displayedStanding\(/);
+  assert.match(bodyOf('displayedStanding'), /isPastReview\(/);
+  assert.match(bodyOf('searchHitHTML'), /pageBadge\(/);
+  assert.match(bodyOf('collectionContentsHTML'), /pageBadge\(/);
+  assert.match(bodyOf('treeHTML'), /pageBadge\(/);
+  assert.match(source, /doc-title">\$\{esc\(page\.title\)\} \$\{pageBadge\(page\)\}/, 'the page header badges through pageBadge too');
 });

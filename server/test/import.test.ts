@@ -166,7 +166,15 @@ test('import: each run writes start, per-page, and finish events to the audit lo
   assert.equal(start[0]!.details.path, CONFLUENCE);
 
   const pages = store.queryAudit(marc.id, { action: 'import.page' });
-  assert.equal(pages.length, summary.files.length);
+  // One import.page event per page the importer ATTEMPTED to land. A file
+  // discovery consumed or set aside without attempting it — here the index.html
+  // used as the page tree — is a receipt ROW (so `found` reconciles) but not a
+  // per-page attempt, so it carries no event. The event count therefore tracks
+  // the attempts: the receipt minus the files skipped without trying.
+  const eventedFiles = new Set(pages.map((e) => e.details.file));
+  assert.ok(!eventedFiles.has('index.html'), 'the consumed index is not a per-page import attempt');
+  assert.ok(summary.files.some((f) => f.file === 'index.html'), 'though it is still a receipt row');
+  assert.equal(pages.length, summary.files.filter((f) => eventedFiles.has(f.file)).length);
   const overview = pages.find((e) => e.details.file === 'Benefits+Overview_65601.html')!;
   assert.equal(overview.details.source, 'confluence');
   assert.equal(overview.details.outcome, 'imported');
@@ -386,16 +394,21 @@ test('import: a non-HTML file is reported as skipped, not silently dropped', () 
   // The real HTML page still imports.
   assert.equal(byFile(summary, 'Runbook_100.html').outcome, 'imported');
 
-  // The index is the tree, not a content file: it is neither imported nor
-  // reported as a dropped file.
-  assert.equal(summary.files.some((f) => f.file.toLowerCase() === 'index.html'), false);
+  // The index is the tree, not a content page: it is NOT imported as a page —
+  // but it IS accounted for, with an informational row that records it was read
+  // and used as the page index. A consumed file that reconciled away to nothing
+  // let a records manager reconcile a receipt while a file lived in no row.
+  const index = byFile(summary, 'index.html');
+  assert.equal(index.outcome, 'skipped', 'the consumed index is on the receipt, not vanished');
+  assert.equal(index.pageId, null, 'and it is not imported as a page');
+  assert.match(index.reason ?? '', /used as the page index/i);
 
-  // Every content file the user included (index.html aside) is accounted for:
-  // the handled counts add up to the real file count, nothing vanishes.
+  // Every file the user included is accounted for: the handled counts add up to
+  // the real file count — the imported page, the loose .txt, and the index.
   const { imported, updated, skipped, failed } = summary.counts;
-  assert.equal(imported + updated + skipped + failed, 2, 'both content files are accounted for');
+  assert.equal(imported + updated + skipped + failed, 3, 'every file the importer read is accounted for');
   assert.equal(imported, 1);
-  assert.equal(skipped, 1);
+  assert.equal(skipped, 2, 'the loose .txt and the consumed index');
 });
 
 // The in-memory summary above is not what the receipt view renders — that is
@@ -424,13 +437,21 @@ test('import: a discovery skip is a persisted receipt row, and the counts reconc
   const runbook = run.items.find((i) => i.file === 'Runbook_100.html');
   assert.equal(runbook?.outcome, 'imported');
 
+  // The consumed index is a persisted row as well — the receipt table is the
+  // whole input, with nothing reconciling away to a file that lives nowhere.
+  const index = run.items.find((i) => i.file === 'index.html');
+  assert.ok(index, 'the consumed index has a row in the read-back receipt');
+  assert.equal(index.outcome, 'skipped');
+  assert.equal(index.pageId, null);
+  assert.match(index.reason ?? '', /used as the page index/i);
+
   // The header reconciles: found is the full input total, and no file is an
   // anonymous "+N" — found == imported + updated + skipped + failed.
   const { found, imported, updated, skipped, failed } = run.counts;
   assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles: nothing is orphaned');
-  assert.equal(found, 2, 'both content files the user put in are counted in the total');
+  assert.equal(found, 3, 'every file the user put in is counted in the total: the page, the .txt, and the index');
   assert.equal(imported, 1);
-  assert.equal(skipped, 1);
+  assert.equal(skipped, 2);
 });
 
 // A binary file (a PDF or image renamed `.html`, or any blob discovery picks up)

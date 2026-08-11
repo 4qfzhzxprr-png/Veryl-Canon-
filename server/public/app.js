@@ -427,12 +427,46 @@ function pageStandingOf(page) {
   return (page && page.pageStanding) || (page && page.status) || null;
 }
 
+// The one LIVE standing a page shows RIGHT NOW, computed identically on every
+// surface a reader meets it — the collection table, the sidebar tree, search,
+// and the page header all derive their badge from here. It begins with the
+// page's own standing (`pageStandingOf`) and applies the single thing the
+// stored status cannot know between hourly sweeps: a Canonical page whose review
+// date has passed is stale NOW, so it reads Needs Update — the sweep's own
+// verdict — rather than wearing the Canonical mark, and the reassuring
+// "you may rely on it and quote it", until the sweep happens to reach it. Ask
+// and the page body already compute this window live (isPastReview against
+// today); this puts the same computation in the one place badges are derived, so
+// an overdue page can never again read Canonical on the list beside a page body
+// that already calls it past review. It never UPGRADES anything (only the sweep
+// returns a page to Canonical); it only refuses to overstate.
+function displayedStanding(page) {
+  const standing = pageStandingOf(page);
+  if (standing === 'canonical' && isPastReview(page && page.reviewDate)) return 'needs_update';
+  return standing;
+}
+
 function pageBadge(page, size = '') {
-  const standing = page && page.pageStanding;
-  if (!standing) return badge(page && page.status, size);
-  const note = `A revision of this page is in review; its ${STATUS_LABELS[standing] ?? standing} version is ` +
-    'still the record’s own answer until the revision is approved.';
-  return `${badge(standing, size)}<span class="revision-note ${esc(size)}" title="${esc(note)}"> · revision in review</span>`;
+  const own = pageStandingOf(page);
+  const shown = displayedStanding(page);
+  let html = badge(shown, size);
+  // Live past-review: `displayedStanding` demoted a Canonical page past its
+  // review date to Needs Update before the sweep reached it. Say why, so the
+  // demotion reads as the calendar and not a person — the same "· past review"
+  // the contents table's date column and the page body already carry.
+  if (own === 'canonical' && shown === 'needs_update') {
+    const note = 'This page is past the review date its owner set. It is still the official record and can be ' +
+      'cited, marked as past review, until it is re-approved.';
+    html += `<span class="revision-note ${esc(size)}" title="${esc(note)}"> · past review</span>`;
+  }
+  // A revision is in review over a still-marked version: named beside the page's
+  // own standing, never a rival badge in place of it.
+  if (page && page.pageStanding) {
+    const note = `A revision of this page is in review; its ${STATUS_LABELS[page.pageStanding] ?? page.pageStanding} version is ` +
+      'still the record’s own answer until the revision is approved.';
+    html += `<span class="revision-note ${esc(size)}" title="${esc(note)}"> · revision in review</span>`;
+  }
+  return html;
 }
 
 /**
@@ -7718,7 +7752,21 @@ function normalizeCitation(c, i = 0) {
 // badge, the card still names the page and its version, and the reader clicks
 // through — one click is cheaper than one false CANONICAL.
 function citationBadge(c) {
-  return c.status ? badge(c.status, 'sm') : '';
+  if (!c.status) return '';
+  // A citation whose status is `in_review` is a page whose APPROVED version was
+  // quoted while a revision is pending on it (the server cites nothing
+  // unreviewed — see ANSWERABLE_STATUSES, and the contract note above). Its
+  // standing is the standing of the version CITED, which is Canonical — so it
+  // reads with the page view's house compound, Canonical with the revision noted
+  // beside it, matching the "drawn from N Canonical page" header. A bare
+  // "In Review / proposed, not agreed" here describes the pending draft, not the
+  // approved version the answer actually drew on, and contradicts the header.
+  if (c.status === 'in_review') {
+    const note = 'The version cited is this page’s approved, Canonical one; a revision of it is in review and is ' +
+      'not what the answer drew on.';
+    return `${badge('canonical', 'sm')}<span class="revision-note sm" title="${esc(note)}"> · revision in review</span>`;
+  }
+  return badge(c.status, 'sm');
 }
 
 // Turn "[1]" style markers in the answer into buttons that jump to the

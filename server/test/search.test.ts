@@ -338,7 +338,7 @@ test('API: GET /search returns permission-filtered, highlighted results', async 
     // say".
     assert.deepEqual(
       Object.keys(hits.json[0]).sort(),
-      ['collectionId', 'ownerId', 'pageId', 'pageStanding', 'snippet', 'status', 'supersededBy', 'title', 'type'],
+      ['collectionId', 'ownerId', 'pageId', 'pageStanding', 'reviewDate', 'snippet', 'status', 'supersededBy', 'title', 'type'],
     );
     assert.equal(hits.json[0].supersededBy, null);
     // Present and null when there is no revision in review, the same way
