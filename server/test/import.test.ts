@@ -473,8 +473,9 @@ test('import: a binary file named like a page is reported, not imported as junk'
 // never recorded as skipped — it VANISHED, and because `found` is computed after
 // dropping it the header ("1 imported · 1 document found") could not even
 // contradict itself. Every HTML file the user handed in must be either imported
-// or a skipped row with a reason. Known attachment dirs (attachments/, images/,
-// styles/, …) stay silent — those are genuinely not pages.
+// or a skipped row with a reason — with NO directory-name exceptions. HTML in
+// attachments/ is not imported as a page, but it still gets a skipped row;
+// non-HTML in any subfolder (real assets/attachments) stays silent.
 test('import: HTML pages in subfolders are recorded as skipped rows, not silently dropped', () => {
   const { store, marc, collection } = setup();
   const root = mkdtempSync(join(tmpdir(), 'canon-import-nested-'));
@@ -488,8 +489,9 @@ test('import: HTML pages in subfolders are recorded as skipped rows, not silentl
     writeFileSync(join(root, 'subteam', 'Nested+One_200.html'), page('Nested One'));
     mkdirSync(join(root, 'archive', 'deep'), { recursive: true });
     writeFileSync(join(root, 'archive', 'deep', 'Nested+Two_300.html'), page('Nested Two'));
-    // Real attachment dirs: an HTML file here is legitimately an attachment and
-    // must stay silent — importing it would change what actually lands.
+    // Real attachment dir: an HTML file here is legitimately an attachment, so it
+    // is NOT imported as a page — but it must still be accounted for as a skipped
+    // row, never vanished. The loose .txt attachment stays silent.
     mkdirSync(join(root, 'attachments'));
     writeFileSync(join(root, 'attachments', 'template_9.html'), page('Attachment Fragment'));
     writeFileSync(join(root, 'attachments', 'notes.txt'), 'loose attachment notes');
@@ -515,21 +517,25 @@ test('import: HTML pages in subfolders are recorded as skipped rows, not silentl
     // The one real top-level page still imports.
     assert.equal(item('Top+Page_100.html')?.outcome, 'imported');
 
-    // Attachment-dir contents stay silent: no row for the HTML fragment or the
-    // image, so what actually imports is unchanged.
-    assert.equal(
-      run.items.some((i) => i.file.startsWith('attachments/') || i.file.startsWith('images/')),
-      false,
-      'known attachment dirs are ignored in silence',
-    );
+    // The HTML file in attachments/ is now a skipped row — NOT imported as a page
+    // (its content is unchanged: no page lands), but never silently vanished.
+    const attachmentHtml = item('attachments/template_9.html');
+    assert.ok(attachmentHtml, 'the attachment HTML has a row in the read-back receipt');
+    assert.equal(attachmentHtml.outcome, 'skipped', 'attachment HTML is skipped, not imported');
+    assert.equal(attachmentHtml.pageId, null, 'the attachment HTML makes no page');
 
-    // The header reconciles: found is the true input total (1 imported + 2
-    // nested skips), and nothing is an anonymous "+N".
+    // Non-HTML inside subfolders stays silent: the loose .txt attachment and the
+    // image are genuine assets, so what actually imports is unchanged.
+    assert.equal(item('attachments/notes.txt'), undefined, 'a loose non-HTML attachment stays silent');
+    assert.equal(item('images/diagram.png'), undefined, 'a real asset stays silent');
+
+    // The header reconciles: found is the true input total (1 imported + 2 nested
+    // skips + 1 attachment HTML skip), and nothing is an anonymous "+N".
     const { found, imported, updated, skipped, failed } = run.counts;
     assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles');
     assert.equal(imported, 1);
-    assert.equal(skipped, 2, 'both nested pages are counted as skipped');
-    assert.equal(found, 3, 'every HTML page the user handed in is in the total');
+    assert.equal(skipped, 3, 'both nested pages and the attachment HTML are counted as skipped');
+    assert.equal(found, 4, 'every HTML page the user handed in is in the total');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -539,9 +545,9 @@ test('import: HTML pages in subfolders are recorded as skipped rows, not silentl
 // an HTML page a records manager zipped into `images/` or `assets/` vanished with
 // no receipt row — not imported, not skipped, not counted. An HTML file in a
 // rendering-asset folder is not an asset; it is a misfiled page, and the record
-// must account for it exactly like any other subfolder page. `attachments/` is
-// the one dir that stays silent: an HTML file there is a genuine attachment, and
-// importing (or even listing) it would change what actually lands.
+// must account for it exactly like any other subfolder page. `attachments/` HTML
+// is a genuine attachment: it is not imported as a page, but it too gets a
+// skipped row — no directory name is exempt from the account-for-it invariant.
 test('import: HTML pages inside asset-named subfolders (images/, assets/) get a skipped row, not silence', () => {
   const { store, marc, collection } = setup();
   const root = mkdtempSync(join(tmpdir(), 'canon-import-assetdir-'));
@@ -556,7 +562,8 @@ test('import: HTML pages inside asset-named subfolders (images/, assets/) get a 
     writeFileSync(join(root, 'images', 'diagram.png'), 'not really a png'); // a real asset: stays silent
     mkdirSync(join(root, 'assets'));
     writeFileSync(join(root, 'assets', 'Zipped+In+Assets_300.html'), page('Zipped In Assets'));
-    // attachments/: an HTML file here is a genuine attachment and stays silent.
+    // attachments/: an HTML file here is a genuine attachment — not imported as a
+    // page, but still recorded as a skipped row so it can never vanish.
     mkdirSync(join(root, 'attachments'));
     writeFileSync(join(root, 'attachments', 'template_9.html'), page('Attachment Fragment'));
 
@@ -578,21 +585,75 @@ test('import: HTML pages inside asset-named subfolders (images/, assets/) get a 
     // The one real top-level page still imports.
     assert.equal(item('Top+Page_100.html')?.outcome, 'imported');
 
-    // The real asset (the PNG) and the genuine attachment (attachments/*.html)
-    // both stay silent: what actually imports is unchanged.
+    // The real asset (the PNG) stays silent: it is not HTML, so importing nothing
+    // from it changes nothing.
     assert.equal(item('images/diagram.png'), undefined, 'a real asset stays silent');
-    assert.equal(
-      run.items.some((i) => i.file.startsWith('attachments/')),
-      false,
-      'attachments/ HTML is a genuine attachment and stays silent',
-    );
 
-    // Every HTML page reconciles: 1 imported + 2 asset-folder skips = 3 found.
+    // The attachment HTML is NOT imported as a page, but it is recorded as a
+    // skipped row (no directory-name exception) so it can never vanish.
+    const attachmentHtml = item('attachments/template_9.html');
+    assert.ok(attachmentHtml, 'attachments/ HTML has a row in the read-back receipt');
+    assert.equal(attachmentHtml.outcome, 'skipped', 'attachment HTML is skipped, not imported');
+    assert.equal(attachmentHtml.pageId, null, 'the attachment HTML makes no page');
+
+    // Every HTML page reconciles: 1 imported + 2 asset-folder skips + 1 attachment
+    // HTML skip = 4 found.
     const { found, imported, updated, skipped, failed } = run.counts;
     assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles');
     assert.equal(imported, 1);
-    assert.equal(skipped, 2, 'both asset-folder HTML pages are counted as skipped');
-    assert.equal(found, 3, 'no HTML page is an anonymous "+N"');
+    assert.equal(skipped, 3, 'both asset-folder HTML pages and the attachment HTML are skipped');
+    assert.equal(found, 4, 'no HTML page is an anonymous "+N"');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Round 6 of the recurring bug: HTML zipped into `attachments/` vanished from the
+// receipt with no row, because that one directory name was special-cased to be
+// scanned in silence. The structural fix removes ALL directory-name exceptions:
+// an HTML file in attachments/ is still not imported as a page (importing it would
+// change what actually lands), but it is now accounted for as a skipped row so it
+// can never disappear. A real non-HTML attachment beside it stays silent.
+test('import: HTML inside attachments/ is a skipped row (not imported, not vanished); a real attachment stays silent', () => {
+  const { store, marc, collection } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'canon-import-attachments-'));
+  try {
+    const page = (title: string) =>
+      `<html><head><title>${title}</title></head><body><p>Readable content for ${title}.</p></body></html>`;
+    // One real top-level page.
+    writeFileSync(join(root, 'Top+Page_100.html'), page('Top Page'));
+    // attachments/: one HTML file (the round-6 vanisher) plus a genuine non-HTML
+    // attachment. The HTML must surface as a skipped row; the PDF must stay silent.
+    mkdirSync(join(root, 'attachments'));
+    writeFileSync(join(root, 'attachments', 'Attached+Doc_9.html'), page('Attached Doc'));
+    writeFileSync(join(root, 'attachments', 'contract.pdf'), '%PDF-1.4 not really a pdf');
+
+    const summary = store.runImport(marc.id, { source: 'confluence', path: root, collectionId: collection.id });
+    const run = store.getImportRun(marc.id, summary.runId);
+    const item = (file: string) => run.items.find((i) => i.file === file);
+
+    // The HTML attachment is a persisted skipped row with a reason and NO page —
+    // it is not imported (what actually lands is unchanged) but never vanishes.
+    const attachmentHtml = item('attachments/Attached+Doc_9.html');
+    assert.ok(attachmentHtml, 'the attachment HTML has a row in the read-back receipt');
+    assert.equal(attachmentHtml.outcome, 'skipped', 'the attachment HTML is skipped, never dropped');
+    assert.equal(attachmentHtml.pageId, null, 'the attachment HTML makes no page');
+    assert.ok((attachmentHtml.reason ?? '').length > 0, 'the skip carries a human reason');
+    assert.match(attachmentHtml.reason ?? '', /attach/i, 'the reason names it as an attachment');
+
+    // The one real top-level page still imports.
+    assert.equal(item('Top+Page_100.html')?.outcome, 'imported');
+
+    // The genuine non-HTML attachment stays silent: no row, nothing changes.
+    assert.equal(item('attachments/contract.pdf'), undefined, 'a real non-HTML attachment stays silent');
+
+    // The header reconciles against the TRUE HTML count: 1 imported + 1 attachment
+    // HTML skip = 2 found, and nothing is an anonymous "+N".
+    const { found, imported, updated, skipped, failed } = run.counts;
+    assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles');
+    assert.equal(imported, 1);
+    assert.equal(skipped, 1, 'the attachment HTML is the one skipped row');
+    assert.equal(found, 2, 'every HTML file the user handed in is in the total');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

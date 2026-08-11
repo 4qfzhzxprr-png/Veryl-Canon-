@@ -7121,15 +7121,17 @@ const IMPORT_HIERARCHY_NOTES = {
 };
 
 // The flat note asserts "every page arrived at the top level" — which is only
-// true if nothing was dropped from a subfolder. When content-bearing subfolders
-// WERE skipped (recorded as skipped rows with a subfolder reason), that claim is
-// false, so a flat run says so instead of pretending the top level was the whole
-// export.
+// true if nothing was dropped from a subfolder. The claim is generated from the
+// ACTUAL skipped rows, not asserted blind: it fires only when a real HTML page
+// (any `.html`/`.htm` file sitting inside a subfolder — attachments/, images/,
+// assets/, an arbitrary folder, whatever) was recorded as skipped. Keying on the
+// rows themselves rather than a reason substring means no new directory type can
+// make the sentence lie by carrying a reason the note failed to anticipate.
 function importHierarchyNote(run) {
   const note = IMPORT_HIERARCHY_NOTES[run.hierarchy] ?? '';
   if (run.hierarchy !== 'flat') return note;
   const droppedFromSubfolder = (run.items ?? []).some(
-    (i) => i.outcome === 'skipped' && /subfolder/i.test(i.reason ?? ''),
+    (i) => i.outcome === 'skipped' && /\//.test(i.file ?? '') && /\.html?$/i.test(i.file ?? ''),
   );
   if (!droppedFromSubfolder) return note;
   return 'The export described no page tree, so the pages Canon imported all sit at the top level — but some HTML pages sat in subfolders and were not imported. They are listed as skipped below.';
