@@ -290,3 +290,59 @@ test('page badge: search and the collection table both show standing with the re
   assert.match(bodyOf('searchHitHTML'), /pageBadge\(/);
   assert.match(bodyOf('collectionContentsHTML'), /pageBadge\(/);
 });
+
+// The three glanceable surfaces a browser meets BEFORE opening the page — the
+// sidebar tree, the collection's own count of itself, and the standing badge at
+// the top of a page's history — each read a Canonical-with-pending-revision page
+// as a bare In Review, telling a reader the record has no official answer when
+// it has one. They draw from the same pageStanding the header and the search hit
+// already do, so a page in force reads consistently wherever it is glanced at.
+
+const treeHTML = new Function(
+  `${HELPERS}\n${lift('treeHTML')}\nreturn treeHTML;`,
+)() as (nodes: Record<string, unknown>[], currentPageId?: string | null) => string;
+
+const versionStanding = new Function(
+  `${HELPERS}\n${lift('versionStanding')}\nreturn versionStanding;`,
+)() as (page: Record<string, unknown>, isCurrent: boolean) => string;
+
+const pageStandingOf = new Function(
+  `${lift('pageStandingOf')}\nreturn pageStandingOf;`,
+)() as (page: Record<string, unknown>) => string | null;
+
+test('sidebar tree: a page in force with a revision in review reads Canonical, not In Review', () => {
+  const html = treeHTML([
+    { id: 'p-policy', title: 'Complaint handling', status: 'in_review', pageStanding: 'canonical', children: [] },
+  ]);
+  assert.match(html, />Canonical</, 'the tree shows the page’s own standing');
+  assert.match(html, /· revision in review/, 'and notes the pending revision beside it');
+  assert.ok(!/>In Review</.test(html), 'the draft’s standing does not stand in for the page’s in the tree');
+  // Drawn from the same helper as the header and the contents table, so they cannot drift.
+  assert.match(bodyOf('treeHTML'), /pageBadge\(/);
+});
+
+test('collection tally: a Canonical page with a pending revision counts as Canonical, not In Review', () => {
+  // The count the tally is built on: the page's effective standing, not its
+  // draft's. A tally reading "1 In Review, 0 Canonical" for a page still in
+  // force is the "no official answer" lie the badge was fixed to stop telling.
+  assert.equal(pageStandingOf({ status: 'in_review', pageStanding: 'canonical' }), 'canonical');
+  assert.equal(pageStandingOf({ status: 'in_review', pageStanding: 'needs_update' }), 'needs_update');
+  // No pending revision: the plain status stands, unchanged.
+  assert.equal(pageStandingOf({ status: 'in_review', pageStanding: null }), 'in_review');
+  assert.equal(pageStandingOf({ status: 'draft', pageStanding: null }), 'draft');
+  // And the tally is wired to count by it, so the number matches the badges above it.
+  assert.match(source, /for \(const n of flat\)[\s\S]*?pageStandingOf\(n\)/,
+    'viewCollection counts each page under pageStandingOf, not its bare status');
+});
+
+test('version history: the current version shows the page’s standing, with the revision noted', () => {
+  const page = { status: 'in_review', pageStanding: 'canonical' };
+  const current = versionStanding(page, true);
+  assert.match(current, />Canonical</, 'the current version carries the page’s own standing');
+  assert.match(current, /· revision in review/);
+  assert.ok(!/>In Review</.test(current), 'not the draft’s standing in place of it');
+  // A superseded version keeps its own marking, untouched by this.
+  assert.match(versionStanding(page, false), /superseded/);
+  // The history header at the top of the view draws from the same helper.
+  assert.match(source, /Version history \$\{pageBadge\(page\)\}/);
+});
