@@ -677,6 +677,11 @@ test('oracle: a page or collection you hold no role in reads as one that never e
     ['listComments', () => expectCode(() => store.listComments(outsider.id, page.id), 'not_found')],
     ['listRelations', () => expectCode(() => store.listRelations(outsider.id, page.id), 'not_found')],
     ['listReferences', () => expectCode(() => store.listReferences(outsider.id, page.id), 'not_found')],
+    // The version history (GET /pages/:id/versions and /versions/:n) used to
+    // 403 with the collection's name — an existence oracle (P1). It now masks
+    // exactly as the reads above do.
+    ['listVersions', () => expectCode(() => store.listVersions(outsider.id, page.id), 'not_found')],
+    ['getVersion', () => expectCode(() => store.getVersion(outsider.id, page.id, 1), 'not_found')],
   ];
   for (const [name, run] of pageReads) {
     const hidden = run();
@@ -701,6 +706,9 @@ test('oracle: a page or collection you hold no role in reads as one that never e
     ['getCollection', () => expectCode(() => store.getCollection(outsider.id, compliance.id), 'not_found')],
     ['listMembers', () => expectCode(() => store.listMembers(outsider.id, compliance.id), 'not_found')],
     ['collectionGraph', () => expectCode(() => store.collectionGraph(outsider.id, compliance.id), 'not_found')],
+    // The collection tree (GET /collections/:id/tree) used to 403 with the
+    // collection's name — the same existence oracle as the version history (P1).
+    ['tree', () => expectCode(() => store.tree(outsider.id, compliance.id), 'not_found')],
   ];
   for (const [name, run] of collReads) {
     const hidden = run();
@@ -728,6 +736,65 @@ test('oracle: a page or collection you hold no role in reads as one that never e
   assert.equal(store.getPage(marc.id, page.id).title, 'Salary bands');
   assert.deepEqual(store.listComments(marc.id, page.id), []);
   assert.equal(store.getCollection(marc.id, compliance.id).name, 'Compliance');
+  // Masking the version history and the tree took nothing from a permitted
+  // reader: marc gets an array and the tree, where a stranger got a 404. (The
+  // page here was never published, so its history is legitimately empty — the
+  // point is that the member is not masked. A published page is exercised in
+  // the dedicated pin below.)
+  assert.ok(Array.isArray(store.listVersions(marc.id, page.id)), 'a view-holder still reads the version history');
+  assert.equal(store.tree(marc.id, compliance.id).length, 1, 'a view-holder still reads the tree');
+});
+
+// The dedicated pin for the P1 fix: the version history and the collection tree
+// must be indistinguishable, byte for byte, from a resource that never existed —
+// no 403, no collection name — for a reader who holds no role, while a permitted
+// reader still gets both.
+test('oracle: versions and tree of a hidden page/collection read as nonexistent, and a member still gets them', () => {
+  const store = new CanonStore(openDb(':memory:'), quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const restricted = store.createCollection(dana.id, { name: 'People and Workplace', restricted: true });
+  const page = store.createPage(dana.id, { collectionId: restricted.id, type: 'note', title: 'Comp ladder' });
+  store.editDraft(dana.id, page.id, { body: 'Bands and bonuses.', fields: { ownerId: dana.id } });
+  store.publish(dana.id, page.id, {});
+
+  const outsider = store.createActor({ kind: 'person', name: 'Mallory' });
+  const FAKE_PAGE = 'c6f2d3e4-0000-4000-8000-000000000000';
+  const FAKE_COLL = 'd7f3e4f5-0000-4000-8000-000000000000';
+
+  // /pages/:id/versions — the hidden page and a nonexistent one are word for word the same.
+  const hiddenVersions = expectCode(() => store.listVersions(outsider.id, page.id), 'not_found');
+  const missingVersions = expectCode(() => store.listVersions(outsider.id, FAKE_PAGE), 'not_found');
+  assert.equal(hiddenVersions.message.replace(page.id, '<id>'), missingVersions.message.replace(FAKE_PAGE, '<id>'));
+
+  // /collections/:id/tree — likewise.
+  const hiddenTree = expectCode(() => store.tree(outsider.id, restricted.id), 'not_found');
+  const missingTree = expectCode(() => store.tree(outsider.id, FAKE_COLL), 'not_found');
+  assert.equal(hiddenTree.message.replace(restricted.id, '<id>'), missingTree.message.replace(FAKE_COLL, '<id>'));
+
+  // Neither refusal is a 403, and neither leaks the hidden collection's
+  // human-readable name or the needed/held role — the payload the old 403
+  // carried. (The tree's not_found message echoes the collection id the CALLER
+  // supplied in the request, exactly as a nonexistent id does; that is the
+  // caller's own id, not a disclosure — proven by the byte-identical checks
+  // above. The versions message names only the page id and no collection id.)
+  for (const err of [hiddenVersions, hiddenTree]) {
+    assert.equal(err.httpStatus, 404, 'a hidden resource must answer 404, never a 403 that confirms it exists');
+    const wire = JSON.stringify({ message: err.message, ...err.details });
+    assert.equal(wire.includes('People and Workplace'), false, 'the hidden collection name must not leak');
+    assert.equal(wire.includes('view role'), false, 'no needed/held role leaks');
+  }
+  // The version history in particular must not carry the collection id at all —
+  // the caller asked by page id and never named the collection.
+  {
+    const wire = JSON.stringify({ message: hiddenVersions.message, ...hiddenVersions.details });
+    assert.equal(wire.includes(restricted.id), false, 'the hidden collection id must not leak from the versions read');
+  }
+
+  // A permitted reader is untouched: the versions and the tree still come back.
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  store.setMember(dana.id, restricted.id, marc.id, 'view');
+  assert.equal(store.listVersions(marc.id, page.id).length, 1);
+  assert.equal(store.tree(marc.id, restricted.id).length, 1);
 });
 
 // ---------------------------------------------------------------------------

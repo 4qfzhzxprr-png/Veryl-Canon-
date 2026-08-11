@@ -195,7 +195,7 @@ test('administrator: the role does not carry collection access, in any direction
   // running the system is not entitlement to the corpus, and the refusal must
   // not confirm the corpus is there (existence, never identity).
   expectCode(() => store.getPage(admin.id, page.id), 'not_found');
-  expectCode(() => store.tree(admin.id, collection.id), 'forbidden');
+  expectCode(() => store.tree(admin.id, collection.id), 'not_found');
   expectCode(() => store.getCollection(admin.id, collection.id), 'not_found');
   assert.deepEqual(store.listCollections(admin.id), []);
   assert.deepEqual(store.searchIndex.search(admin.id, { q: 'salary' }), []);
