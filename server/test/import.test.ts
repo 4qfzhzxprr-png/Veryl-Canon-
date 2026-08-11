@@ -27,6 +27,7 @@ function findFixtures(): string {
 const FIXTURES = findFixtures();
 const CONFLUENCE = join(FIXTURES, 'confluence-space');
 const CONFLUENCE_FLAT = join(FIXTURES, 'confluence-flat');
+const CONFLUENCE_MIXED = join(FIXTURES, 'confluence-mixed');
 const GOOGLE = join(FIXTURES, 'google-docs');
 
 function setup() {
@@ -366,6 +367,70 @@ test('import: a Google Docs export arrives flat, with the emphasis its style she
   const runbook = store.getVersion(marc.id, byFile(summary, 'Claims Handling Runbook.html').pageId!, 1);
   assert.match(runbook.body, /\| Batch failed twice \| Claims platform on-call \| 15 minutes \|/);
   assert.match(runbook.body, /`claims-batch --date 2026-03-14 --resume --dry-run`/);
+});
+
+// A migration lead has to trust the receipt: every file they put in the zip has
+// to show up somewhere. A non-HTML file the importer will not turn into a page
+// used to be dropped with a bare `continue` — not imported, not failed, not
+// skipped, so a six-file zip read "Files: 5" and the sixth simply vanished.
+test('import: a non-HTML file is reported as skipped, not silently dropped', () => {
+  const { store, marc, collection } = setup();
+  const summary = store.runImport(marc.id, { source: 'confluence', path: CONFLUENCE_MIXED, collectionId: collection.id });
+
+  // The .txt the exporter swept in is accounted for, with a reason a human reads.
+  const notes = byFile(summary, 'loose-notes.txt');
+  assert.equal(notes.outcome, 'skipped', 'a non-HTML file is skipped, never dropped');
+  assert.equal(notes.pageId, null, 'and it makes no page');
+  assert.match(notes.reason ?? '', /not an HTML page/i);
+
+  // The real HTML page still imports.
+  assert.equal(byFile(summary, 'Runbook_100.html').outcome, 'imported');
+
+  // The index is the tree, not a content file: it is neither imported nor
+  // reported as a dropped file.
+  assert.equal(summary.files.some((f) => f.file.toLowerCase() === 'index.html'), false);
+
+  // Every content file the user included (index.html aside) is accounted for:
+  // the handled counts add up to the real file count, nothing vanishes.
+  const { imported, updated, skipped, failed } = summary.counts;
+  assert.equal(imported + updated + skipped + failed, 2, 'both content files are accounted for');
+  assert.equal(imported, 1);
+  assert.equal(skipped, 1);
+});
+
+// A binary file (a PDF or image renamed `.html`, or any blob discovery picks up)
+// decodes to non-empty junk and slips past the empty-document guard, importing
+// as a "clean" page. It must be reported instead — a page nobody can read is not
+// a page.
+test('import: a binary file named like a page is reported, not imported as junk', () => {
+  const { store, marc, collection } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'canon-import-binary-'));
+  try {
+    // A page that reads fine, so the failure is the blob's alone.
+    writeFileSync(
+      join(root, 'Good.html'),
+      '<html><head><title>Good Page</title></head><body><p>Readable content.</p></body></html>',
+    );
+    // 512 bytes of binary content, NUL bytes and all, wearing an .html name.
+    const blob = Buffer.alloc(512);
+    for (let i = 0; i < blob.length; i += 1) blob[i] = i % 256;
+    writeFileSync(join(root, 'Scan_200.html'), blob);
+
+    const summary = store.runImport(marc.id, { source: 'google-docs', path: root, collectionId: collection.id });
+
+    const scan = byFile(summary, 'Scan_200.html');
+    assert.equal(scan.outcome, 'failed', 'a binary blob must not import as a clean page');
+    assert.equal(scan.pageId, null, 'and no page is written for it');
+    assert.match(scan.reason ?? '', /not readable as text|binary/i);
+
+    assert.equal(byFile(summary, 'Good.html').outcome, 'imported');
+    assert.equal(summary.counts.imported, 1);
+    assert.equal(summary.counts.failed, 1);
+    // The blob left no page in the tree.
+    assert.equal(store.tree(marc.id, collection.id).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('import: an export with no index and no breadcrumbs falls back to a flat import', () => {

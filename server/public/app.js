@@ -418,6 +418,15 @@ function badge(status, size = '') {
 // only while a revision is in review over a still-marked version); where it is
 // present, show it, with the revision noted BESIDE it rather than in place of
 // it — "Canonical · revision in review". Everywhere else this is just `badge`.
+// The one standing a page effectively holds RIGHT NOW: its own `pageStanding`
+// where a revision is in review over a still-marked version, otherwise its
+// plain `status`. One source of truth, so a badge and a count of the same page
+// cannot disagree — the tally must read Canonical for the same page whose badge
+// reads Canonical.
+function pageStandingOf(page) {
+  return (page && page.pageStanding) || (page && page.status) || null;
+}
+
 function pageBadge(page, size = '') {
   const standing = page && page.pageStanding;
   if (!standing) return badge(page && page.status, size);
@@ -2636,7 +2645,7 @@ function treeHTML(nodes, currentPageId) {
   const item = (n) => {
     const active = n.id === currentPageId ? ' active' : '';
     const link = `<a class="tree-link${active}" href="#/pages/${esc(n.id)}"
-      >${esc(n.title)} ${badge(n.status, 'sm')}</a>`;
+      >${esc(n.title)} ${pageBadge(n, 'sm')}</a>`;
     if (n.children.length) {
       const kids = `tree-kids-${esc(n.id)}`;
       return `<li class="branch">
@@ -2915,7 +2924,14 @@ async function viewCollection(id) {
 
   const flat = flattenTree(tree);
   const counts = new Map();
-  for (const n of flat) counts.set(n.status, (counts.get(n.status) ?? 0) + 1);
+  // Count each page under the standing it actually holds now, not its draft's:
+  // a Canonical page with a revision in review is one Canonical answer, and a
+  // tally that files it under In Review tells a browsing reader the collection
+  // has no official answer when it has one. Same rule as the badge (pageBadge).
+  for (const n of flat) {
+    const s = pageStandingOf(n);
+    counts.set(s, (counts.get(s) ?? 0) + 1);
+  }
   // Archived pages leave the tree, so they are absent from `flat` and must be
   // counted from the collection itself or the difference stays invisible.
   if (typeof collection.archivedPages === 'number' && collection.archivedPages > 0) {
@@ -5897,7 +5913,7 @@ async function viewHistory(id) {
     <div class="page-wide">
       <p class="breadcrumb"><a href="#/pages/${esc(id)}">← ${esc(page.title)}</a></p>
       <div class="page-head">
-        <h1>Version history ${badge(page.status)}</h1>
+        <h1>Version history ${pageBadge(page)}</h1>
         <button class="btn primary" id="compare-btn" disabled>Compare selected</button>
       </div>
       <p class="muted">Every published version is kept. Restoring never rewrites history —
@@ -5994,7 +6010,10 @@ async function viewHistory(id) {
 // standing has a place that answers it properly, with the approval and the
 // dates attached: the attestation.
 function versionStanding(page, isCurrent) {
-  if (isCurrent) return badge(page.status);
+  // The current version carries the page's own standing, with a pending revision
+  // noted beside it — not the draft's In Review in place of it (same rule as
+  // pageBadge). A Canonical page with an edit in review is still Canonical here.
+  if (isCurrent) return pageBadge(page);
   return '<span class="role-tag">superseded</span>';
 }
 

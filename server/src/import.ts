@@ -257,6 +257,24 @@ function posix(path: string): string {
   return sep === '/' ? path : path.split(sep).join('/');
 }
 
+/**
+ * A cheap "this did not decode to text" check on content already read as utf8.
+ * A binary file (an image, a PDF, a compiled blob) parses to non-empty junk and
+ * would otherwise import as a clean page — the empty-document guard only fires
+ * when NOTHING survived. Two signals, both near-impossible in real HTML: a NUL
+ * byte, or a decode so lossy that U+FFFD replacement characters dominate. This
+ * is not a content-type sniff — a text file with a wrong extension still reads —
+ * it only catches content that plainly is not text.
+ */
+function looksBinary(text: string): boolean {
+  if (!text) return false;
+  if (text.includes('\u0000')) return true; // a NUL byte: real text never carries these
+  const sample = text.length > 4096 ? text.slice(0, 4096) : text;
+  let replacements = 0;
+  for (const ch of sample) if (ch === '\uFFFD') replacements += 1; // U+FFFD: a failed decode
+  return replacements > 0 && replacements / sample.length > 0.1;
+}
+
 /** "an owner", "an owner and a review date", "an owner, a review date and …". */
 function sentenceList(parts: string[]): string {
   if (parts.length <= 1) return parts[0] ?? '';
@@ -484,8 +502,16 @@ export function discoverConfluence(root: string): Discovery {
   const files: string[] = [];
   for (const entry of entries) {
     if (entry.isDirectory) continue; // attachments/, images/, styles/
-    if (!isHtmlFile(entry.name)) continue;
+    // The index is the tree, not a page: it is consumed for hierarchy below and
+    // is not a dropped content file, so it is not reported as skipped.
     if (entry.name.toLowerCase() === 'index.html') continue;
+    // Every other real file the user included that will not become a page has to
+    // be accounted for; a bare `continue` here made a .txt vanish from the
+    // receipt entirely — not imported, not failed, not skipped.
+    if (!isHtmlFile(entry.name)) {
+      skipped.push({ file: entry.name, reason: 'not an HTML page — nothing imported from it' });
+      continue;
+    }
     files.push(entry.name);
   }
   files.sort((a, b) => a.localeCompare(b));
@@ -575,6 +601,10 @@ export function discoverGoogleDocs(root: string): Discovery {
         visit(abs, depth + 1);
       } else if (isHtmlFile(entry.name)) {
         files.push(posix(relative(root, abs)));
+      } else {
+        // A real content file that is not an HTML doc: record it so the receipt
+        // accounts for every file rather than silently dropping it.
+        skipped.push({ file: posix(relative(root, abs)), reason: 'not an HTML page — nothing imported from it' });
       }
     }
   };
@@ -990,6 +1020,17 @@ export class ImportService {
       }
       const html = readFileSync(doc.absPath, 'utf8');
       const hash = hashOf(html);
+      // A binary file named like a page (a PDF or image renamed `.html`, or a
+      // blob picked up by discovery) decodes to non-empty junk and would slip
+      // past the empty-document guard below to import as a "clean" page. Catch
+      // it here on the cheap signals that a real HTML export never carries.
+      if (looksBinary(html)) {
+        return this.record(
+          ctx.runId,
+          { ...base, outcome: 'failed', reason: 'not readable as text — this looks like a binary file, not an HTML page' },
+          hash,
+        );
+      }
       const converted =
         ctx.source === 'confluence'
           ? convertConfluenceDocument(html, doc.file, { indexTitle: doc.indexTitle, spaceName: ctx.spaceName })
