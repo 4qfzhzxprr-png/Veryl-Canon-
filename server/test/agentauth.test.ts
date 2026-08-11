@@ -274,10 +274,15 @@ test('enforcement is an intersection: the Registry can narrow Canon, never widen
     // agent with '*' and write, but no Canon membership at all.
     const wide = r.registry.register({ name: 'WideBot', permittedCollections: ['*'], permittedActions: ['read', 'write'] });
     r.registry.certify(wide.agentId);
+    // The Registry permits everything, but Canon holds no role for this agent,
+    // so Canon's own model speaks — and it speaks the way it does to any
+    // stranger: the collection reads as one that does not exist (existence,
+    // never identity), never a 403 naming it. The absent `reason` distinguishes
+    // this from a Registry-level denial, which carries one.
     const canonDenied = await r.call('GET', `/collections/${collection.id}`, { passport: wide.passport });
-    assert.equal(canonDenied.status, 403);
-    assert.equal(canonDenied.json.error, 'forbidden');
-    assert.equal(canonDenied.json.needed, 'view'); // Canon's own permission model spoke
+    assert.equal(canonDenied.status, 404);
+    assert.equal(canonDenied.json.error, 'not_found');
+    assert.equal(canonDenied.json.reason, undefined);
 
     // And even with '*' and write, Canon's role decides what it may do.
     const wideAgent = ((await r.call('GET', '/actors', { actor: dana.id })).json as any[]).find(

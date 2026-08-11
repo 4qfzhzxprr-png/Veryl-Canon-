@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { CanonError, DocType, DOC_TYPES, PageStatus } from './model.js';
+import { CanonError, DocType, DOC_TYPES, PageStatus, revisionUnderReviewStanding } from './model.js';
 import { indexableText } from './plaintext.js';
 import { SupersededBy, supersessionMarks } from './supersession.js';
 
@@ -154,6 +154,13 @@ export interface SearchResult {
   collectionId: string;
   type: DocType;
   status: PageStatus;
+  /**
+   * The page's own standing when a revision is in review over a still-marked
+   * version, so a result shows CANONICAL with the revision noted rather than the
+   * draft's IN REVIEW. Null when `status` tells the whole story. See
+   * `revisionUnderReviewStanding`.
+   */
+  pageStanding: PageStatus | null;
   ownerId: string | null;
   snippet: string;
   /**
@@ -550,6 +557,7 @@ export class SearchIndex {
     const rows = this.db
       .prepare(
         `SELECT p.id, p.collection_id, p.type, p.status, p.owner_id, p.title,
+                p.current_version, p.marked_version, p.review_date,
                 snippet(page_search, -1, '<mark>', '</mark>', '…', 12) AS snip
          FROM page_search
          JOIN pages p ON p.id = page_search.page_id
@@ -578,12 +586,17 @@ export class SearchIndex {
       { alsoVisibleTo: filter.alsoVisibleTo },
     );
 
+    const today = new Date().toISOString().slice(0, 10);
     return rows.map((r) => ({
       pageId: r.id as string,
       title: r.title as string,
       collectionId: r.collection_id as string,
       type: r.type as DocType,
       status: r.status as PageStatus,
+      // A search hit on a marked page whose revision is in review shows the
+      // page's own standing (CANONICAL) with the revision noted, not the
+      // draft's IN REVIEW in place of it (see revisionUnderReviewStanding).
+      pageStanding: revisionUnderReviewStanding(r, today),
       ownerId: (r.owner_id as string) ?? null,
       snippet: r.snip as string,
       supersededBy: superseded.get(r.id as string) ?? null,

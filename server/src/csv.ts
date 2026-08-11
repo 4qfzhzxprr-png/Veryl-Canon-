@@ -93,8 +93,22 @@ export const AUDIT_CSV_MAX_ROWS = 100_000;
 // bounded statements rather than one enormous one.
 export const AUDIT_CSV_PAGE_ROWS = 1000;
 
+// A file that leaves the building must carry the same caveat the screen does
+// and the attestation bundle does: the events in it are PERMISSION-FILTERED to
+// whoever exported it, and the file is not a claim that the log holds no more.
+// The screen's `x-canon-truncated` caveat rides in a response header, but a
+// header does not survive the download — an auditor opening the saved file has
+// only the bytes — so this one is a `#` comment on the first line, where a
+// reader (and the tools that skip `#`) meet it before the header row. It never
+// names the hidden count; that a limited reader sees less is not a secret, how
+// much less would be.
+export const AUDIT_CSV_SCOPE_NOTE =
+  '# PERMISSION-FILTERED: this file holds only the audit events the actor who exported it may see. ' +
+  'It is not a claim that nothing else exists in the log.';
+
 export function auditCsv(events: AuditEvent[]): string {
-  let out = csvRow([...AUDIT_CSV_COLUMNS]);
+  let out = AUDIT_CSV_SCOPE_NOTE + '\r\n';
+  out += csvRow([...AUDIT_CSV_COLUMNS]);
   for (const event of events) {
     out += csvRow([
       event.id,

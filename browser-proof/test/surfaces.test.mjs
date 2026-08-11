@@ -86,25 +86,41 @@ test('the identity screen signs somebody in, for real', async () => {
 // ---------------------------------------------------------------------------
 // The refusal wall
 
-test('a refused reader lands on a wall that names no page', async () => {
+test('a reader with no role meets the same "not found" a nonexistent page gives — existence, never identity', async () => {
   await as('vera', async ({ page, f }) => {
+    // Vera holds NO role in the collection this page lives in. A 403 that named
+    // the collection would be an existence oracle: a real hidden id would name
+    // it, a fake id would not, and the pair would confirm the page is real and
+    // which restricted collection holds it. So the wall is the SAME "not found"
+    // a genuinely-nonexistent page gives (policy question 1).
     await goto(page, `#/pages/${f.pages.kestrel}`);
-    const text = await visibleText(page, '#app');
+    const hiddenText = await visibleText(page, '#app');
 
-    // The wall itself.
-    assert.match(text, /No access/);
-    // The refusal says what is missing and where to go with it — the whole
-    // reason it is a screen and not a toast.
-    assert.match(text, /you hold none there/i);
-    assert.match(text, /An administrator of this collection can grant it/);
-    // And it hands over nothing it just refused: not the page's title, and not
-    // the NAMES of the people in a collection she holds nothing in. Where she
-    // holds something the product does name them — the next test walks that
-    // wall — so this is the disclosure rule, not a missing feature.
-    assert.ok(!text.includes('Kestrel incident protocol'), 'the wall named the page it refused');
+    // The wall itself: not found, not "No access".
+    assert.match(hiddenText, /Not found/);
+    assert.match(hiddenText, /No such page/);
+    assert.ok(!hiddenText.includes('No access'), 'a no-role reader is not handed a 403 that admits the page exists');
+
+    // It hands over nothing it refused: not the page's title, not the
+    // collection's name, not a needed/held role, and not the NAMES of the
+    // people in a collection she holds nothing in.
+    assert.ok(!hiddenText.includes('Kestrel incident protocol'), 'the wall named the page it refused');
+    assert.ok(!hiddenText.includes('Compliance'), 'the wall named the collection it refused');
+    assert.ok(!/you hold none there/i.test(hiddenText), 'the wall disclosed a held/needed role');
     for (const name of ['Dana Whitfield', 'Iris Bell', 'Marc Oyelaran']) {
-      assert.ok(!text.includes(name), `the wall named ${name} in a collection she holds nothing in`);
+      assert.ok(!hiddenText.includes(name), `the wall named ${name} in a collection she holds nothing in`);
     }
+
+    // Indistinguishable from a page that never existed: a fabricated id lands on
+    // the same wall, differing only by the id the reader themselves typed.
+    const fakeId = '00000000-0000-4000-8000-000000000000';
+    await goto(page, `#/pages/${fakeId}`);
+    const missingText = await visibleText(page, '#app');
+    assert.equal(
+      hiddenText.replace(f.pages.kestrel, '<id>'),
+      missingText.replace(fakeId, '<id>'),
+      'a hidden page and a nonexistent one paint the same wall, word for word',
+    );
 
     // Nothing to ask with: she holds no role in that collection, so there is
     // no ground for a request and the product does not offer a box to type an

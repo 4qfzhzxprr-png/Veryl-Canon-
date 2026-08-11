@@ -846,7 +846,7 @@ export class AttestationService {
             'granted the mark, its effective date and its review date — all as they were then, not as they are now.',
           `That ${backdatedEntries} of these page(s) state an effective date preceding their own first publication, ` +
             `of which ${unexplainedEntries} record no basis for it. Both are named per row rather than left for a ` +
-            'reader to spot by comparing columns, which is how USER-TESTING.md T1.5 was missed.',
+            'reader to spot by comparing columns, which is easy to miss.',
           `That the ${concentration.marks} mark(s) in this register were granted by ` +
             `${concentration.granters.length} person(s) — ` +
             `${concentration.granters.map((g) => `${g.name} (${g.marks})`).join(', ') || 'nobody'} — out of the ` +

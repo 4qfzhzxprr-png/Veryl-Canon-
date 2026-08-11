@@ -10,6 +10,7 @@ import {
   collectionName,
   forbiddenRole,
   needsRoleHere,
+  notFoundIfStranger,
 } from './abilities.js';
 import {
   Actor,
@@ -26,6 +27,7 @@ import {
   PageFields,
   PageVersion,
   ReviewState,
+  revisionUnderReviewStanding,
   Role,
   ROLE_RANK,
   SendBackNotice,
@@ -611,6 +613,11 @@ export class CanonStore {
       | Record<string, unknown>
       | undefined;
     if (!row) throw new CanonError('not_found', `No such collection: ${id}`);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to this collection is
+    // told it does not exist, byte-for-byte as its genuine absence reads, so a
+    // real restricted id and an invented one cannot be told apart. A member
+    // refused something stronger keeps the informative refusal below.
+    notFoundIfStranger(this.roleOf(actorId, id), `No such collection: ${id}`);
     this.requireRole(actorId, id, 'view');
     // How many pages have left the tree. The contents listing is built from the
     // tree and archived pages are not in it, while the attestation register
@@ -757,6 +764,20 @@ export class CanonStore {
           restricted: number;
         }
       ).restricted === 1;
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to this collection —
+    // one holding NO role in it — is told the page does not exist, byte-for-byte
+    // as its genuine absence reads (`No such page: <id>`, the same 404
+    // `/related` and a nonexistent id give), so a hidden page and a missing one
+    // cannot be told apart. A member refused a stronger act still meets the
+    // informative refusal (via requireRole below).
+    const held = this.roleOf(actorId, collectionId);
+    if (!held) {
+      // A refusal on restricted material is recorded before it is masked. "Who
+      // tried and was turned away" is the question an examiner asks first, and
+      // the answer must not be lost to the 404 that hides the page's identity.
+      if (restricted) this.audit(actorId, 'page.view_refused', { collectionId, pageId: id });
+      throw new CanonError('not_found', `No such page: ${id}`);
+    }
     try {
       this.requireRole(actorId, collectionId, 'view');
     } catch (err) {
@@ -807,6 +828,10 @@ export class CanonStore {
       type: row.type as DocType,
       title: row.title as string,
       status: row.status as Page['status'],
+      // The page's own standing when a revision is in review over a still-marked
+      // version — so a surface shows CANONICAL with the revision noted, not the
+      // draft's IN REVIEW in place of it. Derived from the row already in hand.
+      pageStanding: revisionUnderReviewStanding(row, now().slice(0, 10)),
       ownerId: (row.owner_id as string) ?? null,
       approverId: (row.approver_id as string) ?? null,
       effectiveDate: (row.effective_date as string) ?? null,
@@ -1181,6 +1206,9 @@ export class CanonStore {
 
   getDraft(actorId: string, pageId: string): Draft | null {
     const row = this.pageRow(pageId);
+    // A stranger to the collection is told the page does not exist (abilities.ts);
+    // a member who holds `view` but not `edit` still gets the informative refusal.
+    notFoundIfStranger(this.roleOf(actorId, row.collection_id as string), `No such page: ${pageId}`);
     this.requireRole(actorId, row.collection_id as string, 'edit');
     const draft = this.draftRow(pageId);
     if (!draft) return null;
@@ -3064,6 +3092,20 @@ export class CanonStore {
    */
   requireRoleFor(actorId: string, collectionId: string, needed: Role): void {
     this.requireRole(actorId, collectionId, needed);
+  }
+
+  /**
+   * A page's collection, by existence alone — no permission, `not_found` only
+   * for a page that genuinely is not there. The Knowledge API needs this to ask
+   * its two gates (`requireRoleFor` for the person, then the app) as the labelled
+   * `person_not_permitted` / `app_not_permitted` refusals its contract requires.
+   * `getPage` cannot serve that anymore: its refusal to a stranger is now the
+   * same existence-masking `not_found` a missing page gives (P1, abilities.ts),
+   * which is right for a human at the boundary but would collapse "the person
+   * holds no role" into "no such page" for an app that can plainly see it.
+   */
+  pageCollectionId(pageId: string): string {
+    return this.pageRow(pageId).collection_id as string;
   }
 
   /**

@@ -382,6 +382,13 @@ export class GraphService {
       | { hit: number }
       | undefined;
     if (!exists) throw new CanonError('not_found', `No such collection: ${collectionId}`);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to this collection —
+    // one holding NO role in it — is told it does not exist, byte-for-byte as
+    // its genuine absence reads, rather than being handed a 403 that names it.
+    // A member refused a stronger act keeps the informative refusal below.
+    if (!this.host.roleOf(actorId, collectionId)) {
+      throw new CanonError('not_found', `No such collection: ${collectionId}`);
+    }
     this.requireRole(actorId, collectionId, 'view');
 
     // ---- the collection's own pages -------------------------------------

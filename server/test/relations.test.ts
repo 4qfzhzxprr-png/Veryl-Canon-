@@ -368,8 +368,10 @@ test('a relation whose other end the asker cannot see is listed, with the far pa
   assert.equal(wire.includes('twenty-four months'), false);
 
   // Reading the far page itself is refused outright, as it always was: being
-  // told a conflict exists is not a step towards reading what it is with.
-  expectCode(() => store.listRelations(marc.id, spec), 'forbidden');
+  // told a conflict exists is not a step towards reading what it is with. Marc
+  // holds no role in Engineering, so the refusal names nothing — the page reads
+  // as one that does not exist (existence, never identity).
+  expectCode(() => store.listRelations(marc.id, spec), 'not_found');
 });
 
 test('a supersession the asker cannot see is disclosed the same way', () => {

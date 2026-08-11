@@ -54,6 +54,7 @@ const HELPERS = [
   liftObject('STATUS_MEANINGS'),
   liftObject('TYPE_LABELS'),
   lift('badge'),
+  lift('pageBadge'),
   lift('highlightedSnippet'),
   lift('supersededChipHTML'),
 ].join('\n');
@@ -223,4 +224,69 @@ test('supersession: both surfaces draw it from one function', () => {
   // table now shares the chip for the same reason.
   assert.match(bodyOf('searchHitHTML'), /supersededChipHTML\(/);
   assert.match(bodyOf('collectionContentsHTML'), /supersededChipHTML\(/);
+});
+
+// ---------------------------------------------------------------------------
+// Page standing vs draft standing, at the surfaces a reader arrives through.
+//
+// Submitting a revision to a Canonical page overwrites `pages.status` with the
+// draft's standing, so the badge read a Canonical page with a pending edit as
+// IN REVIEW — unreviewed — while Ask went on drawing the Canonical version. The
+// page's own standing (`pageStanding`) now travels beside `status`, and the
+// badge shows it WITH the revision noted separately.
+
+const pageBadge = new Function(`${HELPERS}\nreturn pageBadge;`)() as (
+  page: Record<string, unknown>,
+  size?: string,
+) => string;
+const badge = new Function(`${HELPERS}\nreturn badge;`)() as (status: string, size?: string) => string;
+
+test('page badge: a revision in review is noted beside the page’s standing, not in place of it', () => {
+  const html = pageBadge({ status: 'in_review', pageStanding: 'canonical' });
+  // The page's own standing is the badge, and it is Canonical, not In Review.
+  assert.match(html, /class="badge badge-canonical[^"]*"[^>]*>Canonical</);
+  assert.ok(!/>In Review</.test(html), 'the draft’s standing does not stand in for the page’s');
+  // The revision is noted, separately, as an aside and not a second status badge.
+  assert.match(html, /· revision in review/);
+  assert.ok(!/badge badge-in_review/.test(html), 'the revision is a note, not a rival badge');
+
+  // A past-review-date page carries its overdue standing through the same way.
+  assert.match(pageBadge({ status: 'in_review', pageStanding: 'needs_update' }), />Needs Update</);
+});
+
+test('page badge: with no pending revision it is exactly the plain status badge', () => {
+  // A first draft in review, over no prior mark: pageStanding is null, and the
+  // badge is a plain In Review — the page has no other standing to show.
+  assert.equal(pageBadge({ status: 'in_review', pageStanding: null }), badge('in_review'));
+  assert.equal(pageBadge({ status: 'canonical', pageStanding: null }), badge('canonical'));
+});
+
+// The same rule reaches the two list surfaces a reader arrives through, drawn
+// from the same helper so the header, the table and search cannot drift.
+test('page badge: search and the collection table both show standing with the revision noted', () => {
+  const hit = {
+    pageId: 'p-policy',
+    title: 'Complaint handling',
+    type: 'policy',
+    status: 'in_review',
+    pageStanding: 'canonical',
+    snippet: 'A complaint is acknowledged…',
+    supersededBy: null,
+  };
+  const search = searchHitHTML(hit);
+  assert.match(search, />Canonical</);
+  assert.match(search, /· revision in review/);
+  assert.ok(!/>In Review</.test(search));
+
+  const table = collectionContentsHTML([
+    { id: 'p-policy', title: 'Complaint handling', type: 'policy', status: 'in_review',
+      pageStanding: 'canonical', ownerId: 'dana', reviewDate: null, children: [], supersededBy: null },
+  ]);
+  assert.match(table, />Canonical</);
+  assert.match(table, /· revision in review/);
+  assert.ok(!/>In Review</.test(table));
+
+  // One helper, so the surfaces cannot disagree.
+  assert.match(bodyOf('searchHitHTML'), /pageBadge\(/);
+  assert.match(bodyOf('collectionContentsHTML'), /pageBadge\(/);
 });

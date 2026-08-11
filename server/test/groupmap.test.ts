@@ -291,7 +291,7 @@ test('mapping: it grants collection roles and nothing more', async () => {
     r.store.submitForReview(dana.id, page.id);
     expectCode(() => r.store.approve(dana.id, page.id), 'forbidden');
     expectCode(() => r.store.setMember(dana.id, r.seeded.compliance!, dana.id, 'admin'), 'forbidden');
-    expectCode(() => r.store.getCollection(dana.id, r.seeded.board!), 'forbidden');
+    expectCode(() => r.store.getCollection(dana.id, r.seeded.board!), 'not_found');
     assert.equal(r.store.orgRoleOf(dana.id), 'member', 'and a collection rule grants no org role');
   } finally {
     r.close();

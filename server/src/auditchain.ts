@@ -382,7 +382,7 @@ export const CHAIN_OK_MEANS =
 
 export const CHAIN_EXTERNAL_ANCHOR =
   'Canon records its chain head periodically (a log line, and a file where CANON_ANCHOR_FILE is set) so that an ' +
-  'operator can ship it off-box; see OPERATIONS.md, "Anchor the chain head". An anchor Canon wrote and Canon could ' +
+  'operator can ship it off-box and anchor the chain head elsewhere. An anchor Canon wrote and Canon could ' +
   'rewrite proves nothing — the value is entirely in the copy that has been carried somewhere Canon cannot write. ' +
   'A retained attestation bundle is the same anchor in another form and works the same way: it carries this head ' +
   'hash, and comparing a retained bundle against a fresh one names any rewriting of the events it covers exactly.';

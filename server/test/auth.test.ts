@@ -863,9 +863,18 @@ test('directory: GET /actors no longer hands the whole organization to anyone', 
     const members = await r.call('GET', `/actors?collection=${compliance.id}`, { actor: marc.id });
     assert.deepEqual(members.json.map((a: any) => a.name).sort(), ['Dana', 'Marc']);
 
-    // And a collection you cannot see has no member list for you.
+    // And a collection you cannot see has no member list for you — and reads
+    // as one that does not exist, not a 403 naming it (existence, never
+    // identity), so it answers exactly as an invented id does.
     const outsider = await r.call('GET', `/actors?collection=${secrets.id}`, { actor: marc.id });
-    assert.equal(outsider.status, 403);
+    assert.equal(outsider.status, 404);
+    const invented = await r.call('GET', `/actors?collection=no-such-collection`, { actor: marc.id });
+    assert.equal(invented.status, 404);
+    assert.equal(
+      (outsider.json.message as string).replace(secrets.id, '<id>'),
+      (invented.json.message as string).replace('no-such-collection', '<id>'),
+      'a hidden collection and a nonexistent one answer word for word the same',
+    );
   } finally {
     r.close();
   }

@@ -233,6 +233,67 @@ test('submit from Canonical: the draft goes to review, no publish-first demotion
   assert.equal(store.lastCanonicalVersion(marc.id, page.id)!.number, 2);
 });
 
+// The page badge collapsed two facts into one. `submitForReview` overwrites
+// `pages.status` with the DRAFT's standing ('in_review'), so the page header,
+// the collection table and search all read a Canonical page with a pending
+// edit as IN REVIEW — unreviewed — while Ask correctly went on drawing the
+// Canonical version. The page's OWN standing and its draft's are two facts, and
+// every surface that lists the page must carry both: `status` (the draft's) and
+// `pageStanding` (the page's own, derived from the row, never stored).
+test('standing vs draft-standing: a Canonical page with a revision in review keeps its own standing on every surface', () => {
+  const fx = setup();
+  const { store, marc } = fx;
+  const page = canonicalPolicy(fx);
+  store.editDraft(marc.id, page.id, { body: 'A complaint is acknowledged within three working days.' });
+  store.submitForReview(marc.id, page.id);
+
+  // The page header read.
+  const header = store.getPage(marc.id, page.id);
+  assert.equal(header.status, 'in_review', 'the draft is in review');
+  assert.equal(header.pageStanding, 'canonical', 'and the page itself still holds the mark');
+
+  // The collection table read.
+  const node = store.tree(marc.id, fx.collection.id).find((n) => n.id === page.id);
+  assert.ok(node);
+  assert.equal(node.status, 'in_review');
+  assert.equal(node.pageStanding, 'canonical');
+
+  // The search read.
+  const hit = store.searchIndex.search(marc.id, { q: 'complaint' }).find((r) => r.pageId === page.id);
+  assert.ok(hit, 'the page is a search hit');
+  assert.equal(hit.status, 'in_review');
+  assert.equal(hit.pageStanding, 'canonical');
+
+  // A FIRST draft in review, over no prior mark, has no second standing to show:
+  // there `status` tells the whole story and `pageStanding` is null, so the
+  // badge stays a plain IN REVIEW.
+  const fresh = policyInReview(fx);
+  assert.equal(store.getPage(marc.id, fresh.id).status, 'in_review');
+  assert.equal(store.getPage(marc.id, fresh.id).pageStanding, null);
+
+  // Once approved, the revision becomes the page and the qualifier is gone.
+  store.approve(fx.nadia.id, page.id, {});
+  const approved = store.getPage(marc.id, page.id);
+  assert.equal(approved.status, 'canonical');
+  assert.equal(approved.pageStanding, null);
+});
+
+// A Canonical page whose review date has ALREADY passed is overdue; a revision
+// in review over it must show Needs Update, not Canonical and not a bare In
+// Review — the page's own standing carries the overdue verdict too, derived from
+// the review date on the row rather than from the sweep having run.
+test('standing vs draft-standing: a Needs-Update page with a revision in review shows Needs Update, not In Review', () => {
+  const fx = setup();
+  const { store, marc } = fx;
+  const page = canonicalPolicy(fx, '2000-01-01'); // Canonical, but past its review date
+  store.editDraft(marc.id, page.id, { body: 'A complaint is acknowledged within three working days.' });
+  store.submitForReview(marc.id, page.id);
+
+  const header = store.getPage(marc.id, page.id);
+  assert.equal(header.status, 'in_review');
+  assert.equal(header.pageStanding, 'needs_update', 'the page is still the record’s answer, and still overdue');
+});
+
 test('send-back and withdrawal return a Canonical page to Canonical: refusing the draft revokes nothing', () => {
   const fx = setup();
   const { store, marc, nadia } = fx;

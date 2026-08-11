@@ -173,7 +173,11 @@ test('API: the log pages, counts and exports over HTTP', async () => {
     // The export is the population the count describes, not the page.
     const csv = await call(`/audit.csv?collection=${other.id}`);
     assert.equal(csv.headers.get('x-canon-rows'), String(scoped.matching));
-    assert.equal((csv.json as string).split('\r\n').filter(Boolean).length - 1, scoped.matching);
+    // Less the header row and the leading `#` permission-filtered caveat line.
+    assert.equal(
+      (csv.json as string).split('\r\n').filter((l) => Boolean(l) && !l.startsWith('#')).length - 1,
+      scoped.matching,
+    );
     assert.equal((await call('/audit.csv?limit=10')).status, 400);
   } finally {
     server.close();
@@ -340,9 +344,30 @@ test('audit count: a count and an empty listing that disagree are reported as a 
 });
 
 test('audit count: a partial page is never rendered as the whole population', () => {
-  assert.equal(auditCountLine(200, 1187), 'Showing the 200 most recent of 1,187 matching events.');
-  assert.equal(auditCountLine(1187, 1187), '1,187 events match these filters. All of them are shown.');
-  assert.equal(auditCountLine(1, 1), '1 event matches these filters. All of them are shown.');
+  assert.equal(auditCountLine(200, 1187), 'Showing the 200 most recent of 1,187 matching events you can see.');
+  assert.equal(auditCountLine(1187, 1187), '1,187 events you can see match these filters. All of them are shown.');
+  assert.equal(auditCountLine(1, 1), '1 event you can see matches these filters. All of them are shown.');
+});
+
+// A non-admin reader's audit counts are PERMISSION-FILTERED to what they may
+// see; the server holds more. "All actions (1,113)" and "Showing the 200 most
+// recent of 1,098" read as the record's own totals unless the screen says
+// otherwise — a compliance artefact quietly overstating its own completeness.
+// The count is not read as the record's total, and the hidden count is never
+// named (that a limited reader sees less is not a secret; how much less would
+// be).
+test('audit count: every count on the screen is scoped to what the reader can see', () => {
+  // The count line itself, in both its partial and complete forms.
+  assert.match(auditCountLine(200, 1098), /you can see/);
+  assert.match(auditCountLine(1098, 1098), /you can see/);
+  // The standing note over the whole screen carries the same caveat, so the
+  // action-list total ("All actions (N)") and the numbers are all covered.
+  assert.match(auditClient, /cover only what you can see/);
+  assert.match(auditClient, /nothing else exists/);
+  // The action filter's own total says whose total it is.
+  assert.match(auditClient, /All actions you can see \(/);
+  // And no count line invents or leaks the hidden total.
+  assert.doesNotMatch(auditCountLine(200, 1098), /\d[\d,]* (hidden|withheld|total in the log)/);
 });
 
 test('audit screen: the count line is written before the empty branch can return', () => {

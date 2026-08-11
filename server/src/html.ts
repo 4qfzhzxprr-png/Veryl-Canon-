@@ -253,20 +253,51 @@ function element(tag: string, attrs: Record<string, string> = {}): ElementNode {
  * diagnosis is worse than a vague one.
  */
 export function truncationNote(source: string): string | null {
+  return unclosedConstruct(String(source ?? ''))?.note ?? null;
+}
+
+/**
+ * `truncationNote`, narrowed to the case where the unclosed construct actually
+ * SWALLOWED content: there is non-whitespace after its opener that `parseHtml`
+ * dropped on its way to the end of the file. A document ending in a dangling
+ * `<!--` followed only by whitespace lost nothing and is whole; one with a
+ * paragraph after the opener did NOT survive intact, even when an earlier
+ * paragraph did — and that is the file that must not import as a clean page
+ * with its tail silently gone. Returns the same sentence `truncationNote`
+ * would, or null when nothing readable was lost.
+ */
+export function truncationWithLoss(source: string): string | null {
   const src = String(source ?? '');
+  const found = unclosedConstruct(src);
+  if (!found) return null;
+  return src.slice(found.contentStart).trim() ? found.note : null;
+}
+
+/**
+ * The last unclosed comment, raw-data block or tag in `source`, with the offset
+ * where its swallowed content begins — the shared core of the two functions
+ * above so their diagnosis can never drift apart.
+ */
+function unclosedConstruct(src: string): { note: string; contentStart: number } | null {
   const comment = src.lastIndexOf('<!--');
   if (comment !== -1 && src.indexOf('-->', comment + 4) === -1) {
-    return 'the file stops inside a comment that is never closed, so everything after it was unreadable';
+    return {
+      note: 'the file stops inside a comment that is never closed, so everything after it was unreadable',
+      contentStart: comment + 4,
+    };
   }
   const cdata = src.lastIndexOf('<![CDATA[');
   if (cdata !== -1 && src.indexOf(']]>', cdata + 9) === -1) {
-    return 'the file stops inside a raw-data block that is never closed, so everything after it was unreadable';
+    return {
+      note: 'the file stops inside a raw-data block that is never closed, so everything after it was unreadable',
+      contentStart: cdata + 9,
+    };
   }
   const lt = src.lastIndexOf('<');
   // A bare "<" in prose — "3 < 4" — is not an unfinished tag, and calling it
   // one would send somebody to re-export a file that is whole.
   if (lt !== -1 && /^<\/?[a-zA-Z!?]/.test(src.slice(lt, lt + 3)) && src.indexOf('>', lt + 1) === -1) {
-    return 'the file stops in the middle of a tag';
+    return { note: 'the file stops in the middle of a tag', contentStart: lt + 1 };
   }
   return null;
 }

@@ -427,6 +427,12 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
    has been flagged — so it must not read like a draft. */
 .badge-needs_update { color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber); }
 .badge-archived { color: var(--muted); background: var(--surface-2); border: 1px solid var(--surface-2); }
+/* Not a badge: the note beside a page's standing that a revision of it is in
+   review. It reads as an aside to the standing, never a second status, because
+   the page's standing (Canonical/Needs Update) is the fact and the revision is
+   the qualifier — "Canonical · revision in review". */
+.revision-note { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
+.revision-note.sm { font-size: 0.6rem; }
 /* Superseded is not a status — a superseded page keeps whichever of the five
    it had — so it is drawn as a second chip beside the first, in the caution
    colour the record already uses for "there is something here to know", and

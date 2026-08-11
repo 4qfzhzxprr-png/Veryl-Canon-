@@ -34,6 +34,7 @@ import {
   textContent,
   toMarkdown,
   truncationNote,
+  truncationWithLoss,
   walk,
 } from './html.js';
 
@@ -1015,6 +1016,30 @@ export class ImportService {
           hash,
         );
       }
+      // The empty-document branch above is the only place truncation was ever
+      // checked, and it only fires when NOTHING survived. A file with readable
+      // content BEFORE an unclosed comment parses to a non-empty body —
+      // `parseHtml` swallows everything from the last `<!--` (or an unclosed
+      // CDATA block, or a half-written tag) to the end of the file — so it slips
+      // past that branch and would import as a clean page with its tail silently
+      // dropped. Surface it here: a truncated export is not a whole page even
+      // when part of it survived, and an operator told nothing goes on trusting
+      // a page that is missing its end. Failed, not fatal, and nothing invented
+      // — the same treatment the wholly-empty truncation gets.
+      const lossNote = truncationWithLoss(html);
+      if (lossNote) {
+        return this.record(
+          ctx.runId,
+          {
+            ...base,
+            title: converted.title || titleFromFile(doc.file),
+            outcome: 'failed',
+            reason: `content was dropped: ${lossNote} — the export looks truncated, so re-export this page`,
+          },
+          hash,
+        );
+      }
+
       const title = converted.title || titleFromFile(doc.file);
 
       const prior = this.db

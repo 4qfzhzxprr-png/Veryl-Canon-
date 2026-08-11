@@ -487,8 +487,10 @@ test('references: resolution requires view on the page collection before anythin
     },
   });
 
-  await expectCodeAsync(store.resolveReferences(outsider.id, page.id), 'forbidden');
-  expectCode(() => store.listReferences(outsider.id, page.id), 'forbidden');
+  // An outsider holds no role in the page's collection, so the read answers as
+  // it would for a page that does not exist — never which collection refuses.
+  await expectCodeAsync(store.resolveReferences(outsider.id, page.id), 'not_found');
+  expectCode(() => store.listReferences(outsider.id, page.id), 'not_found');
   assert.equal(calls, 0); // the source was never asked on their behalf
   await expectCodeAsync(store.resolveReferences(dana.id, 'no-such-page'), 'not_found');
 });

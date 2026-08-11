@@ -190,9 +190,13 @@ test('administrator: the role does not carry collection access, in any direction
   // Every read path, refused: the page, the tree, the collection, search,
   // retrieval, and grounded answers. Running the system is not being entitled
   // to the corpus, and that is the separation a regulated buyer asks about.
-  expectCode(() => store.getPage(admin.id, page.id), 'forbidden');
+  // An org administrator holds no role IN this collection, so a read of its
+  // pages or of the collection answers as it would for one that never existed:
+  // running the system is not entitlement to the corpus, and the refusal must
+  // not confirm the corpus is there (existence, never identity).
+  expectCode(() => store.getPage(admin.id, page.id), 'not_found');
   expectCode(() => store.tree(admin.id, collection.id), 'forbidden');
-  expectCode(() => store.getCollection(admin.id, collection.id), 'forbidden');
+  expectCode(() => store.getCollection(admin.id, collection.id), 'not_found');
   assert.deepEqual(store.listCollections(admin.id), []);
   assert.deepEqual(store.searchIndex.search(admin.id, { q: 'salary' }), []);
   const answered = await store.ask(admin.id, { question: 'What does band 4 top out at?' });
