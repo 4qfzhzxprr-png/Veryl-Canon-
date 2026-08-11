@@ -357,7 +357,10 @@ test('proposals: permissions — proposing takes edit, reading takes view', () =
 
   const proposal = store.createProposal(bot.id, page.id, { rationale: 'Figure moved.', body: 'A' });
   assert.equal(store.listProposals(vera.id, page.id).length, 1, 'view can read what is proposed');
-  expectCode(() => store.listProposals(outsider.id, page.id), 'forbidden');
+  // EXISTENCE, NEVER IDENTITY (abilities.ts): an outsider with no role on the
+  // page's collection is told it does not exist, not handed a 403 naming the
+  // collection — indistinguishable from a nonexistent page.
+  expectCode(() => store.listProposals(outsider.id, page.id), 'not_found');
 
   // Deciding takes edit too: comment and view roles cannot settle a proposal.
   expectCode(() => store.acceptProposal(vera.id, proposal.id, {}), 'forbidden');

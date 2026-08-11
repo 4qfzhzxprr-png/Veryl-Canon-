@@ -799,9 +799,13 @@ test('register: nothing customer-facing cites an internal filename', async () =>
 test('permission: all three surfaces refuse a non-member, and refuse before answering', async () => {
   const { store, page, collection } = await history();
   const outsider = store.createActor({ kind: 'person', name: 'Outsider' });
-  expectCode(() => store.pageAsOf(outsider.id, page.id, new Date().toISOString()), 'forbidden');
-  expectCode(() => store.pageAttestation(outsider.id, page.id, {}), 'forbidden');
-  expectCode(() => store.collectionAttestation(outsider.id, collection.id, {}), 'forbidden');
+  // EXISTENCE, NEVER IDENTITY (abilities.ts P1): an outsider with no role on the
+  // underlying collection is told the page/collection does not exist, byte-for-
+  // byte as a nonexistent id reads, rather than a 403 naming it. verifyAuditChain
+  // is a Canon-wide read, not a masked per-collection resource, so it still 403s.
+  expectCode(() => store.pageAsOf(outsider.id, page.id, new Date().toISOString()), 'not_found');
+  expectCode(() => store.pageAttestation(outsider.id, page.id, {}), 'not_found');
+  expectCode(() => store.collectionAttestation(outsider.id, collection.id, {}), 'not_found');
   expectCode(() => store.verifyAuditChain(outsider.id), 'forbidden');
   // A refusal writes no attestation event: the refused call did nothing.
   const { store: other, dana } = await history();

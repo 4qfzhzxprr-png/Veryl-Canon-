@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { notFoundIfStranger } from './abilities.js';
 import { Actor, CanonError, Role, ROLE_RANK } from './model.js';
 import type { Notifier } from './notify.js';
 import type { ReferenceRole } from './references.js';
@@ -537,6 +538,11 @@ export class DivergenceService {
   listForPage(actorId: string, pageId: string, filter: { state?: DivergenceState } = {}): Divergence[] {
     const page = this.pageRow(pageId);
     if (!page) throw new CanonError('not_found', `No such page: ${pageId}`);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist, byte-for-byte as a nonexistent id reads,
+    // rather than a 403 naming the collection that holds it (P1). A member
+    // refused a stronger act still meets the informative refusal below.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such page: ${pageId}`);
     this.requireRole(actorId, page.collectionId, 'view');
     const state = this.validState(filter.state);
     const rows = this.db
@@ -582,6 +588,11 @@ export class DivergenceService {
     const divergence = this.row(id);
     const page = this.pageRow(divergence.pageId);
     if (!page) throw new CanonError('not_found', `No such divergence: ${id}`);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): an outsider to the page's
+    // collection reads the divergence as nonexistent, byte-for-byte as a
+    // nonexistent id reads, rather than a 403 naming the collection (P1). A
+    // member refused a stronger act still meets the informative refusal below.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such divergence: ${id}`);
     this.requireRole(actorId, page.collectionId, 'view');
     return divergence;
   }
