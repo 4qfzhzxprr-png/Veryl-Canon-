@@ -500,8 +500,41 @@ export function discoverConfluence(root: string): Discovery {
   const realRoot = realPathOr(root);
   const entries = readDirSafe(root);
   const files: string[] = [];
+  // A genuine Confluence export keeps its pages flat at the top level and puts
+  // supporting files in these sibling dirs; they are legitimately not pages and
+  // are ignored in silence.
+  const isAttachmentDir = (name: string): boolean =>
+    /^(attachments|images|styles|_files|assets|thumbnails)$/i.test(name) || name.startsWith('.');
+  // A subdirectory that is NOT one of those may still hold HTML pages a records
+  // manager zipped into a folder. Confluence has no page tree there, so those
+  // pages are not imported — but they must be ACCOUNTED FOR, not silently
+  // dropped: each becomes a skipped row with a reason. Only HTML entries are
+  // reported (non-HTML in a subfolder is an attachment, and stays silent).
+  const scanSkippedSubtree = (dir: string, depth: number): void => {
+    if (depth > 6) {
+      skipped.push({ file: posix(relative(root, dir)), reason: 'directory nested deeper than 6 levels — not imported' });
+      return;
+    }
+    for (const entry of readDirSafe(dir)) {
+      if (entry.name.startsWith('.')) continue;
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory) {
+        scanSkippedSubtree(abs, depth + 1);
+      } else if (isHtmlFile(entry.name)) {
+        skipped.push({
+          file: posix(relative(root, abs)),
+          reason: 'in a subfolder not part of the Confluence page tree — not imported',
+        });
+      }
+    }
+  };
   for (const entry of entries) {
-    if (entry.isDirectory) continue; // attachments/, images/, styles/
+    if (entry.isDirectory) {
+      // attachments/, images/, styles/ and friends: silent. Anything else is
+      // scanned so nested HTML pages are recorded as skipped, never vanished.
+      if (!isAttachmentDir(entry.name)) scanSkippedSubtree(join(root, entry.name), 1);
+      continue;
+    }
     // The index is the tree, not a page: it is consumed for hierarchy below and
     // is not a dropped content file, so it is not reported as skipped.
     if (entry.name.toLowerCase() === 'index.html') continue;

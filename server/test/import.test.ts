@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -463,6 +463,73 @@ test('import: a binary file named like a page is reported, not imported as junk'
     assert.equal(summary.counts.failed, 1);
     // The blob left no page in the tree.
     assert.equal(store.tree(marc.id, collection.id).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A Confluence discovery walked only the top level: an HTML page a records
+// manager had zipped into a subfolder was never enumerated, never counted, and
+// never recorded as skipped — it VANISHED, and because `found` is computed after
+// dropping it the header ("1 imported · 1 document found") could not even
+// contradict itself. Every HTML file the user handed in must be either imported
+// or a skipped row with a reason. Known attachment dirs (attachments/, images/,
+// styles/, …) stay silent — those are genuinely not pages.
+test('import: HTML pages in subfolders are recorded as skipped rows, not silently dropped', () => {
+  const { store, marc, collection } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'canon-import-nested-'));
+  try {
+    const page = (title: string) =>
+      `<html><head><title>${title}</title></head><body><p>Readable content for ${title}.</p></body></html>`;
+    // One page at the top level: the only thing a real Confluence export lands.
+    writeFileSync(join(root, 'Top+Page_100.html'), page('Top Page'));
+    // Two HTML pages buried in NON-attachment subfolders (one nested two deep).
+    mkdirSync(join(root, 'subteam'));
+    writeFileSync(join(root, 'subteam', 'Nested+One_200.html'), page('Nested One'));
+    mkdirSync(join(root, 'archive', 'deep'), { recursive: true });
+    writeFileSync(join(root, 'archive', 'deep', 'Nested+Two_300.html'), page('Nested Two'));
+    // Real attachment dirs: an HTML file here is legitimately an attachment and
+    // must stay silent — importing it would change what actually lands.
+    mkdirSync(join(root, 'attachments'));
+    writeFileSync(join(root, 'attachments', 'template_9.html'), page('Attachment Fragment'));
+    writeFileSync(join(root, 'attachments', 'notes.txt'), 'loose attachment notes');
+    mkdirSync(join(root, 'images'));
+    writeFileSync(join(root, 'images', 'diagram.png'), 'not really a png');
+
+    const summary = store.runImport(marc.id, { source: 'confluence', path: root, collectionId: collection.id });
+
+    // Read the run back through the receipt path the view renders from.
+    const run = store.getImportRun(marc.id, summary.runId);
+    const item = (file: string) => run.items.find((i) => i.file === file);
+
+    // Each nested page is a skipped row with a human reason and no page — not
+    // imported (Confluence keeps pages flat), but never vanished either.
+    for (const file of ['subteam/Nested+One_200.html', 'archive/deep/Nested+Two_300.html']) {
+      const nested = item(file);
+      assert.ok(nested, `the nested page ${file} has a row in the read-back receipt`);
+      assert.equal(nested.outcome, 'skipped', `${file} is skipped, never dropped`);
+      assert.equal(nested.pageId, null, `${file} makes no page`);
+      assert.match(nested.reason ?? '', /subfolder/i, `${file} explains it sat in a subfolder`);
+    }
+
+    // The one real top-level page still imports.
+    assert.equal(item('Top+Page_100.html')?.outcome, 'imported');
+
+    // Attachment-dir contents stay silent: no row for the HTML fragment or the
+    // image, so what actually imports is unchanged.
+    assert.equal(
+      run.items.some((i) => i.file.startsWith('attachments/') || i.file.startsWith('images/')),
+      false,
+      'known attachment dirs are ignored in silence',
+    );
+
+    // The header reconciles: found is the true input total (1 imported + 2
+    // nested skips), and nothing is an anonymous "+N".
+    const { found, imported, updated, skipped, failed } = run.counts;
+    assert.equal(found, imported + updated + skipped + failed, 'the receipt header reconciles');
+    assert.equal(imported, 1);
+    assert.equal(skipped, 2, 'both nested pages are counted as skipped');
+    assert.equal(found, 3, 'every HTML page the user handed in is in the total');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

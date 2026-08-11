@@ -7120,6 +7120,21 @@ const IMPORT_HIERARCHY_NOTES = {
   flat: 'Nothing in the export described a page tree, so every page arrived at the top level.',
 };
 
+// The flat note asserts "every page arrived at the top level" — which is only
+// true if nothing was dropped from a subfolder. When content-bearing subfolders
+// WERE skipped (recorded as skipped rows with a subfolder reason), that claim is
+// false, so a flat run says so instead of pretending the top level was the whole
+// export.
+function importHierarchyNote(run) {
+  const note = IMPORT_HIERARCHY_NOTES[run.hierarchy] ?? '';
+  if (run.hierarchy !== 'flat') return note;
+  const droppedFromSubfolder = (run.items ?? []).some(
+    (i) => i.outcome === 'skipped' && /subfolder/i.test(i.reason ?? ''),
+  );
+  if (!droppedFromSubfolder) return note;
+  return 'The export described no page tree, so the pages Canon imported all sit at the top level — but some HTML pages sat in subfolders and were not imported. They are listed as skipped below.';
+}
+
 let importsProbe = null;
 
 /**
@@ -7406,7 +7421,7 @@ async function viewImportRun(runId) {
         <p class="import-counts">${importCountsHTML(run.counts)}
           <span class="muted"> — ${Number(run.counts?.found ?? 0)} document${
             Number(run.counts?.found ?? 0) === 1 ? '' : 's'} found</span></p>
-        <p class="muted">${esc(IMPORT_HIERARCHY_NOTES[run.hierarchy] ?? '')}</p>
+        <p class="muted">${esc(importHierarchyNote(run))}</p>
         <p class="muted import-path">Read from <code>${esc(run.path)}</code> · run id
           <code>${esc(run.runId)}</code></p>
       </section>
