@@ -597,10 +597,11 @@ test('divergence: reading takes view on the page’s collection, and the listing
   state.other = 1200;
   await store.resolveReferences(marc.id, page.id);
 
-  // A member may read; an outsider may not, and reads the page as forbidden
-  // exactly as they would the page itself.
+  // A member may read; an outsider with no role reads it as not_found —
+  // existence-masking, exactly as they would the page itself (abilities.ts P1),
+  // indistinguishable from a nonexistent page.
   assert.equal(store.listPageDivergences(vera.id, page.id).length, 1);
-  expectCode(() => store.listPageDivergences(outsider.id, page.id), 'forbidden');
+  expectCode(() => store.listPageDivergences(outsider.id, page.id), 'not_found');
 
   // The record-wide listing is a SPANNING read: filtered, never refused.
   assert.equal(store.listDivergences(vera.id).length, 1);
@@ -618,7 +619,9 @@ test('divergence: reading takes view on the page’s collection, and the listing
   // One divergence by id, on the same terms.
   const [only] = store.listDivergences(marc.id);
   assert.equal(store.getDivergence(vera.id, only!.id).id, only!.id);
-  expectCode(() => store.getDivergence(outsider.id, only!.id), 'forbidden');
+  // An outsider's read of a real divergence is byte-identical to a nonexistent
+  // one: not_found, naming nothing (abilities.ts P1).
+  expectCode(() => store.getDivergence(outsider.id, only!.id), 'not_found');
   expectCode(() => store.getDivergence(marc.id, 'no-such-divergence'), 'not_found');
 });
 

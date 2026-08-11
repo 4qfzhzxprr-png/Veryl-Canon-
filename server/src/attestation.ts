@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { notFoundIfStranger } from './abilities.js';
 import {
   AUDIT_CHAIN_ALGORITHM,
   AUDIT_CHAIN_FORMAT,
@@ -406,6 +407,7 @@ function statusFromEvent(action: string, details: Record<string, unknown>): Page
 /** The slice of CanonStore this service needs; CanonStore satisfies it. */
 export interface AttestationHost {
   getActor(id: string): Actor;
+  roleOf(actorId: string, collectionId: string): Role | null;
   requireRoleFor(actorId: string, collectionId: string, needed: Role): void;
   recordAudit(
     actorId: string,
@@ -446,6 +448,11 @@ export class AttestationService {
     const instant = normalizeInstant(at);
     const page = this.pageRow(pageId);
     const collectionId = page.collection_id as string;
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist, byte-for-byte as a nonexistent id reads,
+    // rather than a 403 naming the collection that holds it (P1). A member
+    // refused a stronger act still meets the informative refusal below.
+    notFoundIfStranger(this.host.roleOf(actorId, collectionId), `No such page: ${pageId}`);
     this.host.requireRoleFor(actorId, collectionId, 'view');
     // A reconstruction hands back the body of a version, so on a restricted
     // collection it is a view and is logged as one — the same rule
@@ -589,6 +596,11 @@ export class AttestationService {
   bundle(actorId: string, pageId: string, opts: { at?: string; format?: 'json' | 'html' } = {}): PageAttestation {
     const page = this.pageRow(pageId);
     const collectionId = page.collection_id as string;
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist, byte-for-byte as a nonexistent id reads,
+    // rather than a 403 naming the collection that holds it (P1). A member
+    // refused a stronger act still meets the informative refusal below.
+    notFoundIfStranger(this.host.roleOf(actorId, collectionId), `No such page: ${pageId}`);
     this.host.requireRoleFor(actorId, collectionId, 'view');
     const instant = opts.at ? normalizeInstant(opts.at) : null;
 
@@ -718,6 +730,11 @@ export class AttestationService {
       | Record<string, unknown>
       | undefined;
     if (!collection) throw new CanonError('not_found', `No such collection: ${collectionId}`);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): an outsider is told the
+    // collection does not exist, byte-for-byte as a nonexistent id reads,
+    // rather than a 403 naming it (P1). A member refused a stronger act still
+    // meets the informative refusal below.
+    notFoundIfStranger(this.host.roleOf(actorId, collectionId), `No such collection: ${collectionId}`);
     this.host.requireRoleFor(actorId, collectionId, 'view');
     const instant = normalizeInstant(opts.at ?? new Date().toISOString());
 

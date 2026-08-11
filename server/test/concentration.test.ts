@@ -353,7 +353,13 @@ test('concentration: somebody with no role in the collection is refused before a
   const { store, marc, nadia, outsider, collection } = setup();
   policy(store, marc.id, nadia.id, collection.id, 'Nadia policy');
   expectCode(() => store.collectionHealth(outsider.id, collection.id), 'forbidden');
-  expectCode(() => store.collectionAttestation(outsider.id, collection.id), 'forbidden');
+  // collectionAttestation now masks existence for a stranger (abilities.ts P1):
+  // an outsider with no role is told the collection does not exist rather than
+  // handed a 403 naming it. The refusal-before-compute intent still holds — the
+  // register is never assembled for a non-member — the vocabulary is just the
+  // existence-masking not_found now. (collectionHealth stays the informative
+  // 403: it is a concentration read, outside the masked read surface.)
+  expectCode(() => store.collectionAttestation(outsider.id, collection.id), 'not_found');
 });
 
 test('concentration: the reads are empty for a non-member even with the role check removed', () => {

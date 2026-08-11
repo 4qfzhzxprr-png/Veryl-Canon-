@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { forbiddenRole } from './abilities.js';
+import { forbiddenRole, notFoundIfStranger } from './abilities.js';
 import {
   Actor,
   ActorKind,
@@ -294,6 +294,11 @@ export class ProposalService {
 
   list(actorId: string, pageId: string, filter: { status?: ProposalStatus } = {}): Proposal[] {
     const page = this.page(pageId);
+    // EXISTENCE, NEVER IDENTITY (abilities.ts): a stranger to the collection is
+    // told the page does not exist, byte-for-byte as a nonexistent id reads,
+    // rather than a 403 naming the collection that holds it (P1). A member
+    // refused a stronger act still meets the informative refusal below.
+    notFoundIfStranger(this.host.roleOf(actorId, page.collectionId), `No such page: ${pageId}`);
     this.requireRole(actorId, page.collectionId, 'view');
     const rows = this.db
       .prepare(

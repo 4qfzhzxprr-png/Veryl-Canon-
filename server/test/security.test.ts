@@ -797,6 +797,133 @@ test('oracle: versions and tree of a hidden page/collection read as nonexistent,
   assert.equal(store.tree(marc.id, restricted.id).length, 1);
 });
 
+// The same P1 masking, now on the proposals, divergence and attestation reads.
+// These three families used to answer an outsider (no role on the underlying
+// collection) with a 403 that named the hidden collection — the same existence
+// oracle the version history and the tree carried. A stranger's refusal must be
+// BYTE IDENTICAL to the genuinely-nonexistent case, and a permitted member must
+// still get the data.
+test('oracle: proposals, divergence and attestation reads of a hidden resource read as nonexistent, and a member still gets them', () => {
+  const db = openDb(':memory:');
+  const store = new CanonStore(db, quiet);
+  const dana = store.createActor({ kind: 'person', name: 'Dana' });
+  const restricted = store.createCollection(dana.id, { name: 'Compensation', restricted: true });
+  const page = store.createPage(dana.id, { collectionId: restricted.id, type: 'note', title: 'Comp ladder' });
+  store.editDraft(dana.id, page.id, { body: 'Bands and bonuses.', fields: { ownerId: dana.id } });
+  store.publish(dana.id, page.id, {});
+
+  // A real proposal on the hidden page, so the stranger's list read masks a
+  // resource that genuinely holds content.
+  store.createProposal(dana.id, page.id, { rationale: 'Tidy the ladder.', body: 'Bands and bonuses, tidied.' });
+
+  // A real divergence on the hidden page, inserted directly so `getDivergence`
+  // masks an id that genuinely resolves (the source machinery is exercised in
+  // divergence.test.ts; here we only need a row whose page is restricted).
+  const divId = 'e8f4a5b6-0000-4000-8000-000000000000';
+  db.prepare(
+    `INSERT INTO divergences
+       (id, reference_id, page_id, authority_source_id, authority_value, other_source_id, other_value, observed_at, state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+  ).run(divId, 'ref-1', page.id, 'src-a', '1500', 'src-b', '1200', new Date().toISOString());
+
+  const outsider = store.createActor({ kind: 'person', name: 'Mallory' });
+  const FAKE_PAGE = 'a1b2c3d4-0000-4000-8000-000000000000';
+  const FAKE_COLL = 'b2c3d4e5-0000-4000-8000-000000000000';
+  const FAKE_DIV = 'c3d4e5f6-0000-4000-8000-000000000000';
+
+  // Each hidden read, paired with the nonexistent read it must be word-for-word
+  // identical to. `hiddenId`/`missingId` are the ids that appear in each message,
+  // blanked to `<id>` before comparison.
+  const cases: {
+    name: string;
+    hidden: () => CanonError;
+    hiddenId: string;
+    missing: () => CanonError;
+    missingId: string;
+  }[] = [
+    {
+      name: 'listProposals',
+      hidden: () => expectCode(() => store.listProposals(outsider.id, page.id), 'not_found'),
+      hiddenId: page.id,
+      missing: () => expectCode(() => store.listProposals(outsider.id, FAKE_PAGE), 'not_found'),
+      missingId: FAKE_PAGE,
+    },
+    {
+      name: 'listPageDivergences',
+      hidden: () => expectCode(() => store.listPageDivergences(outsider.id, page.id), 'not_found'),
+      hiddenId: page.id,
+      missing: () => expectCode(() => store.listPageDivergences(outsider.id, FAKE_PAGE), 'not_found'),
+      missingId: FAKE_PAGE,
+    },
+    {
+      name: 'getDivergence',
+      hidden: () => expectCode(() => store.getDivergence(outsider.id, divId), 'not_found'),
+      hiddenId: divId,
+      missing: () => expectCode(() => store.getDivergence(outsider.id, FAKE_DIV), 'not_found'),
+      missingId: FAKE_DIV,
+    },
+    {
+      name: 'pageAsOf',
+      hidden: () => expectCode(() => store.pageAsOf(outsider.id, page.id, new Date().toISOString()), 'not_found'),
+      hiddenId: page.id,
+      missing: () => expectCode(() => store.pageAsOf(outsider.id, FAKE_PAGE, new Date().toISOString()), 'not_found'),
+      missingId: FAKE_PAGE,
+    },
+    {
+      name: 'pageAttestation',
+      hidden: () => expectCode(() => store.pageAttestation(outsider.id, page.id, {}), 'not_found'),
+      hiddenId: page.id,
+      missing: () => expectCode(() => store.pageAttestation(outsider.id, FAKE_PAGE, {}), 'not_found'),
+      missingId: FAKE_PAGE,
+    },
+    {
+      name: 'collectionAttestation',
+      hidden: () => expectCode(() => store.collectionAttestation(outsider.id, restricted.id, {}), 'not_found'),
+      hiddenId: restricted.id,
+      missing: () => expectCode(() => store.collectionAttestation(outsider.id, FAKE_COLL, {}), 'not_found'),
+      missingId: FAKE_COLL,
+    },
+  ];
+
+  for (const c of cases) {
+    const hidden = c.hidden();
+    const missing = c.missing();
+    assert.equal(
+      hidden.message.replace(c.hiddenId, '<id>'),
+      missing.message.replace(c.missingId, '<id>'),
+      `${c.name}: a hidden resource and a nonexistent one are word for word the same`,
+    );
+    // 404, and no disclosure of the hidden collection's name or the needed/held
+    // role the old 403 carried.
+    assert.equal(hidden.httpStatus, 404, `${c.name}: a hidden resource must answer 404, never a confirming 403`);
+    const wire = JSON.stringify({ message: hidden.message, ...hidden.details });
+    // The collection id must not leak — EXCEPT where the caller supplied it as
+    // the query id (collectionAttestation is asked BY collection id, so the
+    // not_found echoes the caller's own input, exactly as a nonexistent id does;
+    // that is the caller's id, not a disclosure — the byte-identical check above
+    // is what proves it). Every page/divergence read here is asked by another
+    // id and must never carry the hidden collection id at all.
+    if (c.hiddenId !== restricted.id) {
+      assert.equal(wire.includes(restricted.id), false, `${c.name}: no collection id leaks`);
+    }
+    assert.equal(wire.includes('Compensation'), false, `${c.name}: no collection name leaks`);
+    assert.equal(wire.includes('view role'), false, `${c.name}: no needed/held role leaks`);
+  }
+
+  // A permitted member is untouched: every read still returns the data.
+  const marc = store.createActor({ kind: 'person', name: 'Marc' });
+  store.setMember(dana.id, restricted.id, marc.id, 'view');
+  assert.equal(store.listProposals(marc.id, page.id).length, 1, 'a view-holder still reads the proposals');
+  assert.equal(store.listPageDivergences(marc.id, page.id).length, 1, 'a view-holder still reads the divergences');
+  assert.equal(store.getDivergence(marc.id, divId).id, divId, 'a view-holder still reads one divergence by id');
+  assert.equal(store.pageAsOf(marc.id, page.id, new Date().toISOString()).title, 'Comp ladder');
+  assert.equal(store.pageAttestation(marc.id, page.id, {}).versions.length, 1, 'a view-holder still reads the bundle');
+  assert.ok(
+    store.collectionAttestation(marc.id, restricted.id, {}).manifest,
+    'a view-holder still reads the collection register',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // R5 — audit events naming no collection were visible to everyone
 
