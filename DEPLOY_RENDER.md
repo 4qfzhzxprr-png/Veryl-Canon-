@@ -50,7 +50,14 @@ SIGTERM→SIGKILL delay, so that drain finishes rather than being killed halfway
    | `CANON_OIDC_CLIENT_ID` | The client Canon is registered as there. |
    | `CANON_OIDC_CLIENT_SECRET` | Secret. Authenticates the token call. |
    | `CANON_BOOTSTRAP_ADMIN_SUBJECT` | The first administrator, named by their `sub` claim (or `issuer#sub`). |
-   | `CANON_REGISTRY_API_KEY` | Bearer token Canon presents to the Registry's verification face. |
+   | `CANON_REGISTRY_API_KEY` | A Registry **module key** (`vmk_…`), minted by an admin in that org's billing settings and shown once. The verification face answers 401 without it — deliberately outside the contract's refusal table, so Canon fails closed rather than caching a verdict. |
+
+   `CANON_REGISTRY_URL` is preset to `https://registry.veryl.ai/api/registry`.
+   **The path matters**: this is a base URL Canon appends to — `<base>/verify`
+   for each passport and `<base>/health` for the readiness probe — and the
+   Registry mounts that router at `/api/registry`. Point it at the bare origin
+   and every agent is denied with a fail-closed 503 that says nothing about a
+   missing path segment.
 
 3. **Register the redirect URI at your provider**, verbatim:
    `https://canon.veryl.ai/auth/callback`. Canon derives it from

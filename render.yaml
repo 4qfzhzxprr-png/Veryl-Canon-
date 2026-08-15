@@ -115,11 +115,24 @@ services:
       # The Agent Registry (agent-studio). Unset, an Agent Passport is refused
       # 503 — agents are denied, never admitted. Point it at the real one;
       # NEVER at registry-stub, which certifies anybody.
+      # NOTE THE PATH. This is a BASE URL that Canon appends to: registry.ts
+      # calls `<base>/verify` and ready.ts probes `<base>/health`. The Registry
+      # mounts that router at /api/registry (main.py include_router prefix
+      # "/api" + APIRouter prefix "/registry"), so the bare origin would make
+      # Canon call https://registry.veryl.ai/verify — a 404, which its client
+      # correctly reads as "no usable answer" and fails closed on. Every agent
+      # denied 503, no security hole, and nothing in the message pointing at a
+      # missing path segment.
       - key: CANON_REGISTRY_URL
-        value: https://registry.veryl.ai
+        value: https://registry.veryl.ai/api/registry
       - key: CANON_REGISTRY_API_KEY
-        sync: false             # without it the channel is anonymous and
-                                # start-up warns
+        sync: false             # a Registry MODULE KEY (`vmk_…`), minted by an
+                                # admin in the org's billing settings and shown
+                                # once. Without it the verification face answers
+                                # 401 — deliberately outside the contract's
+                                # refusal table, so Canon fails closed instead of
+                                # caching a verdict, which is what forces this to
+                                # be configured rather than forgotten.
 
       # ---- everything else -------------------------------------------------
       # Deliberately unset, each degrading visibly rather than silently:
