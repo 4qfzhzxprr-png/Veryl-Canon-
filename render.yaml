@@ -43,8 +43,22 @@ services:
     # leave the load balancer rather than be restarted into the same fault.
     healthCheckPath: /ready
 
-    domains:
-      - canon.veryl.ai
+    # NO `domains:` HERE, AND THAT IS THE POINT.
+    #
+    # This blueprint deploys ONE Canon with ONE disk — see the header. That is
+    # correct for a single deployment and wrong for a product: two organisations
+    # signing in here would land in the SAME record, which is the opposite of
+    # what the suite sells. So `canon.veryl.ai` is no longer this service's
+    # hostname. It belongs to the edge proxy in the agent-studio repository,
+    # which serves a front door there and routes `<org>.canon.veryl.ai` to each
+    # organisation's own instance (docs/SUITE-IDENTITY.md §17).
+    #
+    # Adding a domain back here would take the product's own name away from that
+    # front door and give it to whichever record happens to live on this disk.
+    #
+    # What this blueprint is still FOR: standing up a single self-contained
+    # Canon — one team running it for themselves, or a staging copy. Give it a
+    # hostname of its own in the dashboard if you want one; just not this one.
 
     # THE RECORD. Everything Canon knows — pages, every version, the
     # append-only audit log — is one SQLite file on this disk. Without it the
