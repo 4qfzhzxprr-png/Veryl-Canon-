@@ -7,7 +7,18 @@
 #   docker build -t veryl-canon:local --target canon .
 #   docker run --rm -p 3000:3000 -v canon-data:/data veryl-canon:local
 #
-# Four properties this file is written for, in order of how much they matter:
+# Five properties this file is written for, in order of how much they matter:
+#
+#   THE DEPLOYABLE STAGE IS LAST, AND THAT ORDERING IS LOAD-BEARING. A build
+#   that names no target builds the FINAL stage, and several build platforms
+#   cannot name one at all — Render's blueprint has no field for it. While the
+#   stubs sat last, the image such a platform produced was `stubs`: an
+#   identity provider that issues a token for anybody, in front of an
+#   unauthenticated administrative face. The safe image has to be the one you
+#   get by default, because the dangerous one cannot be the one you get by
+#   accident. Do not move `canon` back above them. (Under BuildKit the stub
+#   stages are skipped entirely for a target-less build, since nothing the
+#   final stage needs comes from them.)
 #
 #   NON-ROOT. The runtime stage runs as the `node` user. A container process
 #   that is root is root on the host kernel; Canon reads operator-supplied paths
@@ -51,7 +62,52 @@ COPY server/scripts ./scripts
 RUN npm run build
 
 # ---------------------------------------------------------------------------
-# Stage 2: the server image. This is what a deployment runs.
+# Stage 2: the stubs. FOR DEMOS AND TESTS ONLY — NEVER FOR A DEPLOYMENT.
+# ---------------------------------------------------------------------------
+# A separate target so nothing here can end up in the deployable image. Every
+# one of these is a test double that authenticates nobody:
+#
+#   idp-stub       issues a valid ID token for anyone it is told about, and can
+#                  be asked to lie on purpose (`POST /admin/quirk`)
+#   registry-stub  in-memory agent state, unauthenticated administrative face
+#   source-stub    invents benefits figures
+#   studio-stub    a sample Studio app
+#
+# SECURITY.md §5, assumption 1: "an identity provider that will issue a token
+# for anybody is a Canon anybody can enter."
+#
+# These sit in the MIDDLE of the file rather than at the end on purpose — see
+# the header. Last place belongs to the image a deployment runs.
+FROM node:22-alpine AS stubbuild
+WORKDIR /build
+# Each stub's tsconfig compiles a slice of ../server/src (Canon's own registry
+# client, its HTTP connector, its Knowledge API types), so the server's dev
+# dependencies have to be resolvable from /build/server or TypeScript cannot
+# find @types/node for those files.
+COPY server/package.json server/package-lock.json ./server/
+RUN cd server && npm ci --no-audit --no-fund
+COPY server/src ./server/src
+COPY registry-stub ./registry-stub
+COPY source-stub ./source-stub
+COPY idp-stub ./idp-stub
+COPY studio-stub ./studio-stub
+RUN for pkg in registry-stub source-stub idp-stub studio-stub; do \
+      cd /build/$pkg && npm ci --no-audit --no-fund && npm run build || exit 1; \
+    done
+
+FROM node:22-alpine AS stubs
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=stubbuild /build/registry-stub/dist ./registry-stub/dist
+COPY --from=stubbuild /build/source-stub/dist ./source-stub/dist
+COPY --from=stubbuild /build/idp-stub/dist ./idp-stub/dist
+COPY --from=stubbuild /build/studio-stub/dist ./studio-stub/dist
+USER node
+CMD ["node", "registry-stub/dist/registry-stub/src/index.js"]
+
+# ---------------------------------------------------------------------------
+# Stage 3, and DELIBERATELY THE LAST: the server image. This is what a
+# deployment runs, and what a build with no `--target` produces.
 # ---------------------------------------------------------------------------
 FROM node:22-alpine AS canon
 
@@ -91,44 +147,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Exec form: node is PID 1 and gets SIGTERM directly.
 CMD ["node", "dist/server/src/index.js"]
-
-# ---------------------------------------------------------------------------
-# Stage 3: the stubs. FOR DEMOS AND TESTS ONLY — NEVER FOR A DEPLOYMENT.
-# ---------------------------------------------------------------------------
-# A separate target so nothing here can end up in the image above. Every one of
-# these is a test double that authenticates nobody:
-#
-#   idp-stub       issues a valid ID token for anyone it is told about, and can
-#                  be asked to lie on purpose (`POST /admin/quirk`)
-#   registry-stub  in-memory agent state, unauthenticated administrative face
-#   source-stub    invents benefits figures
-#   studio-stub    a sample Studio app
-#
-# SECURITY.md §5, assumption 1: "an identity provider that will issue a token
-# for anybody is a Canon anybody can enter."
-FROM node:22-alpine AS stubbuild
-WORKDIR /build
-# Each stub's tsconfig compiles a slice of ../server/src (Canon's own registry
-# client, its HTTP connector, its Knowledge API types), so the server's dev
-# dependencies have to be resolvable from /build/server or TypeScript cannot
-# find @types/node for those files.
-COPY server/package.json server/package-lock.json ./server/
-RUN cd server && npm ci --no-audit --no-fund
-COPY server/src ./server/src
-COPY registry-stub ./registry-stub
-COPY source-stub ./source-stub
-COPY idp-stub ./idp-stub
-COPY studio-stub ./studio-stub
-RUN for pkg in registry-stub source-stub idp-stub studio-stub; do \
-      cd /build/$pkg && npm ci --no-audit --no-fund && npm run build || exit 1; \
-    done
-
-FROM node:22-alpine AS stubs
-ENV NODE_ENV=production
-WORKDIR /app
-COPY --from=stubbuild /build/registry-stub/dist ./registry-stub/dist
-COPY --from=stubbuild /build/source-stub/dist ./source-stub/dist
-COPY --from=stubbuild /build/idp-stub/dist ./idp-stub/dist
-COPY --from=stubbuild /build/studio-stub/dist ./studio-stub/dist
-USER node
-CMD ["node", "registry-stub/dist/registry-stub/src/index.js"]
