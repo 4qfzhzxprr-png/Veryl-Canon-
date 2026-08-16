@@ -227,7 +227,12 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   padding: 0 var(--sp-md);
   height: 56px;
   /* Translucent over a blur, like the Registry's, so content scrolling under
-     the bar stays legible as motion rather than disappearing behind a slab. */
+     the bar stays legible as motion rather than disappearing behind a slab.
+     The opaque value FIRST and deliberately: a browser without color-mix drops
+     the declaration entirely, and a sticky bar with no background at all is
+     content scrolling through the header. Solid is worse-looking and readable;
+     transparent is neither. */
+  background: var(--surface);
   background: color-mix(in srgb, var(--surface) 95%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
@@ -2781,6 +2786,9 @@ label.check input { width: auto; display: inline; margin: 0; }
     bottom: 0;
     z-index: 40;
     border-top: 1px solid var(--border);
+    /* Opaque first — see .topbar. A tab bar with no background is worse here
+       than in the header: it sits over a scrolling list permanently. */
+    background: var(--surface);
     background: color-mix(in srgb, var(--surface) 95%, transparent);
     backdrop-filter: blur(8px);
     /* The home indicator. Without this the last row of tabs sits under it and

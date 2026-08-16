@@ -118,3 +118,23 @@ test('brand: the sticky header pads for the notch', () => {
   const topbar = /\.topbar \{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(topbar, /env\(safe-area-inset-top\)/);
 });
+
+test('brand: every translucent surface has an opaque fallback before it', () => {
+  // A browser without color-mix drops the whole declaration, so a sticky bar
+  // declared ONLY in color-mix has no background at all — content scrolls
+  // through the header and through the tab bar. Solid is worse-looking and
+  // readable; transparent is neither.
+  //
+  // Checked structurally rather than by eye: this is invisible on the machine
+  // of whoever writes it, and only shows up on somebody else's older browser.
+  const declarations = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const rule of declarations.split('}')) {
+    if (!rule.includes('color-mix')) continue;
+    const backgrounds = [...rule.matchAll(/background:\s*([^;]+);/g)].map((m) => m[1]!.trim());
+    const mixIndex = backgrounds.findIndex((v) => v.includes('color-mix'));
+    assert.ok(
+      mixIndex > 0 && !backgrounds[mixIndex - 1]!.includes('color-mix'),
+      `a color-mix background with no opaque fallback before it:\n${rule.trim().slice(0, 200)}`,
+    );
+  }
+});
