@@ -33,8 +33,16 @@ export interface Ability {
   why: string | null;
 }
 
-/** The role names the server uses. Not the same words as the docs' prose. */
-export type Role = "admin" | "steward" | "author" | "reader";
+/**
+ * The role names the server uses — `model.ts`, `export type Role`.
+ *
+ * These are the WORDS THE SERVER USES, not the words the product's prose uses.
+ * An earlier draft of this file guessed `admin | steward | author | reader`,
+ * which shares exactly one member with the real list; a membership form built
+ * on the guess would have offered three roles the server rejects outright and
+ * omitted three it accepts.
+ */
+export type Role = "view" | "comment" | "edit" | "approve" | "admin";
 
 export interface CollectionAbilities {
   collectionId: string;
@@ -152,6 +160,96 @@ export interface PageDetail extends Omit<PageNode, "children"> {
 }
 
 // --------------------------------------------------------------------------
+// The queue — one person's own work
+// --------------------------------------------------------------------------
+
+/**
+ * A page as the queue's strands report one. Not `PageNode`: the query surface
+ * the queue composes returns `pageId` rather than `id`, and carries four
+ * derived flags the tree does not.
+ */
+export interface QueuedPage {
+  pageId: string;
+  collectionId: string;
+  type: DocType;
+  title: string;
+  status: PageStatus;
+  ownerId: string | null;
+  reviewDate: string | null;
+  updatedAt: string;
+  /** The review date has passed. */
+  pastReview: boolean;
+  /** Effective before it was written down. */
+  backdated: boolean;
+  /** Backdated with no stated reason — the one an auditor asks about. */
+  backdatedWithoutBasis: boolean;
+  /** Canonical, but its effective date is in the future. */
+  notYetInForce: boolean;
+}
+
+export interface Notice {
+  id: string;
+  kind: string;
+  subject: string;
+  body: string;
+  /** Always `/pages/<id>`, sometimes with a comment fragment. */
+  link: string | null;
+  createdAt: string;
+}
+
+export interface QueueCounts {
+  awaitingMyApproval: number;
+  sentBackToMe: number;
+  myPagesPastReview: number;
+  myDrafts: number;
+  conflictsOnMyPages: number;
+  divergencesOnMyPages: number;
+  accessRequests: number;
+  notices: number;
+  /**
+   * Distinct pieces of work. Deliberately EXCLUDES notices — the outbox has no
+   * read state, so a badge counting them would never go down, and a badge that
+   * never goes down is ignored within a week.
+   */
+  total: number;
+}
+
+export interface WorkQueue {
+  actorId: string;
+  /** The day "past review" was judged against. */
+  at: string;
+  awaitingMyApproval: QueuedPage[];
+  sentBackToMe: QueuedPage[];
+  myPagesPastReview: QueuedPage[];
+  myDrafts: QueuedPage[];
+  /** Submitted by this actor and now waiting on somebody else. Uncounted: the
+   *  badge means "waiting on you", and these are the opposite of that. */
+  awaitingSomebodyElse: QueuedPage[];
+  notices: Notice[];
+  counts: QueueCounts;
+  /** A strand hit its limit: these lists are a floor, not a total. */
+  truncated: boolean;
+}
+
+// --------------------------------------------------------------------------
+// Search
+// --------------------------------------------------------------------------
+
+export interface SearchHit {
+  pageId: string;
+  title: string;
+  collectionId: string;
+  type: DocType;
+  status: PageStatus;
+  pageStanding: string | null;
+  reviewDate: string | null;
+  ownerId: string | null;
+  /** Contains `<mark>` around the matched words — the server's own emphasis. */
+  snippet: string;
+  supersededBy: string | null;
+}
+
+// --------------------------------------------------------------------------
 // The audit log
 // --------------------------------------------------------------------------
 
@@ -238,6 +336,28 @@ export interface ImportCounts {
   failed: number;
 }
 
+export type ImportOutcome = "imported" | "updated" | "skipped" | "failed";
+
+export interface ImportFileResult {
+  /** Path relative to the export root, POSIX separators. */
+  file: string;
+  outcome: ImportOutcome;
+  pageId: string | null;
+  title: string | null;
+  parentFile: string | null;
+  /** True when the body was written as a version. */
+  published: boolean;
+  /** Why it was skipped or failed, in the importer's own words. */
+  reason: string | null;
+}
+
+/** What the run put on every page it landed, decided once for a whole corpus. */
+export interface ResolvedImportFields {
+  ownerId: string | null;
+  approverId: string | null;
+  reviewDate: string | null;
+}
+
 export interface ImportRun {
   runId: string;
   source: string;
@@ -249,4 +369,10 @@ export interface ImportRun {
   startedAt: string;
   finishedAt: string;
   counts: ImportCounts;
+}
+
+/** `GET /imports/:id` — the listing row, plus every file it read. */
+export interface ImportRunDetail extends ImportRun {
+  fields: ResolvedImportFields;
+  files: ImportFileResult[];
 }

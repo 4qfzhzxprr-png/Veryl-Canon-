@@ -4,7 +4,6 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/Button";
 import { SelectField, TextField } from "@/components/Field";
 import { ErrorState } from "@/components/ErrorState";
-import { LiveRegion } from "@/components/Modal";
 import { Skeleton } from "@/components/Skeleton";
 import { api, setSession } from "@/lib/api";
 import { keys } from "@/lib/queryKeys";
@@ -121,7 +120,6 @@ function DevPicker({ sso }: { sso: boolean }) {
 
   return (
     <Centered>
-      <LiveRegion message={create.message} />
       <h1 className="font-sans text-title font-bold">Who are you?</h1>
       <p className="mt-2 text-ui text-muted">
         Development sign-in. Identity travels as the <code>X-Actor-Id</code> header and{" "}

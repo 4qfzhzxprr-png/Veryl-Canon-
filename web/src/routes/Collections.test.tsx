@@ -24,7 +24,7 @@ function collection(over: Partial<Collection> = {}): Collection {
     archivedPages: 0,
     abilities: {
       collectionId: "c1",
-      role: "author",
+      role: "edit",
       createPage: { can: true, why: null },
       addMember: { can: false, why: "Requires admin access to this collection." },
       removeMember: { can: false, why: null },

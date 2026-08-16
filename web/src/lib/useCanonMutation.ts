@@ -5,6 +5,7 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
+import { announce } from "./announce";
 import { humanMessage } from "./errors";
 
 /**
@@ -46,7 +47,11 @@ export interface CanonMutation<TArgs, TResult> {
   busy: boolean;
   /** The refusal, already turned into a sentence. Null when there is none. */
   error: string | null;
-  /** What to say. Render inside a live region — see `LiveRegion`. */
+  /**
+   * What was said. Already published to the application's own live region, so
+   * a caller does NOT need to render it to have it announced — this is here
+   * for a component that also wants to show it on screen.
+   */
   message: string | null;
   reset: () => void;
   raw: UseMutationResult<TResult, unknown, TArgs>;
@@ -68,9 +73,15 @@ export function useCanonMutation<TArgs, TResult>(
     // repeating it is how one approval becomes two.
     retry: false,
     onSuccess: (result, args) => {
-      const { invalidates, announce, onDone } = latest.current;
+      const { invalidates, announce: announceWith, onDone } = latest.current;
       for (const key of invalidates ?? []) void client.invalidateQueries({ queryKey: key });
-      setMessage(announce ? announce(result, args) : null);
+      const said = announceWith ? announceWith(result, args) : null;
+      setMessage(said);
+      // Published to the application-wide region as well as returned. The
+      // returned value is for a component that wants to SHOW the outcome; the
+      // published one is what actually gets read out, and it survives this
+      // component being unmounted by the refetch it just triggered.
+      if (said) announce(said);
       onDone?.(result, args);
     },
     onError: () => setMessage(null),

@@ -85,9 +85,11 @@ export const TYPE_LABELS: Record<string, string> = {
   note: "Note",
 };
 
+/** What each collection role lets somebody do, in the product's own words. */
 export const ROLE_LABELS: Record<string, string> = {
-  admin: "Administrator",
-  steward: "Steward",
-  author: "Author",
-  reader: "Reader",
+  view: "Can read",
+  comment: "Can comment",
+  edit: "Can write",
+  approve: "Can approve",
+  admin: "Administers this collection",
 };

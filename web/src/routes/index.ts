@@ -55,6 +55,12 @@ export const ROUTES: RouteDef[] = [
     import("./Sources").then((m) => ({ default: m.Sources }))),
   route("/imports", "Imports", () =>
     import("./Imports").then((m) => ({ default: m.Imports }))),
+  route("/imports/:id", "Import run", () =>
+    import("./ImportRun").then((m) => ({ default: m.ImportRun }))),
+  route("/queue", "My queue", () =>
+    import("./Queue").then((m) => ({ default: m.Queue }))),
+  route("/search", "Search", () =>
+    import("./Search").then((m) => ({ default: m.Search }))),
 ];
 
 /**

@@ -111,20 +111,3 @@ export function Modal({
     </dialog>
   );
 }
-
-/**
- * Where a mutation's outcome is said out loud.
- *
- * `aria-live="polite"` rather than an alert: the reader is told once the thing
- * they did has settled, without their current sentence being interrupted. It is
- * always in the DOM — a live region added at the same moment as its text is not
- * announced by most screen readers, which is the usual reason these silently do
- * nothing.
- */
-export function LiveRegion({ message }: { message: string | null }) {
-  return (
-    <p role="status" aria-live="polite" className="sr-only">
-      {message ?? ""}
-    </p>
-  );
-}

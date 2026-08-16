@@ -14,10 +14,15 @@ import type {
   Gap,
   GapsView,
   ImportRun,
+  ImportRunDetail,
+  Notice,
   PageDetail,
   PageNode,
+  QueuedPage,
+  SearchHit,
   Session,
   Source,
+  WorkQueue,
 } from "@/types/api";
 
 /**
@@ -152,7 +157,9 @@ function ability(v: unknown): Ability {
 }
 
 function role(v: unknown): CollectionAbilities["role"] {
-  return v === "admin" || v === "steward" || v === "author" || v === "reader" ? v : null;
+  return v === "view" || v === "comment" || v === "edit" || v === "approve" || v === "admin"
+    ? v
+    : null;
 }
 
 function collectionAbilities(v: unknown, id: string): CollectionAbilities {
@@ -266,6 +273,85 @@ const parsePage = (raw: unknown): PageDetail => {
     withheldLinks: arr(o["withheldLinks"] ?? [], "page.withheldLinks"),
   };
 };
+
+function parseQueuedPage(row: unknown): QueuedPage {
+  const o = obj(row, "queue.page");
+  return {
+    // `pageId`, not `id` — the queue composes the query surface, which names it
+    // differently from the tree. Getting this wrong makes every link in the
+    // queue point at `/pages/undefined`.
+    pageId: str(o["pageId"], "queue.page.pageId"),
+    collectionId: text(o["collectionId"]) ?? "",
+    type: (text(o["type"]) ?? "note") as QueuedPage["type"],
+    title: str(o["title"], "queue.page.title"),
+    status: (text(o["status"]) ?? "draft") as QueuedPage["status"],
+    ownerId: text(o["ownerId"]),
+    reviewDate: text(o["reviewDate"]),
+    updatedAt: text(o["updatedAt"]) ?? "",
+    pastReview: o["pastReview"] === true,
+    backdated: o["backdated"] === true,
+    backdatedWithoutBasis: o["backdatedWithoutBasis"] === true,
+    notYetInForce: o["notYetInForce"] === true,
+  };
+}
+
+const parseQueue = (raw: unknown): WorkQueue => {
+  const o = obj(raw, "queue");
+  const strand = (key: string): QueuedPage[] =>
+    arr(o[key] ?? [], `queue.${key}`).map(parseQueuedPage);
+  const c = typeof o["counts"] === "object" && o["counts"] !== null
+    ? (o["counts"] as Record<string, unknown>)
+    : {};
+  return {
+    actorId: text(o["actorId"]) ?? "",
+    at: text(o["at"]) ?? "",
+    awaitingMyApproval: strand("awaitingMyApproval"),
+    sentBackToMe: strand("sentBackToMe"),
+    myPagesPastReview: strand("myPagesPastReview"),
+    myDrafts: strand("myDrafts"),
+    awaitingSomebodyElse: strand("awaitingSomebodyElse"),
+    notices: arr(o["notices"] ?? [], "queue.notices").map((row): Notice => {
+      const n = obj(row, "queue.notice");
+      return {
+        id: str(n["id"], "notice.id"),
+        kind: text(n["kind"]) ?? "",
+        subject: text(n["subject"]) ?? "",
+        body: text(n["body"]) ?? "",
+        link: text(n["link"]),
+        createdAt: text(n["createdAt"]) ?? "",
+      };
+    }),
+    counts: {
+      awaitingMyApproval: num(c["awaitingMyApproval"]),
+      sentBackToMe: num(c["sentBackToMe"]),
+      myPagesPastReview: num(c["myPagesPastReview"]),
+      myDrafts: num(c["myDrafts"]),
+      conflictsOnMyPages: num(c["conflictsOnMyPages"]),
+      divergencesOnMyPages: num(c["divergencesOnMyPages"]),
+      accessRequests: num(c["accessRequests"]),
+      notices: num(c["notices"]),
+      total: num(c["total"]),
+    },
+    truncated: o["truncated"] === true,
+  };
+};
+
+const parseSearch = (raw: unknown): SearchHit[] =>
+  arr(raw, "search").map((row) => {
+    const o = obj(row, "search.hit");
+    return {
+      pageId: str(o["pageId"], "hit.pageId"),
+      title: str(o["title"], "hit.title"),
+      collectionId: text(o["collectionId"]) ?? "",
+      type: (text(o["type"]) ?? "note") as SearchHit["type"],
+      status: (text(o["status"]) ?? "draft") as SearchHit["status"],
+      pageStanding: text(o["pageStanding"]),
+      reviewDate: text(o["reviewDate"]),
+      ownerId: text(o["ownerId"]),
+      snippet: text(o["snippet"]) ?? "",
+      supersededBy: text(o["supersededBy"]),
+    };
+  });
 
 const parseAudit = (raw: unknown): AuditEvent[] =>
   arr(raw, "audit").map((row) => {
@@ -381,6 +467,41 @@ const parseImports = (raw: unknown): ImportRun[] =>
     };
   });
 
+const parseImportRun = (raw: unknown): ImportRunDetail => {
+  const o = obj(raw, "import.run");
+  const [row] = parseImports([raw]);
+  const f = typeof o["fields"] === "object" && o["fields"] !== null
+    ? (o["fields"] as Record<string, unknown>)
+    : {};
+  return {
+    ...row!,
+    fields: {
+      ownerId: text(f["ownerId"]),
+      approverId: text(f["approverId"]),
+      reviewDate: text(f["reviewDate"]),
+    },
+    files: arr(o["files"] ?? [], "run.files").map((entry) => {
+      const e = obj(entry, "run.file");
+      const outcome = e["outcome"];
+      return {
+        file: str(e["file"], "file.file"),
+        outcome:
+          outcome === "imported" || outcome === "updated" || outcome === "skipped"
+            ? outcome
+            // Anything unrecognised is treated as a FAILURE, never as a
+            // success: a run that quietly reported an unknown outcome as
+            // "imported" would tell somebody a page landed when it did not.
+            : "failed",
+        pageId: text(e["pageId"]),
+        title: text(e["title"]),
+        parentFile: text(e["parentFile"]),
+        published: e["published"] === true,
+        reason: text(e["reason"]),
+      };
+    }),
+  };
+};
+
 /** A query string built from only the entries that have a value. */
 function qs(params: Record<string, string | number | undefined | null>): string {
   const search = new URLSearchParams();
@@ -444,7 +565,21 @@ export const api = {
     return request("GET", `/audit/summary${qs({ ...rest })}`, parseAuditSummary);
   },
 
+  queue: () => request("GET", "/queue", parseQueue),
+  approve: (pageId: string, note?: string) =>
+    request("POST", `/pages/${encodeURIComponent(pageId)}/approve`, () => null,
+      note ? { note } : {}),
+  sendBack: (pageId: string, note: string) =>
+    request("POST", `/pages/${encodeURIComponent(pageId)}/send-back`, () => null, { note }),
+  withdraw: (pageId: string) =>
+    request("POST", `/pages/${encodeURIComponent(pageId)}/withdraw`, () => null, {}),
+
+  search: (q: string, filters: { collectionId?: string; status?: string } = {}) =>
+    request("GET", `/search${qs({ q, ...filters })}`, parseSearch),
+
   gaps: (status?: string) => request("GET", `/gaps${qs({ status })}`, parseGaps),
   sources: () => request("GET", "/sources", parseSources),
   imports: () => request("GET", "/imports", parseImports),
+  importRun: (id: string) =>
+    request("GET", `/imports/${encodeURIComponent(id)}`, parseImportRun),
 };

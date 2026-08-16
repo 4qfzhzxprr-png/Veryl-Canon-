@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { Announcer } from "./Announcer";
 import { BrandMark } from "./BrandMark";
 import { TabBar } from "./TabBar";
 import type { Actor } from "@/types/api";
@@ -41,6 +42,11 @@ export function AppShell({ actor, children }: { actor: Actor | null; children: R
       </main>
 
       <TabBar />
+
+      {/* Outside every route, and always present: an outcome has to outlive
+          whatever caused it, and a region added at the same moment as its text
+          is not announced at all. */}
+      <Announcer />
     </div>
   );
 }

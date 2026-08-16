@@ -5,7 +5,7 @@ import { Async } from "@/components/Async";
 import { Button } from "@/components/Button";
 import { CheckField, TextArea, TextField } from "@/components/Field";
 import { EmptyState } from "@/components/EmptyState";
-import { LiveRegion, Modal } from "@/components/Modal";
+import { Modal } from "@/components/Modal";
 import { Skeleton } from "@/components/Skeleton";
 import { api } from "@/lib/api";
 import { keys } from "@/lib/queryKeys";
@@ -142,7 +142,6 @@ function NewCollectionDialog({ open, onClose }: { open: boolean; onClose: () => 
 
   return (
     <>
-      <LiveRegion message={create.message} />
       <Modal
         open={open}
         title="New collection"
