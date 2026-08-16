@@ -21,6 +21,11 @@ const CONTENT_TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  // The brand typeface, served from this origin. `default-src 'self'` already
+  // covers font-src, so no policy change is needed — but the extension has to
+  // be listed here or the file is simply not served and the page silently
+  // falls back to the system stack, which is how a suite stops looking like one.
+  '.woff2': 'font/woff2',
 };
 
 // The web UI's Content-Security-Policy. Canon's front end is deliberately

@@ -20,7 +20,18 @@
        for. See wireSkipLink in app.js. -->
   <a class="skip-link" href="#main" id="skip-to-main">Skip to the page</a>
   <header class="topbar">
-    <a class="brand" href="#/">Veryl Canon<span class="stage">alpha</span></a>
+    <a class="brand" href="#/">
+      <!-- The suite mark. Colours are FIXED (#2D6BFF tile, white spine and
+           check) and it is never recoloured or theme-tinted — BRAND.md
+           "Misuse". It is the single most ownable expression of the brand, and
+           the reason a customer arriving from the Registry recognises this as
+           the same company before reading a word. -->
+      <svg class="brand-mark" width="24" height="24" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <rect width="64" height="64" rx="15" fill="#2D6BFF"/>
+        <rect x="16" y="15" width="7" height="34" rx="3.5" fill="#FFFFFF"/>
+        <path d="M30 34 L37.5 42 L50 21" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Veryl Canon</span><span class="stage">alpha</span></a>
     <!-- The nav is seven entries; wrapped onto a phone it was three of the four
          rows that made this sticky bar 37.5% of the viewport. It collapses
          behind this, and the queue count comes with it so the reason to open it
