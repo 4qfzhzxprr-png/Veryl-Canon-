@@ -50,6 +50,22 @@ the variable to change. See "Start-up validation" at the end.
 | `CANON_REQUEST_LOG` | optional | `on` | `off` drops the per-request line entirely, for a deployment whose reverse proxy already writes one. The level above is the finer dial. | The line carries the method, the **path only**, the status, the duration, the actor id and a `500`'s correlation id. Never the query string, never a header, never a body — OPERATIONS.md, "Read the logs", says why in full. |
 | `CANON_RECORD_WATCH_INTERVAL_MS` | optional | `10000` | How often Canon asks itself whether it can still read its own record, and logs an error if it cannot. `0` turns the watch off and leaves the answer to whoever probes `GET /ready`. | With it off, a record that becomes unreadable is discovered by the next readiness probe and by nothing else. A process with **no** readiness probe pointed at it then fails in silence, which is exactly USER-TESTING.md T3.3. |
 | `CANON_SKIP_DNS_CHECK` | optional | unset | `true` skips the start-up DNS check on `CANON_SOURCE_ALLOWED_HOSTS`. For an air-gapped or split-horizon network where the name genuinely does not resolve from here. | Skipping it means an unreachable source is discovered at read time instead. |
+| `CANON_UI` | optional | `classic` | Which web client Canon serves at `/`. `classic` is the original one; `react` is its replacement, which is being built route by route (`web/MIGRATION.md`). Both ship in every image, so this is a run-time decision and switching it back is a redeploy, not a rebuild. | Asking for `react` in an image built without it serves `classic` instead and **logs an error naming this variable** — a Canon serving the old UI is a working Canon, so this degrades rather than refusing to start. Any value that is neither word warns at start-up and serves `classic`. |
+
+### While the two clients coexist
+
+`CANON_UI=react` does not mean every screen is the new one. The React client
+has taken over the routes listed in `web/src/routes/index.ts` and hands every
+other one back to the original client at `/classic.html`, which serves it
+exactly as before. Crossing between them is a page load; nobody is signed out,
+because both are the same origin and share the session cookie.
+
+`/classic.html` is served whatever `CANON_UI` says, on purpose — it is the way
+back, and a way back that depends on the setting is missing when it is needed.
+
+**To roll back:** unset `CANON_UI` (or set it to `classic`) and redeploy. There
+is no data involved and nothing to undo; the record never knew which client was
+in front of it.
 
 ## Identity: people
 
@@ -351,4 +367,11 @@ Warnings — logged at start-up, never fatal — cover the merely unwise: a shor
 session secret, a maintenance actor named at all (it puts somebody's name on the
 clock's work), the freshness timer turned off, dev auth beside a real Registry,
 private addresses reachable in a deployment with SSO, an `http://` base URL with
-SSO live, a relay with no base URL for its deep links, and no door open at all.
+SSO live, a relay with no base URL for its deep links, a `CANON_UI` naming a
+client Canon does not have, and no door open at all.
+
+`CANON_UI=react` on an image built without the React client is the one warning
+that is logged from `src/index.ts` rather than `config.ts`, because answering it
+needs to look at the disk. It is an error-level line naming the variable and the
+directory it looked in, and Canon then serves the original client — see
+"The record and the process" above.

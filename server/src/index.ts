@@ -15,7 +15,7 @@ import { notifierFor } from './notify.js';
 import { attachReadiness, readinessChecksFromEnv, recordChecks, startRecordWatch } from './ready.js';
 import { scheduledBackupOptionsFromEnv, startScheduledBackups } from './scheduledbackup.js';
 import { installGracefulShutdown } from './shutdown.js';
-import { attachStatic } from './static.js';
+import { attachStatic, resolveUi } from './static.js';
 import { CanonStore } from './store.js';
 import { embeddingProviderFromEnv } from './embeddingproviders.js';
 
@@ -91,10 +91,14 @@ const api = createApi(store, agentAuth, undefined, personAuth, log);
 // see securityHeaders in static.ts for why sending it over plain HTTP is
 // pointless and sending it over a real TLS edge is the whole point.
 const secureEdge = (process.env.CANON_BASE_URL ?? '').trim().startsWith('https://');
+// Which client `/` serves. The decision is made here rather than inside
+// static.ts because this is where the logger is, and a flag that quietly did
+// nothing is the failure mode worth spending a log line on.
+const { ui, reason: uiReason } = resolveUi(process.env.CANON_UI);
+if (uiReason) log.error(uiReason, { setting: 'CANON_UI' });
 const served = attachStatic(
   attachReadiness(api, readinessChecksFromEnv(db, process.env, { path: dbPath })),
-  undefined,
-  secureEdge,
+  { ui, hsts: secureEdge },
 );
 
 // Metrics (metrics.ts), off unless CANON_METRICS is on. It measures every

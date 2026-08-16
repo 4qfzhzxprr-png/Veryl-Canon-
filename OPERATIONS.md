@@ -450,6 +450,35 @@ purpose: a down-migration that drops a column is a data-loss path that exists
 only to be run in a hurry at the worst possible moment. To go back: stop, restore
 the artefact you took in step 1, start the old binary.
 
+### Switching the web client
+
+Canon is replacing its web client route by route (`web/MIGRATION.md`). Both are
+in every image, and `CANON_UI` decides which one `/` answers with.
+
+```sh
+# turn it on for this deployment
+CANON_UI=react docker compose up -d canon
+curl -fsS -o /dev/null -w '%{http_code}\n' localhost:3000/            # 200
+curl -fsS -o /dev/null -w '%{http_code}\n' localhost:3000/classic.html # 200, always
+
+# and back
+CANON_UI=classic docker compose up -d canon
+```
+
+Unlike an upgrade, **this one really does roll back by reversing it.** No
+migration runs, nothing is written, and the record never knew which client was
+in front of it — so the rollback is `CANON_UI=classic` and a redeploy, with no
+restore and no backup to take first.
+
+Two things to check rather than assume:
+
+- **The start-up log.** `CANON_UI=react` on an image built without the client
+  logs an error naming the variable and serves the original one. The flag
+  appearing to do nothing is the failure this line exists to explain.
+- **`/classic.html` answers 200.** Routes that have not moved yet are handed to
+  it, so a deployment where it 404s has a React client with holes in it rather
+  than a working one.
+
 ### Adding a table (for the people writing Canon, not running it)
 
 The rule from now on:

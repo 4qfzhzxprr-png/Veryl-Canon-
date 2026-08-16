@@ -9,9 +9,21 @@ import { fileURLToPath } from 'node:url';
 // API's own 404. One call from index.ts is the entire integration.
 
 // Compiled file lives at dist/server/src/static.js (the build is rooted a
-// level up so tests can reach the registry-stub); public/ ships at
-// server/public, three levels up from there.
-const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'public');
+// level up so tests can reach the registry-stub); the served directories ship
+// beside each other three levels up from there.
+//
+//   public/      the original client — index.html, app.js, styles.css
+//   public-app/  the React client's build output (web/, see web/MIGRATION.md)
+//
+// Both ship in every image. Which one `/` serves is CANON_UI's decision, and
+// the other is always reachable, because the two clients hand routes to each
+// other while the migration is in progress.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const PUBLIC_DIR = join(ROOT, 'public');
+const APP_DIR = join(ROOT, 'public-app');
+
+/** Which client `/` serves. See CONFIGURATION.md, CANON_UI. */
+export type Ui = 'react' | 'classic';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -79,25 +91,62 @@ export function securityHeaders(opts: { html: boolean; hsts: boolean }): Record<
   return headers;
 }
 
-// Serve a file from public/ if the request names one (or "/", which serves
-// index.html). Returns true when the response has been handled. Only plain
-// file names directly inside public/ are ever served: no separators, no
-// dotfiles, no traversal.
-function serveStatic(req: IncomingMessage, res: ServerResponse, dir: string, hsts: boolean): boolean {
-  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-  const pathname = new URL(req.url ?? '/', 'http://canon').pathname;
-  const name = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return false;
-  const type = CONTENT_TYPES[extname(name).toLowerCase()];
-  if (!type) return false;
-  const file = join(dir, name);
+// One directory deep, and only into a directory a build actually writes.
+//
+// The rule used to be "a plain file name directly inside public/" — no
+// separator at all — which was right for a client that was three files and
+// wrong the moment one of them was a bundler. Vite emits `assets/index-<hash>.js`
+// and copies `web/public/fonts/` verbatim, so a flat-only rule serves the
+// document and then 404s every script it references: a blank page, and nothing
+// in the log saying why.
+//
+// This is the smallest widening that admits those two and nothing else. Every
+// segment still has to pass the same strict pattern, so `..`, a dotfile, a
+// backslash and an empty segment are all still refused — and they are refused
+// AFTER percent-decoding, which is where an encoded traversal would otherwise
+// slip through.
+const NESTED_DIRS = new Set(['assets', 'fonts']);
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** The path this request names, relative to a served directory, or null if it
+ *  is not a name we will ever serve.
+ *
+ *  Exported for its own tests. It is the whole of the path safety here, and it
+ *  is worth proving directly rather than only through a client that normalises
+ *  half the interesting inputs before they reach the wire. */
+export function requestedFile(pathname: string): string | null {
+  let raw: string;
+  try {
+    raw = decodeURIComponent(pathname.slice(1));
+  } catch {
+    return null; // a malformed escape is not a file name
+  }
+  const parts = raw.split('/');
+  if (parts.length > 2) return null;
+  if (parts.length === 2 && !NESTED_DIRS.has(parts[0]!)) return null;
+  if (!parts.every((segment) => SEGMENT.test(segment))) return null;
+  return parts.join('/');
+}
+
+function send(
+  req: IncomingMessage,
+  res: ServerResponse,
+  file: string,
+  type: string,
+  hsts: boolean,
+  immutable: boolean,
+): boolean {
   try {
     if (!statSync(file).isFile()) return false;
     const body = readFileSync(file);
     res.writeHead(200, {
       'content-type': type,
       'content-length': body.byteLength,
-      'cache-control': 'no-cache',
+      // A bundler puts the content's hash in the file name, so the URL changes
+      // whenever the bytes do and this can be cached forever. Everything else —
+      // the document above all — stays `no-cache`, because a cached index.html
+      // points at chunk names that the next deploy deleted.
+      'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
       // The document carries the full policy; sub-resources carry the transport
       // headers only. `nosniff` matters on every one of them.
       ...securityHeaders({ html: type.startsWith('text/html'), hsts }),
@@ -109,16 +158,107 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, dir: string, hst
   }
 }
 
+/**
+ * Serve a file if the request names one. Returns true when the response has
+ * been handled, false to fall through to the API — including for anything that
+ * fails the name rules above, which is why a rejected path gets the API's own
+ * 404 rather than a static one.
+ *
+ * There is deliberately NO single-page-app fallback here: an unmatched path
+ * does not become index.html. Canon's clients route on the fragment, which
+ * never reaches the server, so nothing needs it — and a catch-all would answer
+ * every mistyped API path with an HTML document, which is how a fetch starts
+ * reporting "unexpected token <" instead of 404.
+ */
+function serveStatic(
+  req: IncomingMessage,
+  res: ServerResponse,
+  dirs: { app: string; classic: string },
+  ui: Ui,
+  hsts: boolean,
+): boolean {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  const pathname = new URL(req.url ?? '/', 'http://canon').pathname;
+
+  // The two documents. `/` is whichever client this deployment serves, and
+  // `/classic.html` is ALWAYS the original — that is the address the React
+  // client sends a route it has not taken over to, so it cannot be allowed to
+  // depend on the flag.
+  if (pathname === '/' || pathname === '/classic.html') {
+    const dir = pathname === '/' && ui === 'react' ? dirs.app : dirs.classic;
+    return send(req, res, join(dir, 'index.html'), 'text/html; charset=utf-8', hsts, false);
+  }
+
+  const name = requestedFile(pathname);
+  if (name === null) return false;
+  const type = CONTENT_TYPES[extname(name).toLowerCase()];
+  if (!type) return false;
+
+  // Both directories are searched whichever client is active, because both
+  // clients are reachable at once: `/classic.html` needs app.js and styles.css
+  // out of public/ even on a deployment serving React from public-app/. The
+  // only name they share is index.html, which never reaches here.
+  const immutable = name.startsWith('assets/');
+  for (const dir of [dirs.app, dirs.classic]) {
+    if (send(req, res, join(dir, name), type, hsts, immutable)) return true;
+  }
+  return false;
+}
+
+export interface StaticOptions {
+  /** The original client. Defaults to the shipped `public/`. */
+  publicDir?: string;
+  /** The React client's build output. Defaults to the shipped `public-app/`. */
+  appDir?: string;
+  /** Which client `/` serves. Defaults to the original. */
+  ui?: Ui;
+  /**
+   * The deployment's HTTPS signal — index.ts derives it from CANON_BASE_URL, so
+   * the upgrade is only pinned where the edge is genuinely secure.
+   */
+  hsts?: boolean;
+}
+
 // Wrap the server's request handling: try the static files first, then fall
-// through to whatever listeners (the API) were already attached. `hsts` is the
-// deployment's HTTPS signal (index.ts derives it from CANON_BASE_URL), so the
-// upgrade is only pinned where the edge is genuinely secure.
-export function attachStatic(server: Server, publicDir: string = PUBLIC_DIR, hsts = false): Server {
+// through to whatever listeners (the API) were already attached. One call from
+// index.ts is the entire integration.
+export function attachStatic(server: Server, opts: StaticOptions = {}): Server {
+  const dirs = { app: opts.appDir ?? APP_DIR, classic: opts.publicDir ?? PUBLIC_DIR };
+  const ui = opts.ui ?? 'classic';
+  const hsts = opts.hsts ?? false;
   const inner = server.listeners('request') as Array<(req: IncomingMessage, res: ServerResponse) => void>;
   server.removeAllListeners('request');
   server.on('request', (req: IncomingMessage, res: ServerResponse) => {
-    if (serveStatic(req, res, publicDir, hsts)) return;
+    if (serveStatic(req, res, dirs, ui, hsts)) return;
     for (const listener of inner) listener.call(server, req, res);
   });
   return server;
+}
+
+/**
+ * Which client this deployment should serve, given the operator's setting and
+ * whether the React client was actually built into the image.
+ *
+ * Asking for `react` without the build present is a broken deploy, not a
+ * security fault, so it degrades to the client that IS there rather than
+ * refusing to start — a Canon serving the old UI is a working Canon, and a
+ * Canon that will not boot is not. It has to be loud, though: `reason` is
+ * returned for the caller to log, because the failure mode this replaces is
+ * "the flag is on and nobody can tell it did nothing".
+ */
+export function resolveUi(
+  requested: string | undefined,
+  appDir: string = APP_DIR,
+): { ui: Ui; reason?: string } {
+  const want = (requested ?? '').trim().toLowerCase();
+  if (want !== 'react') return { ui: 'classic' };
+  try {
+    if (statSync(join(appDir, 'index.html')).isFile()) return { ui: 'react' };
+  } catch {
+    /* not built */
+  }
+  return {
+    ui: 'classic',
+    reason: `CANON_UI=react but no built client at ${appDir}; serving the original one`,
+  };
 }

@@ -62,6 +62,29 @@ COPY server/scripts ./scripts
 RUN npm run build
 
 # ---------------------------------------------------------------------------
+# Stage 1b: build the React client (web/, see web/MIGRATION.md).
+# ---------------------------------------------------------------------------
+# Its own stage so its node_modules — which are large, and every one of them a
+# build-time dependency — cannot reach the runtime image, and so editing the
+# server does not re-run npm install here or the other way round.
+#
+# It is built into EVERY image, whether or not the deployment serves it: which
+# client `/` answers with is CANON_UI's decision at run time, and a flag that
+# needs a different image is not a flag, it is a second build to get wrong. The
+# cost is a few hundred kilobytes of static files.
+FROM node:22-alpine AS webbuild
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/tsconfig.json web/vite.config.ts web/tailwind.config.ts web/postcss.config.js web/index.html ./
+COPY web/public ./public
+COPY web/src ./src
+# `npm run build` typechecks first and then bundles, so a type error fails the
+# image rather than shipping a client that compiled by accident. Vite's outDir
+# is ../server/public-app (web/vite.config.ts), which is where it lands below.
+RUN npm run build
+
+# ---------------------------------------------------------------------------
 # Stage 2: the stubs. FOR DEMOS AND TESTS ONLY — NEVER FOR A DEPLOYMENT.
 # ---------------------------------------------------------------------------
 # A separate target so nothing here can end up in the deployable image. Every
@@ -125,6 +148,11 @@ WORKDIR /app
 COPY --from=build /build/server/dist/server/src ./dist/server/src
 COPY --from=build /build/server/dist/server/scripts ./dist/server/scripts
 COPY server/public ./public
+# The React client, beside the original rather than instead of it. Both are
+# reachable at once while routes migrate: `/` is whichever CANON_UI names, and
+# `/classic.html` is always the original, which is where the React client hands
+# back a route it has not taken over yet (server/src/static.ts).
+COPY --from=webbuild /build/server/public-app ./public-app
 COPY server/package.json ./package.json
 
 # seed-demo writes several hundred invented pages under invented people's names

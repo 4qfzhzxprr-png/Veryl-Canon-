@@ -272,6 +272,21 @@ export async function validateConfig(
     );
   }
 
+  // --- the web client ----------------------------------------------------
+
+  // A warning rather than a refusal: an unrecognised value degrades to the
+  // original client, which is a working Canon. What must not happen is that it
+  // degrades in silence — the whole failure mode here is an operator who set
+  // the flag, saw no change, and had nothing to read.
+  const ui = (env.CANON_UI ?? '').trim().toLowerCase();
+  if (ui !== '' && ui !== 'react' && ui !== 'classic') {
+    warn(
+      'CANON_UI',
+      `CANON_UI=${env.CANON_UI} is not a client Canon knows about. It is either "react" or "classic"; ` +
+        'anything else serves the original one.',
+    );
+  }
+
   // --- numbers -----------------------------------------------------------
 
   for (const { name, min } of NUMERIC_VARS) {

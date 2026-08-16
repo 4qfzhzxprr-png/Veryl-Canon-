@@ -23,7 +23,7 @@ function servedDir(): string {
 
 async function boot(hsts: boolean): Promise<{ base: string; close: () => Promise<void> }> {
   const store = new CanonStore(openDb(':memory:'));
-  const server = attachStatic(createApi(store), servedDir(), hsts);
+  const server = attachStatic(createApi(store), { publicDir: servedDir(), hsts });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { base, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
