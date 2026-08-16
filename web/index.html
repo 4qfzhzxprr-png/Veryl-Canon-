@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Veryl Canon</title>
+    <!-- Same-origin only, so the strict policy the server sends needs no
+         exception. Preloaded because the brand face is on the critical path:
+         without it the first paint is the system stack and the page visibly
+         re-renders when Geist lands. -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/geist-latin.woff2" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

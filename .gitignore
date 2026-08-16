@@ -5,3 +5,6 @@
 backups/
 *.db.partial
 *.db.displaced-*
+web/node_modules/
+web/dist/
+server/public-app/

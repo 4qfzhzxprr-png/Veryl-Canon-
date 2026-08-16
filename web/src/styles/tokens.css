@@ -1,0 +1,195 @@
+/* COPIED VERBATIM from agent-studio/apps/web/src/styles/tokens.css.
+   That file is the source of record: its values carry documented contrast
+   ratios and the reason each was darkened. Do not re-derive a matching
+   palette here — copy it, so a change there is a diff here rather than a
+   slow divergence nobody notices until the two products sit side by side. */
+
+/* Veryl design tokens — FROZEN. Source: DESIGN.md (do not invent colors). */
+
+/* Geist + Geist Mono are SELF-HOSTED variable fonts (latin + latin-ext
+   subsets, ~84KB total, precached by the PWA). They used to come from the
+   Google Fonts CDN via async <link>s: non-render-blocking, but the pending
+   stylesheets still gated window.onload — a slow or blocked CDN held the
+   load event (and everything keyed to it) for 12+ seconds. Local files
+   can't. Cabinet Grotesk (display-only) stays on Fontshare, injected from
+   index.html AFTER the load event for the same reason; every font stack
+   below carries system fallbacks so late (or never) arrival is safe. */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/fonts/geist-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/fonts/geist-latin-ext.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/fonts/geist-mono-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/fonts/geist-mono-latin-ext.woff2) format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  --bg: #FBFBFD; --surface: #FFFFFF; --surface-2: #F5F6F8; --border: #E4E6EB;
+  /* --muted darkened #6B7280 → #646B76 (2026-07-03): the old value was 4.47:1
+     on --surface-2 (avatar chips, tinted rows) — just under AA 4.5. #646B76 is
+     4.97:1 on surface-2, 5.38:1 on white, 5.20:1 on --bg, and reads identically.
+     Dark-mode --muted (#9098A6) already clears AA on the dark surfaces. */
+  --text: #1A1D21; --muted: #646B76;
+  /* --action darkened #2D6BFF → #2060FF (2026-07-04): text-action links (rail
+     "Clear all", cross-links) sit on --bg/--surface-2 as well as --surface —
+     the old value was only 4.51:1 on white, 4.36:1 on --bg, 4.17:1 on
+     --surface-2 (all under AA for normal text). #2060FF measures 5.03:1 on
+     --surface, 4.86:1 on --bg, 4.65:1 on --surface-2 — same hue/saturation,
+     lightness only. White --action-text on the new fill is 5.03:1 (was
+     4.51:1). Dark mode's #6B95FF was already lightened for dark surfaces and
+     needs no change. */
+  --action: #2060FF;
+  /* --trust darkened #11A36B → #0D7E52 (2026-07-03): white badge text measured
+     3.24:1 and trust TEXT on white 3.24:1 — both under AA. #0D7E52 puts white
+     fills at 5.09:1 and trust text on --surface at 5.09:1. Dark mode overrides
+     lighter below (dark surfaces need the opposite shift). */
+  --trust: #0D7E52;
+  /* --attention darkened #D98A00 → #925D00 (2026-07-04): the "Verification
+     lapsed" / "changes_requested" / "Claimed by" badge text measured 2.47:1 on
+     --attention-bg #FBF1DC — a serious axe failure (2.46:1 at 11px) — and
+     2.77:1 as plain text on white. #925D00 is 4.94:1 on --attention-bg,
+     5.54:1 on --surface, 5.36:1 on --bg, 5.13:1 on --surface-2. Dark mode
+     restores the original bright value below (dark surfaces need the
+     opposite shift — same pattern as --trust). */
+  --attention: #925D00;
+  /* --danger darkened #E5484D → #C91D22 (2026-07-04): plain error text (form
+     validation, workflow failures, quarantined badge) measured only 3.91:1 on
+     white, 3.62:1 on --surface-2, 3.34:1 on --danger-bg — all under AA.
+     #C91D22 is 5.7:1 on white, 5.27:1 on --surface-2, 4.87:1 on --danger-bg,
+     5.52:1 on --bg. Dark mode's #F0565B was already lightened for dark
+     surfaces and needs no change. */
+  --danger: #C91D22;
+  /* On-color for solid --action/--trust fills (buttons, badges). White passes
+     on the light-mode fills; dark mode flips to near-black below because the
+     dark-mode fills are lightened for text duty and white would fail on them. */
+  --action-text: #FFFFFF; --trust-text: #FFFFFF;
+  /* --draft is used as TEXT on light surfaces (status pills, dots): darkened
+     from #8A92A6 (~3.0:1 on --draft-bg #EEF0F3, fails WCAG 1.4.3) to #5C6473
+     (~4.6:1) so AA text contrast holds. Stays a neutral slate — no reserved hue. */
+  --draft: #5C6473; --verifying: #4F5868;
+  /* Solid pale-blue tint for action chips (Guest badge etc.). text-action
+     #2060FF is a saturated blue that only clears AA (5.03:1) on pure white, so
+     ANY tint costs contrast — a mid tint like #E7EEFF drops it to 4.32:1 (fail
+     at 11px). #F0F4FF is the palest tint that still reads as blue while keeping
+     text-action at 4.57:1. Opacity blends (bg-action/10) can't be relied on —
+     they compose against whatever sits behind and land even lower. */
+  --action-bg: #F0F4FF;
+  --trust-bg: #E7F6EF; --attention-bg: #FBF1DC; --danger-bg: #FBE9EA; --draft-bg: #EEF0F3;
+  /* RGB channel triplets for every color token, kept in lockstep with the hex
+     values above. Tailwind's colors are defined as rgb(var(--x-rgb) /
+     <alpha-value>) — a whole-string var() can't take an alpha, which made
+     bg-action/70 transparent and ring-trust/30 fall back to default blue. */
+  --bg-rgb: 251 251 253; --surface-rgb: 255 255 255; --surface-2-rgb: 245 246 248;
+  --border-rgb: 228 230 235; --text-rgb: 26 29 33; --muted-rgb: 100 107 118;
+  --action-rgb: 32 96 255;
+  --trust-rgb: 13 126 82; --attention-rgb: 146 93 0; --danger-rgb: 201 29 34;
+  --action-text-rgb: 255 255 255; --trust-text-rgb: 255 255 255;
+  --draft-rgb: 92 100 115; --verifying-rgb: 79 88 104;
+  --action-bg-rgb: 240 244 255;
+  --trust-bg-rgb: 231 246 239; --attention-bg-rgb: 251 241 220;
+  --danger-bg-rgb: 251 233 234; --draft-bg-rgb: 238 240 243;
+  --r-sm: 5px; --r-md: 9px; --r-lg: 13px;
+  --shadow: 0 1px 2px rgba(20,24,33,.05), 0 4px 16px rgba(20,24,33,.04);
+}
+:root[data-theme="dark"] {
+  --bg: #0C0D10; --surface: #15171C; --surface-2: #1B1E24; --border: #262A31;
+  --text: #ECEEF1; --muted: #9098A6;
+  /* Light values darkened for light-mode text contrast would be too dark on dark
+     surfaces — restore lighter slates so --draft/--verifying text keeps AA here. */
+  --draft: #AEB6C4; --verifying: #C2C9D4;
+  /* Same AA-on-dark correction for the two reserved hues used as TEXT: the
+     light-mode --action (now #2060FF, 2026-07-04) measures only 3.32–3.87:1
+     on the dark surfaces (cross-links, pills, text buttons) and light-mode
+     --danger (now #C91D22) lands at 3.02:1 on dark --danger-bg — both under
+     the 4.5:1 small-text threshold. Lightened here only; light mode keeps
+     its own darkened values above. See DESIGN.md decisions log (2026-07-02,
+     updated 2026-07-04). */
+  --action: #6B95FF; --danger: #F0565B;
+  /* --trust as TEXT on dark surfaces: the light-mode #0D7E52 would sit ~2.9:1
+     here — lightened to #34C88C (8.36:1 on --surface, 7.13:1 on --trust-bg). */
+  --trust: #34C88C;
+  /* --attention as TEXT on dark surfaces: keeps the ORIGINAL bright value
+     (#D98A00, unchanged since inception) — it already clears AA here: 6.48:1
+     on --surface, 6.03:1 on --surface-2, 7.02:1 on --bg, 5.55:1 on dark
+     --attention-bg #2C2410. Light mode's darkened #925D00 (2026-07-04, above)
+     would be unreadable here — same opposite-shift pattern as --trust. */
+  --attention: #D98A00;
+  /* Solid fills use the lightened accents in dark mode, so their text flips to
+     near-black: #0C0D10 measures 6.82:1 on --action, 9.06:1 on --trust. */
+  --action-text: #0C0D10; --trust-text: #0C0D10;
+  /* Solid deep-blue tint for action chips (Guest badge etc.) — dark-mode mate to
+     the light --action-bg. Gives --action #6B95FF ~6.2:1 on the chip (opacity
+     blends dilute toward the surface and can't clear AA the same way). */
+  --action-bg: #12203A;
+  --trust-bg: #0F2A20; --attention-bg: #2C2410; --danger-bg: #2C1416; --draft-bg: #1C2027;
+  --bg-rgb: 12 13 16; --surface-rgb: 21 23 28; --surface-2-rgb: 27 30 36;
+  --border-rgb: 38 42 49; --text-rgb: 236 238 241; --muted-rgb: 144 152 166;
+  --draft-rgb: 174 182 196; --verifying-rgb: 194 201 212;
+  --action-rgb: 107 149 255; --danger-rgb: 240 86 91; --trust-rgb: 52 200 140;
+  --attention-rgb: 217 138 0;
+  --action-text-rgb: 12 13 16; --trust-text-rgb: 12 13 16;
+  --action-bg-rgb: 18 32 58;
+  --trust-bg-rgb: 15 42 32; --attention-bg-rgb: 44 36 16;
+  --danger-bg-rgb: 44 20 22; --draft-bg-rgb: 28 32 39;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.3);
+}
+/* Section-header style (DESIGN.md "h-section 13, uppercase, tracked"). This
+   class was referenced in 9 files but never defined; it now encodes the whole
+   treatment, so the utility-class duplicates at existing call sites are
+   harmless and future call sites need only this. */
+.font-section {
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* WCAG 2.3.3 — collapse every animation/transition to a single instant frame
+   when the user asks for reduced motion. Meaning survives without the motion:
+   status dots keep their label text, skeletons stay visible as static blocks. */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  /* Keep the Skeleton's 200ms appearance gate (fade collapses to a cut, the
+     DELAY stays) so sub-200ms loads still never flash loading chrome. `both`
+     holds the from-frame (opacity 0) through the delay; !important outruns
+     the component's motion-reduce:animate-none escape hatch. */
+  .animate-skeleton-in {
+    animation: skeleton-in .01ms ease-out 200ms both !important;
+  }
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Geist", system-ui, sans-serif; font-weight: 450; line-height: 1.5;
+  font-feature-settings: "tnum" 1; -webkit-font-smoothing: antialiased;
+}

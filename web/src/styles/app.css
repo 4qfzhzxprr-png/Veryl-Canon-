@@ -1,0 +1,28 @@
+@import "./tokens.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    font-size: 15px;
+  }
+  /* One visible focus indicator for everything, measured rather than chosen:
+     --action is 5.03:1 on --surface, where WCAG 1.4.11 asks for 3:1. Canon
+     shipped a ring at 1.08:1 on 112 controls once; this is that lesson kept. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    @apply outline-none ring-2 ring-action ring-offset-2;
+    --tw-ring-offset-color: rgb(var(--bg-rgb));
+  }
+  /* iOS zooms the page when a control's text is under 16px. Guarding it here
+     rather than per-component means a new input cannot reintroduce it. */
+  @media (max-width: 640px) {
+    input, select, textarea { font-size: 16px; }
+  }
+}
+
+@layer components {
+  .card { @apply rounded-lg border border-border bg-surface shadow-card; }
+}
