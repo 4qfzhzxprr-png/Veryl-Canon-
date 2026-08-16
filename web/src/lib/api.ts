@@ -16,8 +16,10 @@ import type {
   ImportRun,
   ImportRunDetail,
   Notice,
+  Comment,
   PageDetail,
   PageNode,
+  PageVersion,
   QueuedPage,
   SearchHit,
   Session,
@@ -248,17 +250,11 @@ const parsePage = (raw: unknown): PageDetail => {
   const a = typeof o["abilities"] === "object" && o["abilities"] !== null
     ? (o["abilities"] as Record<string, unknown>)
     : {};
-  const current = o["current"] == null ? null : obj(o["current"], "page.current");
   const { children: _children, ...rest } = node;
   return {
     ...rest,
-    current: current && {
-      version: num(current["version"]),
-      body: text(current["body"]) ?? "",
-      authorId: text(current["authorId"]) ?? "",
-      at: text(current["at"]) ?? "",
-      note: text(current["note"]),
-    },
+    effectiveDateBasis: text(o["effectiveDateBasis"]),
+    current: o["current"] == null ? null : parseVersion(o["current"]),
     abilities: {
       role: role(a["role"]),
       edit: ability(a["edit"]),
@@ -350,6 +346,51 @@ const parseSearch = (raw: unknown): SearchHit[] =>
       ownerId: text(o["ownerId"]),
       snippet: text(o["snippet"]) ?? "",
       supersededBy: text(o["supersededBy"]),
+    };
+  });
+
+function parseVersion(raw: unknown): PageVersion {
+  const o = obj(raw, "version");
+  const f = typeof o["fields"] === "object" && o["fields"] !== null
+    ? (o["fields"] as Record<string, unknown>)
+    : {};
+  return {
+    pageId: text(o["pageId"]) ?? "",
+    // `number`, not `version`. Getting this wrong renders every entry in the
+    // history as "Version undefined".
+    number: num(o["number"]),
+    title: text(o["title"]) ?? "",
+    body: text(o["body"]) ?? "",
+    fields: {
+      ownerId: text(f["ownerId"]),
+      approverId: text(f["approverId"]),
+      effectiveDate: text(f["effectiveDate"]),
+      effectiveDateBasis: text(f["effectiveDateBasis"]),
+      reviewDate: text(f["reviewDate"]),
+    },
+    authorId: text(o["authorId"]) ?? "",
+    note: text(o["note"]),
+    createdAt: text(o["createdAt"]) ?? "",
+  };
+}
+
+const parseVersions = (raw: unknown): PageVersion[] =>
+  arr(raw, "versions").map(parseVersion);
+
+const parseComments = (raw: unknown): Comment[] =>
+  arr(raw, "comments").map((row) => {
+    const o = obj(row, "comment");
+    return {
+      id: str(o["id"], "comment.id"),
+      pageId: text(o["pageId"]) ?? "",
+      authorId: text(o["authorId"]) ?? "",
+      authorKind: o["authorKind"] === "agent" ? "agent" : "person",
+      body: text(o["body"]) ?? "",
+      anchor: text(o["anchor"]),
+      resolvedAt: text(o["resolvedAt"]),
+      resolvedBy: text(o["resolvedBy"]),
+      createdAt: text(o["createdAt"]) ?? "",
+      sentBack: o["sentBack"] === true,
     };
   });
 
@@ -555,6 +596,18 @@ export const api = {
     request("GET", `/collections/${encodeURIComponent(id)}/tree`, parseTree),
 
   page: (id: string) => request("GET", `/pages/${encodeURIComponent(id)}`, parsePage),
+  versions: (id: string) =>
+    request("GET", `/pages/${encodeURIComponent(id)}/versions`, parseVersions),
+  version: (id: string, n: number) =>
+    request("GET", `/pages/${encodeURIComponent(id)}/versions/${n}`, parseVersion),
+  comments: (id: string) =>
+    request("GET", `/pages/${encodeURIComponent(id)}/comments`, parseComments),
+  addComment: (id: string, body: string) =>
+    request("POST", `/pages/${encodeURIComponent(id)}/comments`, () => null, { body }),
+  resolveComment: (commentId: string) =>
+    request("POST", `/comments/${encodeURIComponent(commentId)}/resolve`, () => null, {}),
+  reopenComment: (commentId: string) =>
+    request("POST", `/comments/${encodeURIComponent(commentId)}/reopen`, () => null, {}),
 
   audit: (filter: AuditFilter = {}) => request("GET", `/audit${qs({ ...filter })}`, parseAudit),
   auditSummary: (filter: AuditFilter = {}) => {

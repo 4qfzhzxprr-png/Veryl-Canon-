@@ -34,9 +34,10 @@ them.
 | `viewImports` | 69 | `#/imports` | 2 |
 | `viewVersion` | 47 | `#/pages/:id/versions/:n` | 3 |
 
-`#/collections` is already migrated (`src/routes/Collections.tsx`), which is
-the only reason the foundation can be trusted at all: it was written against a
-real route, not against an imagined one.
+**Fourteen of the eighteen are migrated.** Four are left, all of them phase 4:
+`ask`, `map`, `collection members` and the `editor`. That count — how many
+routes are still handed to the original client — is the progress metric; see
+"The deletion rule, corrected" below for why a shrinking `app.js` is not.
 
 Line count is a proxy for effort and a bad one. `viewCompare` is 185 lines of
 genuinely hard diff logic; `viewCollectionMembers` is 575 lines of form. The
@@ -123,6 +124,9 @@ unreachable without it, and it is where the session module-global in
 **Done when:** a signed-in reader can move between all eight without ever
 crossing to `/classic.html`.
 
+**Done.** All seven routes are in `ROUTES`. The API layer was rewritten against
+a running server in the process — see the note at the end of this document.
+
 ## Phase 2 — the daily surface
 
 `queue` (with its three aliases), `search`, `imports` run detail. About 1,870
@@ -145,6 +149,14 @@ the server, then move the row.
 **Done when:** a reviewer can work a full day in the queue, and the badge count
 in the nav is driven by the same query cache rather than a second fetch.
 
+**Done**, with one correction the phase produced: the outcome announcement is
+now published to a single live region in the shell rather than rendered by the
+component that made the change. It had been inside the queue row — the approval
+succeeded, the queue refetched, the row unmounted, and the sentence went with it
+before anything read it out. A real browser found that; jsdom could not, because
+the test held the request pending so the row never unmounted. **An announcement
+must outlive whatever caused it.**
+
 ## Phase 3 — the record
 
 `page` detail with its five panels (references, divergences, relations,
@@ -166,6 +178,15 @@ adjacent edits, moved blocks, a version that is byte-identical.
 **Done when:** the panels match the old view affordance for affordance, and the
 comparison view has been checked against real page histories rather than
 invented ones.
+
+**Done**, and the comparison is a real longest-common-subsequence diff
+(`web/src/lib/diff.ts`, fourteen tests). A line-by-line walk reports every line
+after a single inserted paragraph as changed, which on a forty-line page means
+showing the reader thirty-nine false changes. Two bugs the tests caught: an
+empty version was treated as one blank line, so every comparison against one
+reported a removal that never happened; and the diff is bounded, because
+O(n·m) on two 5,000-line versions freezes the tab of somebody who opened the
+screen because they were in a hurry.
 
 ## Phase 4 — the hard ones
 

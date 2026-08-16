@@ -61,6 +61,18 @@ export const ROUTES: RouteDef[] = [
     import("./Queue").then((m) => ({ default: m.Queue }))),
   route("/search", "Search", () =>
     import("./Search").then((m) => ({ default: m.Search }))),
+
+  // The record itself. Order matters inside a react-router <Routes>: the more
+  // specific paths are matched by rank rather than by position, but keeping
+  // them together here keeps the list readable.
+  route("/pages/:id", "Page", () =>
+    import("./Page").then((m) => ({ default: m.Page }))),
+  route("/pages/:id/history", "History", () =>
+    import("./History").then((m) => ({ default: m.History }))),
+  route("/pages/:id/versions/:n", "Version", () =>
+    import("./History").then((m) => ({ default: m.Version }))),
+  route("/pages/:id/compare/:a/:b", "Comparison", () =>
+    import("./Compare").then((m) => ({ default: m.Compare }))),
 ];
 
 /**

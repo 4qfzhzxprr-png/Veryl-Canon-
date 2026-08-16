@@ -141,18 +141,56 @@ export interface PageNode {
   children: PageNode[];
 }
 
-/** The text of a page as published. */
+/** The fields a version carries alongside its text. */
+export interface VersionFields {
+  ownerId: string | null;
+  approverId: string | null;
+  /** The day what it says began to apply — not the day it was written. */
+  effectiveDate: string | null;
+  /** Where that date comes from. The question an auditor asks about a
+   *  backdated policy, and the one nobody can answer a year later. */
+  effectiveDateBasis: string | null;
+  reviewDate: string | null;
+}
+
+/**
+ * One published version of a page.
+ *
+ * `number`, not `version`; `createdAt`, not `at`. Read off the server — the
+ * inferred version of this interface had both wrong, which would have rendered
+ * every version as "Version undefined" dated "Invalid Date".
+ */
 export interface PageVersion {
-  version: number;
+  pageId: string;
+  number: number;
+  title: string;
   body: string;
+  fields: VersionFields;
   authorId: string;
-  at: string;
+  /** Why this version exists, in the author's or approver's words. */
   note: string | null;
+  createdAt: string;
+}
+
+export interface Comment {
+  id: string;
+  pageId: string;
+  authorId: string;
+  authorKind: "person" | "agent";
+  body: string;
+  /** The passage it is attached to, where it is attached to one. */
+  anchor: string | null;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+  createdAt: string;
+  /** True when this comment IS a send-back — the reason a draft came back. */
+  sentBack: boolean;
 }
 
 /** `GET /pages/:id`. */
 export interface PageDetail extends Omit<PageNode, "children"> {
   current: PageVersion | null;
+  effectiveDateBasis: string | null;
   abilities: PageAbilities;
   /** Pages this one links to that the asker may not see. Named as a count
    *  rather than shown, so the page does not silently look shorter than it is. */
