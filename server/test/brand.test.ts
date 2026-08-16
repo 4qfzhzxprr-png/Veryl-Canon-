@@ -85,3 +85,36 @@ test('brand: nothing still refers to the retired green accent', () => {
   assert.doesNotMatch(declarations, /#2e6e5c/i);
   assert.doesNotMatch(declarations, /#4f9a84/i);
 });
+
+test('brand: corners come from the shared scale, not from history', () => {
+  // Canon had eight radii in use — 3, 4, 5, 6, 8, 10, 12, 14 — which is not a
+  // scale, it is an archaeological record. Two products whose corners disagree
+  // read as two products however well their colours match.
+  //
+  // Pills are exempt: a fully round end is a shape, not a step on a scale.
+  const declarations = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const raw = [...declarations.matchAll(/border-radius:\s*([^;]+);/g)]
+    .map((m) => m[1]!.trim())
+    .filter((v) => !/^9{2,3}px$/.test(v))
+    .filter((v) => /\d+px/.test(v));
+  assert.deepEqual(raw, [], `these corners bypass the scale: ${raw.join(', ')}`);
+});
+
+test('brand: the header lockup matches the Registry to the pixel', () => {
+  const brand = /\.brand \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(brand, /font-size:\s*17px/, 'the wordmark is a different size');
+  assert.match(brand, /font-weight:\s*700/, 'the wordmark is a different weight');
+  // Tracked TIGHT, not loose. The old +0.01em pulled the wordmark apart while
+  // the Registry's pulled it together, and the two read as different companies
+  // at a glance even before the colours were fixed.
+  assert.match(brand, /letter-spacing:\s*-0\.01em/, 'the wordmark is tracked the wrong way');
+  assert.match(html, /class="brand-mark" width="28" height="28"/, 'the mark is a different size');
+});
+
+test('brand: the sticky header pads for the notch', () => {
+  // An installed iOS web app tucks a sticky bar under the status bar without
+  // this. The Registry has always padded for it; Canon never did, which is the
+  // kind of difference a customer feels without being able to name.
+  const topbar = /\.topbar \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(topbar, /env\(safe-area-inset-top\)/);
+});

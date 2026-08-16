@@ -84,6 +84,14 @@
   --del-ink: #C91D22;
   --shadow: 0 1px 2px rgba(20,24,33,.05), 0 4px 16px rgba(20,24,33,.04);
 
+  /* One radius scale and one spacing scale, both the Registry's
+     (apps/web/tailwind.config). Canon had eight radii in use — 3, 4, 5, 6, 8,
+     10, 12, 14 — which is not a scale, it is a history. Two products whose
+     corners disagree read as two products however well their colours match. */
+  --r-sm: 5px; --r-md: 9px; --r-lg: 13px;
+  --sp-2xs: 2px; --sp-xs: 4px; --sp-sm: 8px; --sp-md: 16px;
+  --sp-lg: 24px; --sp-xl: 32px; --sp-2xl: 48px;
+
   --sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
   /* The one thing NOT unified, and on purpose: serif bodies are a reading
      decision, not a brand one. Canon is a document product and long-form page
@@ -174,7 +182,7 @@ a:hover { text-decoration: underline; }
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border-strong);
-  border-radius: 0 0 8px 0;
+  border-radius: 0 0 var(--r-md) 0;
   padding: 0.6rem 1rem;
   font-weight: 600;
   transition: transform 0.12s ease;
@@ -190,7 +198,7 @@ code {
   font-family: var(--mono);
   font-size: 0.86em;
   background: var(--surface-2);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   padding: 0.08em 0.35em;
 }
 
@@ -216,29 +224,40 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   display: flex;
   align-items: center;
   gap: 1.25rem;
-  padding: 0 1.5rem;
+  padding: 0 var(--sp-md);
   height: 56px;
-  background: var(--surface);
+  /* Translucent over a blur, like the Registry's, so content scrolling under
+     the bar stays legible as motion rather than disappearing behind a slab. */
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 40;
+  /* The notch. Without this the bar tucks under the status bar on an installed
+     iOS web app — the Registry has always padded for it and Canon never did. */
+  padding-top: env(safe-area-inset-top);
+  height: calc(56px + env(safe-area-inset-top));
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  font-weight: 650;
-  font-size: 1.05rem;
-  letter-spacing: 0.01em;
+  /* The Registry's lockup, to the pixel: 28px mark, 17px label, 700, tracked
+     TIGHT rather than loose. The old +0.01em pulled the wordmark apart while
+     the Registry's pulled it together — the two read as different companies at
+     a glance even before the colours were fixed. */
+  gap: 10px;
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.01em;
   color: var(--text);
   white-space: nowrap;
 }
 .brand:hover { text-decoration: none; }
 /* Never scales with the type around it and never inherits a colour: the mark
    is a fixed artefact, not a glyph. */
-.brand-mark { flex: none; border-radius: 6px; }
+.brand-mark { flex: none; }
 
 .stage {
   font-size: 0.68rem;
@@ -266,8 +285,10 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
 .nav-toggle { display: none; }
 .topnav a {
   color: var(--muted);
-  padding: 0.35rem 0.7rem;
-  border-radius: 6px;
+  /* 6px/12px and --r-md: the Registry's nav item, so a tab looks like a tab
+     across the two products. */
+  padding: 6px 12px;
+  border-radius: var(--r-md);
   font-weight: 500;
 }
 /* A nav entry is one line. "My queue" carries a count beside it, and a label
@@ -286,7 +307,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   width: 100%;
   padding: 0.42rem 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--bg);
   color: var(--text);
   /* Not `font: inherit` — that is where the 15px came from. */
@@ -314,7 +335,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
 .search-page-form label { flex: 1 1 20rem; margin: 0; }
 .search-count { margin: 0 0 0.6rem; }
 .search-results-list { display: flex; flex-direction: column; gap: 0.2rem; }
-.search-results-list .search-hit { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.search-results-list .search-hit { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 
 .search-results {
   position: absolute;
@@ -323,7 +344,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   right: 0;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow);
   max-height: 60vh;
   overflow: auto;
@@ -406,7 +427,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
 .sidebar {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1rem;
   position: sticky;
   top: 76px;
@@ -450,7 +471,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   margin-top: 0.06rem;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--muted);
   cursor: pointer;
@@ -468,7 +489,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   display: inline-block;
   max-width: 100%;
   padding: 0.22rem 0.45rem;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   color: var(--text);
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -556,7 +577,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   font-size: 0.72rem;
   font-weight: 600;
   background: var(--surface-2);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 0.1rem 0.45rem;
   color: var(--muted);
 }
@@ -570,7 +591,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.42rem 0.9rem;
   cursor: pointer;
   text-decoration: none;
@@ -598,7 +619,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
   display: block;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.1rem 1.25rem;
   color: var(--text);
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
@@ -611,7 +632,7 @@ input, textarea, select { font-family: inherit; font-size: 16px; }
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.1rem 1.25rem;
   margin: 1.25rem 0;
 }
@@ -640,7 +661,7 @@ label input, label textarea, label select {
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.45rem 0.65rem;
 }
 label input:focus, label textarea:focus, label select:focus {
@@ -668,7 +689,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .empty-state {
   background: var(--surface);
   border: 1px dashed var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 2.25rem 2rem;
   text-align: center;
   margin: 1.5rem 0;
@@ -680,7 +701,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.65rem 0.9rem;
   margin: 0.75rem 0;
   font-size: 0.92rem;
@@ -695,8 +716,8 @@ label.check input { width: auto; display: inline; margin: 0; }
    even when the notice above has been scrolled past. */
 .past-review { color: var(--amber); font-weight: 600; }
 .notice .btn { margin-left: 0.5rem; }
-.notice del { color: var(--del-ink); background: var(--del-bg); text-decoration: line-through; padding: 0 0.2em; border-radius: 3px; }
-.notice ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; padding: 0 0.2em; border-radius: 3px; }
+.notice del { color: var(--del-ink); background: var(--del-bg); text-decoration: line-through; padding: 0 0.2em; border-radius: var(--r-sm); }
+.notice ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; padding: 0 0.2em; border-radius: var(--r-sm); }
 /* A failed save. Danger, not amber: nothing is waiting on anybody — work the
    editor believes is stored does not exist, which is the sharpest thing this
    screen can have to say. */
@@ -713,7 +734,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   gap: 0.4rem 2.25rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 0.9rem 1.25rem;
   margin: 1rem 0 1.5rem;
 }
@@ -839,7 +860,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   max-width: 46rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 2rem 2.5rem;
   overflow-wrap: break-word;
 }
@@ -864,7 +885,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   line-height: 1.5;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.9rem 1.1rem;
   overflow-x: auto;
 }
@@ -909,7 +930,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   border-collapse: collapse;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   overflow: hidden;
   font-size: 0.92rem;
 }
@@ -976,7 +997,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 
 /* ---------- diff -------------------------------------------------------- */
 
-.diff-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.diff-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
 .diff-table {
   width: 100%;
   border-collapse: collapse;
@@ -1030,7 +1051,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 var(--r-md) var(--r-md);
   padding: 0.7rem 0.85rem;
 }
 .editor-body:focus {
@@ -1054,7 +1075,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-bottom: 0;
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
 }
 .md-toolbar-gap { flex: 1 1 auto; }
 .md-btn {
@@ -1064,7 +1085,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 0.22rem 0.55rem;
   cursor: pointer;
 }
@@ -1078,7 +1099,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .editor-preview {
   min-height: 440px;
   max-width: none;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 var(--r-md) var(--r-md);
   padding: 1.4rem 1.6rem;
 }
 
@@ -1093,7 +1114,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .identity-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow);
   max-width: 520px;
   width: 100%;
@@ -1111,7 +1132,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 0.6rem 0.9rem;
   cursor: pointer;
 }
@@ -1138,7 +1159,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .ask-form {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 0.9rem 1.1rem 0.8rem;
   transition: border-color 0.12s ease;
 }
@@ -1204,7 +1225,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 0.18rem 0.4rem;
 }
 
@@ -1215,7 +1236,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .ask-idle {
   background: var(--surface);
   border: 1px dashed var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.4rem 1.6rem;
 }
 .ask-examples { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
@@ -1227,7 +1248,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--accent);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   padding: 0.2rem 0.35rem;
   cursor: pointer;
 }
@@ -1238,19 +1259,19 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.4rem 1.6rem;
 }
 .ask-skeleton .h-small { margin-bottom: 1rem; }
 .skel-line {
   height: 0.8rem;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   margin-top: 0.7rem;
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 .skel-cites { margin-top: 1.6rem; }
-.skel-cite { height: 3.1rem; border-radius: 10px; }
+.skel-cite { height: 3.1rem; border-radius: var(--r-md); }
 @keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .skel-line { animation: none; } }
 
@@ -1258,7 +1279,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.3rem 1.6rem 1.5rem;
 }
 .answer-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
@@ -1287,7 +1308,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   padding: 0.12em 0.3em;
   margin: 0 0.03em;
   cursor: pointer;
@@ -1302,7 +1323,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .citation {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.3s ease;
 }
 .citation:hover, .citation:focus-within { border-color: var(--accent); box-shadow: 0 3px 14px rgba(30, 32, 36, 0.07); }
@@ -1366,14 +1387,14 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.4rem 1.6rem 1.5rem;
 }
 .refusal h2 { margin: 0 0 0.55rem; font-family: var(--serif); font-size: 1.25rem; font-weight: 600; }
 .refusal p { margin: 0 0 0.75rem; max-width: 42rem; }
 .refusal-why {
   background: var(--accent-soft);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.7rem 0.9rem;
   font-size: 0.9rem;
 }
@@ -1385,7 +1406,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--danger);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.2rem 1.5rem;
 }
 .ask-problem p { margin: 0 0 0.75rem; }
@@ -1400,7 +1421,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   gap: 0.5rem;
   max-width: 100%;
   padding: 0.25rem 0.45rem;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   color: var(--text);
 }
 .related-link:hover { background: var(--surface-2); text-decoration: none; }
@@ -1430,7 +1451,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .dv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
 .divergence {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 0.7rem 0.9rem;
   background: var(--surface);
 }
@@ -1447,7 +1468,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   flex-direction: column;
   gap: 0.15rem;
   padding: 0.55rem 0.7rem;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface-2);
   min-width: 0;
 }
@@ -1481,7 +1502,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .relation {
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 0.6rem 0.85rem;
   background: var(--surface);
 }
@@ -1525,7 +1546,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--text);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.35rem 0.55rem;
   cursor: pointer;
 }
@@ -1548,7 +1569,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   background: var(--surface);
   border: 1px solid var(--danger);
   border-left: 4px solid var(--danger);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   padding: 1.15rem 1.4rem;
   margin-bottom: 1.1rem;
 }
@@ -1587,7 +1608,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   gap: 0.7rem;
   padding: 0.6rem 0.8rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--surface-2);
   color: var(--text);
 }
@@ -1659,7 +1680,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   margin: 1rem 0 0;
   padding: 0.85rem 1rem 1rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
 }
 .choice-set legend {
   font-size: 0.8rem;
@@ -1678,7 +1699,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   font-weight: 400;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   cursor: pointer;
 }
 .choice:hover { border-color: var(--border-strong); }
@@ -1721,8 +1742,8 @@ label.check input { width: auto; display: inline; margin: 0; }
 .map-lede { margin: 0.35rem 0 0; max-width: 52rem; }
 .map-summary { margin: 0.15rem 0 0.7rem; font-size: 0.84rem; }
 
-.map-modes { display: inline-flex; gap: 0.15rem; border: 1px solid var(--border); border-radius: 8px; padding: 0.12rem; }
-.map-modes .btn { border-radius: 6px; }
+.map-modes { display: inline-flex; gap: 0.15rem; border: 1px solid var(--border); border-radius: var(--r-md); padding: 0.12rem; }
+.map-modes .btn { border-radius: var(--r-sm); }
 .map-modes .btn.is-on { background: var(--accent-soft); color: var(--accent); }
 
 .map-scope select {
@@ -1730,7 +1751,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.35rem 0.5rem;
 }
 
@@ -1744,7 +1765,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   padding: 0.35rem 0.85rem 0.55rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
 }
 .map-filter-collections { max-width: min(100%, 34rem); }
 .map-filter legend {
@@ -1775,7 +1796,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .map-stage {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   margin: 0 0 1.25rem;
 }
 .map-stage.is-graph {
@@ -1803,7 +1824,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   position: absolute;
   inset: 0;
   pointer-events: none;
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: inset 0 0 44px -14px rgba(20, 24, 28, 0.24);
 }
 @media (prefers-color-scheme: dark) {
@@ -1835,7 +1856,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   gap: 0.2rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.15rem;
   box-shadow: var(--shadow);
 }
@@ -1851,7 +1872,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   width: min(19rem, calc(100% - 1.2rem));
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow);
   padding: 0.55rem 0.75rem;
   font-size: 0.78rem;
@@ -1886,7 +1907,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   max-width: min(23rem, calc(100% - 1.2rem));
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   box-shadow: var(--shadow);
   padding: 0.6rem 0.85rem;
   font-size: 0.84rem;
@@ -2147,7 +2168,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   height: 15px;
   vertical-align: -3px;
   margin-right: 0.15rem;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--border-strong);
   background: var(--surface-2);
 }
@@ -2155,7 +2176,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .map-chip.pv-imported { background: var(--amber-soft); border-style: dotted; border-color: var(--muted); }
 .map-chip.pv-federated { background: var(--accent-soft); border-color: var(--accent); border-width: 2px; }
 .map-chip-page { background: var(--surface-2); border-radius: 99px; }
-.map-chip-source { background: hsl(210 11% 78%); border: 1px dashed var(--accent); border-radius: 4px; }
+.map-chip-source { background: hsl(210 11% 78%); border: 1px dashed var(--accent); border-radius: var(--r-sm); }
 .map-chip-external { background: var(--surface-2); border-style: dashed; border-radius: 99px; }
 .map-chip-canonical {
   border-radius: 99px;
@@ -2203,7 +2224,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   align-items: center;
   gap: 0.15rem 0.5rem;
   padding: 0.2rem 0.4rem;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
 }
 .map-row:hover { background: var(--surface-2); }
 .map-row-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
@@ -2254,7 +2275,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .toast {
   background: var(--text);
   color: var(--bg);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 0.65rem 1rem;
   font-size: 0.92rem;
   box-shadow: var(--shadow);
@@ -2317,7 +2338,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .modal {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow);
   width: 100%;
   max-width: 480px;
@@ -2432,11 +2453,11 @@ label.check input { width: auto; display: inline; margin: 0; }
 .review-change-title { margin: 0.4rem 0; }
 .review-change-title del, .review-change-fields del {
   color: var(--del-ink); background: var(--del-bg); text-decoration: line-through;
-  padding: 0 0.2em; border-radius: 3px;
+  padding: 0 0.2em; border-radius: var(--r-sm);
 }
 .review-change-title ins, .review-change-fields ins {
   color: var(--add-ink); background: var(--add-bg); text-decoration: none;
-  padding: 0 0.2em; border-radius: 3px;
+  padding: 0 0.2em; border-radius: var(--r-sm);
 }
 .review-change-fields { list-style: none; margin: 0.4rem 0 0; padding: 0; font-size: 0.92rem; }
 .review-change-fields li { padding: 0.15rem 0; }
@@ -2449,7 +2470,7 @@ label.check input { width: auto; display: inline; margin: 0; }
   margin: 0.75rem 0;
   padding: 0.7rem 0.9rem;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface-2);
   font-size: 0.92rem;
 }
@@ -2610,7 +2631,7 @@ label.check input { width: auto; display: inline; margin: 0; }
     padding: 0 0.7rem;
     margin-left: auto;
     border: 1px solid var(--border-strong);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     background: var(--surface);
     color: var(--text);
     font-weight: 550;
@@ -2643,13 +2664,13 @@ label.check input { width: auto; display: inline; margin: 0; }
 
 /* A refusal's pointers: places to look, styled as a list of links rather than
    as results — a refusal must not dress up as an answer. */
-.refusal-nearest { margin: 0.85rem 0 0.35rem; padding: 0.7rem 0.9rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.refusal-nearest { margin: 0.85rem 0 0.35rem; padding: 0.7rem 0.9rem; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 .refusal-nearest h3 { margin: 0 0 0.25rem; }
 .nearest-list { margin: 0.4rem 0 0.1rem; padding-left: 1.1rem; }
 .nearest-list li { margin: 0.25rem 0; }
 
 /* Gaps: one card per refused question, with the triage actions inline. */
-.gap-card { border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1rem; margin: 0.7rem 0; background: var(--surface); }
+.gap-card { border: 1px solid var(--border); border-radius: var(--r-md); padding: 0.85rem 1rem; margin: 0.7rem 0; background: var(--surface); }
 .gap-question { margin: 0; font-family: var(--serif); font-size: 1.05rem; }
 .gap-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
 .gap-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
@@ -2713,7 +2734,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .import-fields-note { margin: 0.4rem 0 0; }
 .import-rerun-notes { margin: 0.4rem 0 0.6rem; padding-left: 1.1rem; }
 .import-rerun-notes li { margin: 0.2rem 0; }
-.import-where { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.8rem 0.7rem; margin-top: 0.8rem; }
+.import-where { border: 1px solid var(--border); border-radius: var(--r-md); padding: 0.5rem 0.8rem 0.7rem; margin-top: 0.8rem; }
 .import-where legend { font-weight: 550; font-size: 0.9rem; padding: 0 0.3rem; }
 /* The iOS zoom guard: a text field under 16px makes Safari zoom the whole
    dialog on focus, and this one is full of them. */
@@ -2725,7 +2746,7 @@ label.check input { width: auto; display: inline; margin: 0; }
 .ask-access-slot { display: inline-block; margin: 0 0 0.6rem; }
 .access-card {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 0.85rem 1rem;
   margin: 0.7rem 0;
   background: var(--surface);
