@@ -494,51 +494,83 @@ const parseAnswer = (raw: unknown): Answer => {
   };
 };
 
-const parseGraph = (raw: unknown): Graph => {
+function parseGraphNode(row: unknown): GraphNode {
+  const n = obj(row, "graph.node");
+  const kind = n["kind"];
+  return {
+    id: str(n["id"], "node.id"),
+    kind: kind === "external" || kind === "source" ? kind : "page",
+    title: text(n["title"]) ?? "",
+    ...(text(n["type"]) ? { type: text(n["type"]) as DocType } : {}),
+    ...(text(n["status"]) ? { status: text(n["status"]) as PageStatus } : {}),
+    collectionId: text(n["collectionId"]),
+    parentId: text(n["parentId"]),
+    external: n["external"] === true,
+    provenance: text(n["provenance"]),
+    origin: text(n["origin"]),
+    references: num(n["references"]),
+    version: maybeNum(n["version"]),
+  };
+}
+
+const parseGraphEdges = (raw: unknown): GraphEdge[] =>
+  arr(raw ?? [], "graph.edges").map((row) => {
+    const e = obj(row, "graph.edge");
+    return {
+      from: str(e["from"], "edge.from"),
+      to: str(e["to"], "edge.to"),
+      // KEPT AS SENT. An earlier version mapped anything it did not recognise
+      // onto "conflicts_with", which drew a red contradiction between a page
+      // and its own child — the graph emits `child`, `link` and `reference`
+      // too, and three of its five kinds are utterly ordinary structure. An
+      // unknown kind is carried through and drawn neutrally by the map;
+      // manufacturing a contradiction is far worse than admitting ignorance.
+      kind: str(e["kind"], "edge.kind"),
+    };
+  });
+
+/** `GET /collections/:id/graph` — one collection. */
+const parseCollectionGraph = (raw: unknown): Graph => {
   const o = obj(raw, "graph");
   const c = typeof o["counts"] === "object" && o["counts"] !== null
     ? (o["counts"] as Record<string, unknown>)
     : {};
   return {
-    collectionId: text(o["collectionId"]) ?? "",
-    generatedAt: text(o["generatedAt"]) ?? "",
-    counts: {
-      pages: num(c["pages"]),
-      external: num(c["external"]),
-      sources: num(c["sources"]),
-      edges: num(c["edges"]),
-    },
+    collectionId: text(o["collectionId"]),
+    collections: [],
+    generatedAt: text(o["generatedAt"]),
+    counts: { pages: num(c["pages"]), edges: num(c["edges"]) },
     truncated: o["truncated"] === true,
-    nodes: arr(o["nodes"] ?? [], "graph.nodes").map((row): GraphNode => {
-      const n = obj(row, "graph.node");
-      const kind = n["kind"];
-      return {
-        id: str(n["id"], "node.id"),
-        kind: kind === "external" || kind === "source" ? kind : "page",
-        title: text(n["title"]) ?? "",
-        ...(text(n["type"]) ? { type: text(n["type"]) as DocType } : {}),
-        ...(text(n["status"]) ? { status: text(n["status"]) as PageStatus } : {}),
-        collectionId: text(n["collectionId"]),
-        parentId: text(n["parentId"]),
-        external: n["external"] === true,
-        provenance: text(n["provenance"]),
-        origin: text(n["origin"]),
-        references: num(n["references"]),
-        version: maybeNum(n["version"]),
-      };
+    truncatedTotal: null,
+    nodes: arr(o["nodes"] ?? [], "graph.nodes").map(parseGraphNode),
+    edges: parseGraphEdges(o["edges"]),
+  };
+};
+
+/** `GET /graph` — the whole record. A different payload, normalised onto the
+ *  same shape so there is one map component rather than two that drift. */
+const parseRecordGraph = (raw: unknown): Graph => {
+  const o = obj(raw, "graph");
+  const nodes = arr(o["nodes"] ?? [], "graph.nodes").map(parseGraphNode);
+  const edges = parseGraphEdges(o["edges"]);
+  // `truncated` here is `{limit, total}` when it was capped and ABSENT
+  // otherwise — not a boolean. Read as a boolean it would always be truthy
+  // once present and always falsy when the cap was not hit, which happens to
+  // work; read as a count it would be NaN. Handled explicitly.
+  const t = o["truncated"];
+  const capped = typeof t === "object" && t !== null ? (t as Record<string, unknown>) : null;
+  return {
+    collectionId: null,
+    collections: arr(o["collections"] ?? [], "graph.collections").map((row) => {
+      const g = obj(row, "graph.collection");
+      return { id: str(g["id"], "collection.id"), name: text(g["name"]) ?? "" };
     }),
-    edges: arr(o["edges"] ?? [], "graph.edges").map((row): GraphEdge => {
-      const e = obj(row, "graph.edge");
-      return {
-        from: str(e["from"], "edge.from"),
-        to: str(e["to"], "edge.to"),
-        // Only the two kinds Canon actually asserts. An unrecognised kind is
-        // treated as a conflict rather than dropped: an edge the client cannot
-        // name is still an edge somebody drew, and hiding it would make the
-        // map claim a page has no contradictions when it may.
-        kind: e["kind"] === "supersedes" ? "supersedes" : "conflicts_with",
-      };
-    }),
+    generatedAt: null,
+    counts: { pages: nodes.length, edges: edges.length },
+    truncated: capped !== null,
+    truncatedTotal: capped ? num(capped["total"]) : null,
+    nodes,
+    edges,
   };
 };
 
@@ -763,8 +795,12 @@ export const api = {
     request("POST", `/pages/${encodeURIComponent(id)}/publish`, () => null,
       note ? { note } : {}),
 
-  graph: (collectionId: string) =>
-    request("GET", `/collections/${encodeURIComponent(collectionId)}/graph`, parseGraph),
+  /** One collection's map, or — with no collection — the whole record's.
+   *  Two endpoints with two payloads, normalised onto one shape. */
+  graph: (collectionId?: string) =>
+    collectionId
+      ? request("GET", `/collections/${encodeURIComponent(collectionId)}/graph`, parseCollectionGraph)
+      : request("GET", "/graph", parseRecordGraph),
 
   members: (collectionId: string) =>
     request("GET", `/collections/${encodeURIComponent(collectionId)}/members`, parseMembers),

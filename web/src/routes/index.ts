@@ -79,6 +79,12 @@ export const ROUTES: RouteDef[] = [
     import("./Members").then((m) => ({ default: m.Members }))),
   route("/collections/:id/map", "Map", () =>
     import("./Map").then((m) => ({ default: m.RecordMap }))),
+  // The original client's other two addresses for the same screen. `#/map` is
+  // the WHOLE record, which is a different endpoint and a different payload.
+  route("/map", "Map", () =>
+    import("./Map").then((m) => ({ default: m.RecordMap }))),
+  route("/map/:id", "Map", () =>
+    import("./Map").then((m) => ({ default: m.RecordMap }))),
   route("/ask", "Ask the record", () =>
     import("./Ask").then((m) => ({ default: m.Ask }))),
   route("/ask/:id", "Ask the record", () =>

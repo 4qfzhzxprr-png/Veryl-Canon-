@@ -365,22 +365,53 @@ export interface GraphNode {
   version: number | null;
 }
 
-/** The two assertions Canon draws between pages. There is no generic "relates
- *  to": a line on this map always means something specific. */
+/** The two assertions somebody makes BY HAND between pages. There is no
+ *  generic "relates to": an asserted line always means something specific. */
 export type RelationKind = "conflicts_with" | "supersedes";
+
+/**
+ * Every edge the graph emits — `graph.ts`, `GRAPH_EDGE_KINDS`.
+ *
+ * FIVE, not two. Three of them are structural and utterly ordinary: `child` is
+ * the page tree, `link` is one page linking to another, `reference` is a page
+ * citing a source. Only the two `RelationKind`s are assertions somebody made.
+ *
+ * This distinction is the whole safety property of the map. An earlier version
+ * of this client knew only the two assertions and treated everything else as
+ * `conflicts_with`, which drew a red "contradicts" line between a page and its
+ * own child — manufacturing contradictions that do not exist, on the screen
+ * whose entire job is showing where the record disagrees with itself.
+ */
+export type GraphEdgeKind = "child" | "link" | "reference" | RelationKind;
 
 export interface GraphEdge {
   from: string;
   to: string;
-  kind: RelationKind;
+  /** Kept as the server sent it. An unrecognised kind is carried through and
+   *  drawn neutrally — never promoted to a contradiction. */
+  kind: string;
 }
 
+/**
+ * One shape for both maps.
+ *
+ * `GET /collections/:id/graph` and `GET /graph` answer with different payloads
+ * — the whole-record one carries `collections`, a `degree` per node and an
+ * exact `{limit, total}` when it was capped. They are normalised here so there
+ * is ONE map component rather than two that drift apart, and the fields only
+ * one of them has are optional rather than invented for the other.
+ */
 export interface Graph {
-  collectionId: string;
-  generatedAt: string;
-  counts: { pages: number; external: number; sources: number; edges: number };
+  /** Absent on the whole-record map, which spans every collection. */
+  collectionId: string | null;
+  /** The collections drawn. Only the whole-record map names them. */
+  collections: { id: string; name: string }[];
+  generatedAt: string | null;
+  counts: { pages: number; edges: number };
   /** The graph hit its ceiling: what is drawn is a floor, not the whole. */
   truncated: boolean;
+  /** Exact, where the server said so. */
+  truncatedTotal: number | null;
   nodes: GraphNode[];
   edges: GraphEdge[];
 }

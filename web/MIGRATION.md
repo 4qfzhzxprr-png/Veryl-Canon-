@@ -362,6 +362,26 @@ the collections they steward. The person who just asked would have gone to Gaps,
 found nothing, and reasonably concluded the product had lied. The screen now
 says which of the two cases they are in.
 
+## The handoff audit
+
+`web/src/routes/handoff.test.ts` transcribes the original client's own dispatch
+table — every `parts[0] ===` branch of `route()` in `app.js` — and asserts the
+React router matches each address, with a counter-check that it still refuses
+one Canon never served.
+
+**It exists because "all eighteen are migrated" was wrong when it was written.**
+`#/map` and `#/map/:id` are addresses the original client serves and this client
+had never registered; while `/classic.html` was still shipped they fell through
+to it and kept working, which is precisely why nobody noticed. Deleting the old
+client would have turned them into broken pages.
+
+That is the real precondition for deletion — not "the new client works", but
+"nothing still reaches the handoff". Verified by removing the two routes again
+and watching the audit fail on exactly those two.
+
+The file stays after the old client goes. It becomes the record of what Canon's
+addresses were on the day it went, and what stops a later refactor dropping one.
+
 ## What is left
 
 Nothing in the migration itself. What remains is the rollout, and it is not
