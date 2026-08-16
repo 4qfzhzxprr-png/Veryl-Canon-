@@ -73,6 +73,10 @@ export const ROUTES: RouteDef[] = [
     import("./History").then((m) => ({ default: m.Version }))),
   route("/pages/:id/compare/:a/:b", "Comparison", () =>
     import("./Compare").then((m) => ({ default: m.Compare }))),
+  route("/pages/:id/edit", "Editing", () =>
+    import("./Editor").then((m) => ({ default: m.Editor }))),
+  route("/collections/:id/members", "Members", () =>
+    import("./Members").then((m) => ({ default: m.Members }))),
 ];
 
 /**

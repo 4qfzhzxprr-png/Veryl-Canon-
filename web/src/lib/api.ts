@@ -17,6 +17,8 @@ import type {
   ImportRunDetail,
   Notice,
   Comment,
+  Draft,
+  Member,
   PageDetail,
   PageNode,
   PageVersion,
@@ -394,6 +396,43 @@ const parseComments = (raw: unknown): Comment[] =>
     };
   });
 
+const parseDraft = (raw: unknown): Draft => {
+  const o = obj(raw, "draft");
+  const f = typeof o["fields"] === "object" && o["fields"] !== null
+    ? (o["fields"] as Record<string, unknown>)
+    : {};
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  return {
+    pageId: text(o["pageId"]) ?? "",
+    title: text(o["title"]) ?? "",
+    body: text(o["body"]) ?? "",
+    fields: {
+      ownerId: text(f["ownerId"]),
+      approverId: text(f["approverId"]),
+      effectiveDate: text(f["effectiveDate"]),
+      effectiveDateBasis: text(f["effectiveDateBasis"]),
+      reviewDate: text(f["reviewDate"]),
+      ...(Array.isArray(f["aliases"]) ? { aliases: strings(f["aliases"]) } : {}),
+    },
+    editorId: text(o["editorId"]) ?? "",
+    baseVersion: maybeNum(o["baseVersion"]),
+    updatedAt: text(o["updatedAt"]) ?? "",
+    warnings: strings(o["warnings"]),
+    linkWarnings: strings(o["linkWarnings"]),
+  };
+};
+
+const parseMembers = (raw: unknown): Member[] =>
+  arr(raw, "members").map((row) => {
+    const o = obj(row, "member");
+    return {
+      actorId: str(o["actorId"], "member.actorId"),
+      // An unrecognised role reads as the LEAST privilege, never the most.
+      role: (role(o["role"]) ?? "view") as Member["role"],
+    };
+  });
+
 const parseAudit = (raw: unknown): AuditEvent[] =>
   arr(raw, "audit").map((row) => {
     const o = obj(row, "audit.event");
@@ -600,6 +639,34 @@ export const api = {
     request("GET", `/pages/${encodeURIComponent(id)}/versions`, parseVersions),
   version: (id: string, n: number) =>
     request("GET", `/pages/${encodeURIComponent(id)}/versions/${n}`, parseVersion),
+  /** The editor's opening question. An empty body writes NOTHING and takes no
+   *  lock — it answers with what the editor would hold, or refuses 423 naming
+   *  whoever is already editing. */
+  openDraft: (id: string) =>
+    request("PUT", `/pages/${encodeURIComponent(id)}/draft`, parseDraft, {}),
+  saveDraft: (id: string, draft: { title: string; body: string; fields: unknown }) =>
+    request("PUT", `/pages/${encodeURIComponent(id)}/draft`, parseDraft, draft),
+  discardDraft: (id: string) =>
+    request("DELETE", `/pages/${encodeURIComponent(id)}/draft`, () => null),
+  submit: (id: string) =>
+    request("POST", `/pages/${encodeURIComponent(id)}/submit`, () => null, {}),
+  publish: (id: string, note?: string) =>
+    request("POST", `/pages/${encodeURIComponent(id)}/publish`, () => null,
+      note ? { note } : {}),
+
+  members: (collectionId: string) =>
+    request("GET", `/collections/${encodeURIComponent(collectionId)}/members`, parseMembers),
+  setMember: (collectionId: string, actorId: string, memberRole: string) =>
+    request("PUT",
+      `/collections/${encodeURIComponent(collectionId)}/members/${encodeURIComponent(actorId)}`,
+      () => null, { role: memberRole }),
+  removeMember: (collectionId: string, actorId: string) =>
+    request("DELETE",
+      `/collections/${encodeURIComponent(collectionId)}/members/${encodeURIComponent(actorId)}`,
+      () => null),
+  actors: (collectionId?: string) =>
+    request("GET", `/actors${qs({ collection: collectionId })}`, parseActors),
+
   comments: (id: string) =>
     request("GET", `/pages/${encodeURIComponent(id)}/comments`, parseComments),
   addComment: (id: string, body: string) =>

@@ -61,6 +61,7 @@ export function TextField({
   label,
   hint,
   error,
+  className = "",
   ...rest
 }: { label: string; hint?: ReactNode; error?: string | null } & InputHTMLAttributes<HTMLInputElement>) {
   const id = useId();
@@ -68,10 +69,14 @@ export function TextField({
     <Wrapper id={id} label={label} hint={hint} error={error} required={rest.required}>
       <input
         id={id}
-        className={CONTROL}
         aria-describedby={described(id, hint, error)}
         aria-invalid={error ? true : undefined}
         {...rest}
+        // AFTER the spread, and merged rather than replaced. A caller passing
+        // className used to overwrite this wholesale, which silently stripped
+        // the 16px minimum — the iOS zoom guard — off whichever control they
+        // were only trying to make taller.
+        className={`${CONTROL} ${className}`}
       />
     </Wrapper>
   );
@@ -81,6 +86,7 @@ export function TextArea({
   label,
   hint,
   error,
+  className = "",
   ...rest
 }: { label: string; hint?: ReactNode; error?: string | null } & TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const id = useId();
@@ -88,10 +94,10 @@ export function TextArea({
     <Wrapper id={id} label={label} hint={hint} error={error} required={rest.required}>
       <textarea
         id={id}
-        className={`${CONTROL} min-h-[88px] py-2`}
         aria-describedby={described(id, hint, error)}
         aria-invalid={error ? true : undefined}
         {...rest}
+        className={`${CONTROL} min-h-[88px] py-2 ${className}`}
       />
     </Wrapper>
   );
@@ -102,12 +108,18 @@ export function SelectField({
   hint,
   error,
   children,
+  className = "",
   ...rest
 }: { label: string; hint?: ReactNode; error?: string | null } & SelectHTMLAttributes<HTMLSelectElement>) {
   const id = useId();
   return (
     <Wrapper id={id} label={label} hint={hint} error={error} required={rest.required}>
-      <select id={id} className={CONTROL} aria-describedby={described(id, hint, error)} {...rest}>
+      <select
+        id={id}
+        aria-describedby={described(id, hint, error)}
+        {...rest}
+        className={`${CONTROL} ${className}`}
+      >
         {children}
       </select>
     </Wrapper>

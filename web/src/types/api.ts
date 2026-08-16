@@ -198,6 +198,64 @@ export interface PageDetail extends Omit<PageNode, "children"> {
 }
 
 // --------------------------------------------------------------------------
+// Editing
+// --------------------------------------------------------------------------
+
+/**
+ * The draft the editor holds.
+ *
+ * `baseVersion` is the published version this draft was started from, so the
+ * screen can say what it is a change TO rather than leaving the author to
+ * assume it is the latest.
+ */
+export interface Draft {
+  pageId: string;
+  title: string;
+  body: string;
+  fields: VersionFields & { aliases?: string[] };
+  /** Who holds the lock. The first save with content takes it; opening the
+   *  editor takes nothing. */
+  editorId: string;
+  baseVersion: number | null;
+  updatedAt: string;
+  /** Vocabulary collisions the save noticed — an alias somebody else uses. */
+  warnings: string[];
+  /** Links in the body that do not resolve. */
+  linkWarnings: string[];
+}
+
+/**
+ * Which fields a type carries, mirrored from the server's own rules.
+ *
+ * A mirror, never a gate: the server refuses a policy with no review date
+ * whatever this says. It is here so the form does not ask a Note's author for
+ * an approver it will never use, and does not omit the field a Policy cannot
+ * publish without.
+ */
+export interface TypeRules {
+  owner: boolean;
+  approver: boolean;
+  effectiveDate: boolean;
+  reviewDate: boolean;
+  reviewDateRequired?: boolean;
+}
+
+export const TYPE_FIELDS: Record<DocType, TypeRules> = {
+  policy: { owner: true, approver: true, effectiveDate: true, reviewDate: true, reviewDateRequired: true },
+  spec: { owner: true, approver: true, effectiveDate: false, reviewDate: true },
+  plan: { owner: true, approver: false, effectiveDate: false, reviewDate: true },
+  note: { owner: false, approver: false, effectiveDate: false, reviewDate: false },
+};
+
+/** Types that pass through review. A Note does not. */
+export const REVIEWED_TYPES: DocType[] = ["policy", "spec", "plan"];
+
+export interface Member {
+  actorId: string;
+  role: Role;
+}
+
+// --------------------------------------------------------------------------
 // The queue — one person's own work
 // --------------------------------------------------------------------------
 
