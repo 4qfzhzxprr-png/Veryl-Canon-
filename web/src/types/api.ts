@@ -346,6 +346,97 @@ export interface SearchHit {
 }
 
 // --------------------------------------------------------------------------
+// The map
+// --------------------------------------------------------------------------
+
+export interface GraphNode {
+  id: string;
+  kind: "page" | "external" | "source";
+  title: string;
+  type?: DocType;
+  status?: PageStatus;
+  collectionId: string | null;
+  parentId: string | null;
+  external: boolean;
+  /** How this page came to exist: authored here, or landed by an import. */
+  provenance: string | null;
+  origin: string | null;
+  references: number;
+  version: number | null;
+}
+
+/** The two assertions Canon draws between pages. There is no generic "relates
+ *  to": a line on this map always means something specific. */
+export type RelationKind = "conflicts_with" | "supersedes";
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  kind: RelationKind;
+}
+
+export interface Graph {
+  collectionId: string;
+  generatedAt: string;
+  counts: { pages: number; external: number; sources: number; edges: number };
+  /** The graph hit its ceiling: what is drawn is a floor, not the whole. */
+  truncated: boolean;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+// --------------------------------------------------------------------------
+// Ask
+// --------------------------------------------------------------------------
+
+/** A federated field on a cited page, resolved when the answer was built. */
+export interface CitationField {
+  label: string;
+  value: unknown;
+  sourceName: string;
+  resolvedAt: string | null;
+  /** The source's answer is older than its freshness window allows. */
+  stale: boolean;
+  error?: string;
+}
+
+export interface Citation {
+  pageId: string;
+  title: string;
+  version: number;
+  snippet: string;
+  fields?: CitationField[];
+  /**
+   * The standing of the cited page.
+   *
+   * **ABSENT means "this response cannot say", never "canonical".** A caller
+   * that defaults a missing status to the most trust-bearing value it knows is
+   * asserting something the record never told it — so the client renders
+   * nothing rather than a guess.
+   */
+  status?: PageStatus;
+}
+
+/** A page that came close, offered when the record cannot answer. */
+export interface NearestPage {
+  pageId: string;
+  title: string;
+  status?: PageStatus;
+}
+
+export interface Answer {
+  /** Null whenever the record refused. */
+  answer: string | null;
+  citations: Citation[];
+  refused: boolean;
+  /** Why, when it refused. */
+  reason?: string;
+  /** How the answer relates to what was retrieved. */
+  grounding?: string;
+  nearest?: NearestPage[];
+}
+
+// --------------------------------------------------------------------------
 // The audit log
 // --------------------------------------------------------------------------
 

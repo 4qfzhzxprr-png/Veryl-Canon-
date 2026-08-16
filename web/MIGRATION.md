@@ -34,10 +34,14 @@ them.
 | `viewImports` | 69 | `#/imports` | 2 |
 | `viewVersion` | 47 | `#/pages/:id/versions/:n` | 3 |
 
-**Fourteen of the eighteen are migrated.** Four are left, all of them phase 4:
-`ask`, `map`, `collection members` and the `editor`. That count — how many
-routes are still handed to the original client — is the progress metric; see
-"The deletion rule, corrected" below for why a shrinking `app.js` is not.
+**All eighteen are migrated.** The handoff list is empty: no route in
+`web/src/routes/index.ts` falls through to the original client any more.
+
+What is NOT yet done is the last step — withdrawing `/classic.html` and
+deleting `app.js`. That is deliberate and it is the point of the flag:
+`CANON_UI` still defaults to `classic`, so no customer has seen the new client
+yet. The original stays reachable and whole until the new one has been run
+against real records by real people. See "The deletion rule, corrected" below.
 
 Line count is a proxy for effort and a bad one. `viewCompare` is 185 lines of
 genuinely hard diff logic; `viewCollectionMembers` is 575 lines of form. The
@@ -196,9 +200,14 @@ of them has a reason to be last.
 * **`editor`** — a text editor is where unsaved work gets lost. Needs draft
   persistence, a real leave guard, and conflict handling when the page moved
   under the author. Nothing about it is a straight port.
-* **`ask`** — streaming answers with citations. The streaming seam does not fit
-  the query cache and needs its own primitive; citation rendering has to stay
-  exactly honest about what supports what.
+* **`ask`** — **it does not stream.** This bullet was wrong: `POST /ask` is one
+  request and one JSON answer, so no streaming primitive was needed or built.
+  Faking incremental text over a response that arrived whole would be a
+  progress animation dressed as generation, on the one screen whose whole
+  argument is that it does not make things up. What did need care was citation
+  rendering: a cited page's `status` is ABSENT when the server cannot say, and
+  defaulting it to `canonical` would assert the most trust-bearing thing the
+  client knows about a page the record never described.
 * **`map`** — an SVG stage with its own interaction model, and the only place
   the CSP's `style-src 'unsafe-inline'` allowance is load-bearing (the `--h`
   and `--d` custom properties).
@@ -324,3 +333,46 @@ revisited in a year. Budget time to look at them before porting them.
 customers see, `APP_DOCS` in the Registry's executive assistant may describe a
 Canon that no longer exists — and it answers "how do I…" with confidence. Check
 it when the flag flips for real, and bump `APP_DOCS_VERSION` if it changes.
+
+## Phase 4, as built
+
+**Done.** Four routes: the editor, collection members, ask and the map.
+
+Two of the four were deliberately not ports.
+
+**The editor** now autosaves on a two-second pause and guards both exits. The
+original saved once — on the first change, to claim the page lock — and then
+only on an explicit press, with no `beforeunload`. The in-app guard matters
+more than the tab one: a hash change is not a page load, so the most likely way
+to lose a draft, clicking a link on the page you are editing, was the unguarded
+one. What is kept faithfully is the server's contract — opening writes nothing
+and locks nothing — because that encodes a round of user testing.
+
+**The map** is a stable grid, not a force-directed layout. A physics simulation
+is non-deterministic, so the same collection draws differently every visit and
+somebody comparing two screenshots cannot tell whether the record changed or the
+animation settled elsewhere. The SVG is also not the only reading: the list
+beside it carries the same assertions, and it is the accessible primary rather
+than a fallback.
+
+**One piece of copy was wrong and a running server caught it.** The refusal on
+`ask` said "asking has recorded it as a gap" — true, but a gap from an unscoped
+question belongs to no collection, and a steward's Gaps screen is narrowed to
+the collections they steward. The person who just asked would have gone to Gaps,
+found nothing, and reasonably concluded the product had lied. The screen now
+says which of the two cases they are in.
+
+## What is left
+
+Nothing in the migration itself. What remains is the rollout, and it is not
+code:
+
+1. **Run the new client against a real record.** `CANON_UI=react` on one
+   instance, watched. It is per-tenant for free.
+2. **Then withdraw `/classic.html`** and delete `app.js`, `styles.css` and the
+   classic `index.html` — 10,735 lines, in one commit, once nobody is being
+   served them.
+3. **`APP_DOCS` in the Registry's executive assistant** describes Canon's
+   navigation and answers "how do I…" with confidence. Check it against the new
+   client before the flag is flipped for a customer, and bump
+   `APP_DOCS_VERSION` if anything it claims has moved.

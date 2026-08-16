@@ -16,11 +16,18 @@ import type {
   ImportRun,
   ImportRunDetail,
   Notice,
+  Answer,
+  Citation,
   Comment,
+  DocType,
   Draft,
+  Graph,
+  GraphEdge,
+  GraphNode,
   Member,
   PageDetail,
   PageNode,
+  PageStatus,
   PageVersion,
   QueuedPage,
   SearchHit,
@@ -433,6 +440,108 @@ const parseMembers = (raw: unknown): Member[] =>
     };
   });
 
+const parseAnswer = (raw: unknown): Answer => {
+  const o = obj(raw, "answer");
+  const status = (v: unknown): PageDetail["status"] | undefined =>
+    typeof v === "string" ? (v as PageDetail["status"]) : undefined;
+  return {
+    answer: text(o["answer"]),
+    citations: arr(o["citations"] ?? [], "answer.citations").map((row): Citation => {
+      const c = obj(row, "citation");
+      const s = status(c["status"]);
+      return {
+        pageId: str(c["pageId"], "citation.pageId"),
+        title: text(c["title"]) ?? "",
+        version: num(c["version"]),
+        snippet: text(c["snippet"]) ?? "",
+        ...(Array.isArray(c["fields"])
+          ? {
+              fields: arr(c["fields"], "citation.fields").map((f) => {
+                const field = obj(f, "citation.field");
+                return {
+                  label: text(field["label"]) ?? "",
+                  value: field["value"],
+                  sourceName: text(field["sourceName"]) ?? "",
+                  resolvedAt: text(field["resolvedAt"]),
+                  stale: field["stale"] === true,
+                  ...(text(field["error"]) ? { error: text(field["error"])! } : {}),
+                };
+              }),
+            }
+          : {}),
+        // Left ABSENT when the server did not say. Defaulting it to
+        // "canonical" would assert the most trust-bearing thing the client
+        // knows about a page the record never described.
+        ...(s ? { status: s } : {}),
+      };
+    }),
+    refused: o["refused"] === true,
+    ...(text(o["reason"]) ? { reason: text(o["reason"])! } : {}),
+    ...(text(o["grounding"]) ? { grounding: text(o["grounding"])! } : {}),
+    ...(Array.isArray(o["nearest"])
+      ? {
+          nearest: arr(o["nearest"], "answer.nearest").map((row) => {
+            const n = obj(row, "answer.nearest[]");
+            const s = status(n["status"]);
+            return {
+              pageId: str(n["pageId"], "nearest.pageId"),
+              title: text(n["title"]) ?? "",
+              ...(s ? { status: s } : {}),
+            };
+          }),
+        }
+      : {}),
+  };
+};
+
+const parseGraph = (raw: unknown): Graph => {
+  const o = obj(raw, "graph");
+  const c = typeof o["counts"] === "object" && o["counts"] !== null
+    ? (o["counts"] as Record<string, unknown>)
+    : {};
+  return {
+    collectionId: text(o["collectionId"]) ?? "",
+    generatedAt: text(o["generatedAt"]) ?? "",
+    counts: {
+      pages: num(c["pages"]),
+      external: num(c["external"]),
+      sources: num(c["sources"]),
+      edges: num(c["edges"]),
+    },
+    truncated: o["truncated"] === true,
+    nodes: arr(o["nodes"] ?? [], "graph.nodes").map((row): GraphNode => {
+      const n = obj(row, "graph.node");
+      const kind = n["kind"];
+      return {
+        id: str(n["id"], "node.id"),
+        kind: kind === "external" || kind === "source" ? kind : "page",
+        title: text(n["title"]) ?? "",
+        ...(text(n["type"]) ? { type: text(n["type"]) as DocType } : {}),
+        ...(text(n["status"]) ? { status: text(n["status"]) as PageStatus } : {}),
+        collectionId: text(n["collectionId"]),
+        parentId: text(n["parentId"]),
+        external: n["external"] === true,
+        provenance: text(n["provenance"]),
+        origin: text(n["origin"]),
+        references: num(n["references"]),
+        version: maybeNum(n["version"]),
+      };
+    }),
+    edges: arr(o["edges"] ?? [], "graph.edges").map((row): GraphEdge => {
+      const e = obj(row, "graph.edge");
+      return {
+        from: str(e["from"], "edge.from"),
+        to: str(e["to"], "edge.to"),
+        // Only the two kinds Canon actually asserts. An unrecognised kind is
+        // treated as a conflict rather than dropped: an edge the client cannot
+        // name is still an edge somebody drew, and hiding it would make the
+        // map claim a page has no contradictions when it may.
+        kind: e["kind"] === "supersedes" ? "supersedes" : "conflicts_with",
+      };
+    }),
+  };
+};
+
 const parseAudit = (raw: unknown): AuditEvent[] =>
   arr(raw, "audit").map((row) => {
     const o = obj(row, "audit.event");
@@ -654,6 +763,9 @@ export const api = {
     request("POST", `/pages/${encodeURIComponent(id)}/publish`, () => null,
       note ? { note } : {}),
 
+  graph: (collectionId: string) =>
+    request("GET", `/collections/${encodeURIComponent(collectionId)}/graph`, parseGraph),
+
   members: (collectionId: string) =>
     request("GET", `/collections/${encodeURIComponent(collectionId)}/members`, parseMembers),
   setMember: (collectionId: string, actorId: string, memberRole: string) =>
@@ -696,6 +808,15 @@ export const api = {
 
   search: (q: string, filters: { collectionId?: string; status?: string } = {}) =>
     request("GET", `/search${qs({ q, ...filters })}`, parseSearch),
+
+  /** One POST, one answer. Deliberately noted: this does NOT stream, so there
+   *  is no streaming primitive in this client and nothing that pretends to
+   *  produce text incrementally. */
+  ask: (question: string, collectionId?: string) =>
+    request("POST", "/ask", parseAnswer, {
+      question,
+      ...(collectionId ? { collectionId } : {}),
+    }),
 
   gaps: (status?: string) => request("GET", `/gaps${qs({ status })}`, parseGaps),
   sources: () => request("GET", "/sources", parseSources),

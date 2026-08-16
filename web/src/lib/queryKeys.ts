@@ -17,6 +17,7 @@ export const keys = {
     all: ["collections"] as const,
     one: (id: string) => ["collections", id] as const,
     tree: (id: string) => ["collections", id, "tree"] as const,
+    graph: (id: string) => ["collections", id, "graph"] as const,
   },
 
   pages: {

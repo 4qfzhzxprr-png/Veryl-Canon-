@@ -77,6 +77,12 @@ export const ROUTES: RouteDef[] = [
     import("./Editor").then((m) => ({ default: m.Editor }))),
   route("/collections/:id/members", "Members", () =>
     import("./Members").then((m) => ({ default: m.Members }))),
+  route("/collections/:id/map", "Map", () =>
+    import("./Map").then((m) => ({ default: m.RecordMap }))),
+  route("/ask", "Ask the record", () =>
+    import("./Ask").then((m) => ({ default: m.Ask }))),
+  route("/ask/:id", "Ask the record", () =>
+    import("./Ask").then((m) => ({ default: m.Ask }))),
 ];
 
 /**
