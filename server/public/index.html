@@ -74,6 +74,12 @@
        place, and one queue for both means a save confirmation can be swallowed
        by a navigation that happened at the same moment. -->
   <div id="route-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <!-- Primary navigation within thumb reach on a phone, mirroring the
+       Registry's. Built from #topnav at render time rather than duplicated
+       here: those links are already hidden and unhidden by role and by feature
+       detection, and a second hand-written list would drift from them the first
+       time somebody gained or lost a permission. Rendered only under 640px. -->
+  <nav class="tabbar" id="tabbar" aria-label="Primary" hidden></nav>
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <div id="modal-root"></div>
   <script type="module" src="/app.js"></script>

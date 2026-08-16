@@ -2759,3 +2759,103 @@ label.check input { width: auto; display: inline; margin: 0; }
 .access-actions .access-role { width: auto; }
 .asked-access-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
 .asked-access { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; margin: 0.35rem 0; }
+
+/* ---------------------------------------------------------------------------
+   Bottom tab bar (phones only)
+
+   The same shape as the Registry's: tabs split around a raised centre action,
+   translucent over a blur, padded for the home indicator. Desktop keeps the
+   inline top nav, so this is additive rather than a second navigation model.
+
+   It replaces a "Menu" button that hid every destination behind one tap. A
+   disclosure is the right answer for a long tail and the wrong one for the two
+   or three places somebody actually goes.
+   --------------------------------------------------------------------------- */
+.tabbar { display: none; }
+
+@media (max-width: 640px) {
+  .tabbar:not([hidden]) {
+    display: block;
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 40;
+    border-top: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface) 95%, transparent);
+    backdrop-filter: blur(8px);
+    /* The home indicator. Without this the last row of tabs sits under it and
+       the bottom few pixels of every tap target are somebody else's. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabbar ul {
+    display: flex;
+    align-items: stretch;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .tabbar li { flex: 1; }
+  .tabbar a,
+  .tabbar button.tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    /* 56px, so the tap target clears the 44px floor even before the label. */
+    min-height: 56px;
+    width: 100%;
+    padding: 6px 2px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .tabbar a.active,
+  .tabbar a[aria-current="page"] { color: var(--accent); font-weight: 600; }
+  .tabbar a:hover, .tabbar button.tab:hover { text-decoration: none; color: var(--text); }
+  .tabbar svg { display: block; }
+  .tabbar .tab-label { white-space: nowrap; }
+
+  /* The count rides the icon rather than the label: a number after the word
+     pushes the label off-centre and the bar stops being a grid. */
+  .tabbar .tab-icon { position: relative; display: block; }
+  .tabbar .tab-icon .nav-count {
+    position: absolute;
+    top: -5px;
+    inset-inline-start: 12px;
+    min-width: 16px;
+  }
+
+  /* The centre action, raised out of the bar. Canon's is Ask — the one place
+     you put a question to the record rather than navigate it — which is the
+     same role the Chief of Staff plays in the Registry. */
+  .tabbar .tab-center { display: flex; align-items: center; justify-content: center; height: 100%; }
+  .tabbar .tab-center a {
+    width: 56px;
+    height: 56px;
+    margin-top: -20px;
+    border-radius: 99px;
+    border: 4px solid var(--surface);
+    background: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: var(--shadow);
+    gap: 2px;
+    min-height: 0;
+    font-size: 9px;
+    font-weight: 600;
+  }
+  .tabbar .tab-center a.active { color: var(--accent-ink); }
+
+  /* Content has to clear the bar, or the last card of every list is
+     permanently under it. */
+  body.has-tabbar .app { padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+  /* The Menu button was the whole of mobile navigation and is now the long
+     tail's disclosure, reached from "More" in the bar. */
+  body.has-tabbar .nav-toggle:not([hidden]) { display: none; }
+}

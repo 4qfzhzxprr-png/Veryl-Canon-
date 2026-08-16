@@ -1208,6 +1208,11 @@ function renderChrome() {
     closeNavMenu();
     chip.innerHTML = '';
   }
+  // Signed in or out, the bar reflects it. The detect* calls above unhide their
+  // entries asynchronously and each ends in a route or a nav refresh, both of
+  // which rebuild this — so the bar catches up as permissions resolve rather
+  // than freezing whatever was known at first paint.
+  renderTabBar();
 }
 
 /** Shut the phone menu. Called on sign-out and on every navigation — a menu
@@ -1722,6 +1727,141 @@ function hashQuery() {
  * `page`, not `true`: the link points at the route you are on, which is
  * exactly what `page` means. `true` is for the weaker "somewhere within".
  */
+// ---------------------------------------------------------------------------
+// Bottom tab bar (phones)
+
+/** Line icons, 22px, stroke = currentColor. Keyed by the nav entry's own
+ *  data-nav, so adding a destination to the top nav needs one entry here and
+ *  nothing else. An unknown section falls back to a dot rather than rendering
+ *  an empty box. */
+const TAB_ICONS = {
+  home: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  queue: '<path d="M4 4h16v10a2 2 0 0 1-2 2h-3l-3 3-3-3H6a2 2 0 0 1-2-2z"/><path d="M9 9h6"/>',
+  ask: '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/>',
+  sources: '<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1-1"/>',
+  map: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8.2 7 15.6 7.6M7.4 8.2l1.6 7.3"/>',
+  gaps: '<path d="M12 4 2.5 20h19z"/><path d="M12 10v4M12 17h.01"/>',
+  imports: '<path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
+  audit: '<path d="M5 4h14v16H5z"/><path d="M9 9h6M9 13h6M9 17h3"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+};
+
+function tabIcon(section) {
+  const body = TAB_ICONS[section] ?? '<circle cx="12" cy="12" r="3"/>';
+  return `<span class="tab-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+    aria-hidden="true">${body}</svg></span>`;
+}
+
+/** The label without its count: a nav entry's textContent is "My queue3" once
+ *  the badge is populated, and "My queue3" under an icon is not a label. */
+function tabLabel(link) {
+  const clone = link.cloneNode(true);
+  clone.querySelectorAll('.nav-count').forEach((n) => n.remove());
+  return clone.textContent.trim();
+}
+
+/** The unread count a nav entry is carrying, or empty. */
+function tabCount(link) {
+  const badge = link.querySelector('.nav-count');
+  if (!badge || badge.hidden) return '';
+  const text = badge.textContent.trim();
+  return text && text !== '0' ? `<span class="nav-count">${esc(text)}</span>` : '';
+}
+
+function tabMarkup(entry, { center = false } = {}) {
+  const cls = ['tab', entry.active ? 'active' : ''].filter(Boolean).join(' ');
+  return `<li class="${center ? 'tab-center' : ''}"><a class="${cls}" href="${esc(entry.href)}"
+    data-tab="${esc(entry.section)}"${entry.active ? ' aria-current="page"' : ''}>
+    ${tabIcon(entry.section)}${entry.count}<span class="tab-label">${esc(entry.label)}</span></a></li>`;
+}
+
+/**
+ * Decide what goes in the bar, given what the nav is showing.
+ *
+ * Pure, and separated from the rendering for the same reason the Registry
+ * separated its own nav rules: the parts that are easy to get subtly wrong are
+ * which destinations make the cut and what happens to the rest, and neither is
+ * worth discovering on a phone.
+ *
+ * Ask takes the raised centre when it is available — it is the one place you
+ * put a question TO the record rather than navigate it, which is the role the
+ * Chief of Staff plays in the Registry's bar. When it is absent the remaining
+ * tabs simply fill the width.
+ *
+ * Four is the most a phone holds before the labels stop being readable. Past
+ * that the last slot becomes the long tail's disclosure rather than an
+ * arbitrary fifth destination — a bar that silently dropped "Audit" would be
+ * worse than one that admits there is more.
+ */
+const TAB_MAX = 4;
+
+function planTabBar(entries) {
+  const center = entries.find((e) => e.section === 'ask') ?? null;
+  const rest = entries.filter((e) => e !== center);
+  const overflow = rest.length > TAB_MAX;
+  const shown = overflow ? rest.slice(0, TAB_MAX - 1) : rest.slice(0, TAB_MAX);
+  const half = Math.ceil(shown.length / 2);
+  return { left: shown.slice(0, half), center, right: shown.slice(half), overflow };
+}
+
+/**
+ * Build the phone tab bar out of whatever the top nav is currently showing.
+ *
+ * Deliberately derived rather than declared. Canon's nav entries appear and
+ * disappear with role and with feature detection — Ask, Sources, Map, Gaps and
+ * Imports are each hidden until this reader has a reason for them — and a
+ * second, hand-written list of tabs would tell a different story the first time
+ * somebody gained or lost a permission.
+ */
+function renderTabBar() {
+  const bar = document.getElementById('tabbar');
+  const nav = document.getElementById('topnav');
+  if (!bar || !nav) return;
+
+  if (nav.hidden) {
+    bar.hidden = true;
+    bar.innerHTML = '';
+    document.body.classList.remove('has-tabbar');
+    return;
+  }
+
+  const entries = Array.from(nav.querySelectorAll('a'))
+    .filter((a) => !a.hidden)
+    .map((a) => ({
+      section: a.dataset.nav ?? '',
+      label: tabLabel(a),
+      href: a.getAttribute('href') ?? '#/',
+      count: tabCount(a),
+      active: a.classList.contains('active'),
+    }));
+
+  const plan = planTabBar(entries);
+  const more = plan.overflow
+    ? `<li><button class="tab" type="button" id="tab-more" aria-expanded="false"
+        aria-controls="topnav">${tabIcon('more')}<span class="tab-label">More</span></button></li>`
+    : '';
+
+  bar.innerHTML = `<ul>${plan.left.map((e) => tabMarkup(e)).join('')}${
+    plan.center ? tabMarkup(plan.center, { center: true }) : ''
+  }${plan.right.map((e) => tabMarkup(e)).join('')}${more}</ul>`;
+  bar.hidden = false;
+  document.body.classList.add('has-tabbar');
+
+  // "More" opens the same disclosure the Menu button opened, rather than a
+  // second panel with its own state to get out of step.
+  const moreBtn = document.getElementById('tab-more');
+  if (moreBtn) {
+    moreBtn.addEventListener('click', () => {
+      const topbar = document.querySelector('.topbar');
+      const open = moreBtn.getAttribute('aria-expanded') !== 'true';
+      moreBtn.setAttribute('aria-expanded', String(open));
+      topbar?.classList.toggle('is-nav-open', open);
+      document.getElementById('nav-toggle')?.setAttribute('aria-expanded', String(open));
+    });
+  }
+}
+
 function markNav(section) {
   document.querySelectorAll('#topnav a').forEach((a) => {
     const here = a.dataset.nav === section;
@@ -1729,6 +1869,10 @@ function markNav(section) {
     if (here) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
+  // The tab bar is derived from those links, so it is rebuilt after they are
+  // marked rather than marked separately — one source of truth for which
+  // destination you are on.
+  renderTabBar();
 }
 
 /**
@@ -2177,6 +2321,9 @@ async function refreshQueueNav({ force = false } = {}) {
     toggleCount.textContent = count.textContent;
   }
   if (toggle) toggle.setAttribute('aria-label', total ? `Menu, ${total} waiting in your queue` : 'Menu');
+  // The badge is the reason the queue tab is worth looking at, so the phone bar
+  // is rebuilt when the number moves rather than only when the route does.
+  renderTabBar();
 }
 
 /**
