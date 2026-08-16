@@ -230,17 +230,44 @@ clients forever.
 - [ ] Usable at 375px. Touch targets ≥44px, form controls ≥16px font-size (the
       iOS zoom guard).
 - [ ] Tests for the edge states, not just the happy path.
-- [ ] Removed from the classic-fallback list in `routes/index.ts`.
-- [ ] **The old `view*` function and its now-dead helpers are deleted from
-      `app.js`.**
+- [ ] Added to `ROUTES` in `web/src/routes/index.ts`, at the address the
+      ORIGINAL client uses — not a nicer one.
+
+### The deletion rule, corrected
+
+The first version of this document said a route was not migrated until its
+`view*` function was deleted from `app.js`, and made a shrinking `app.js` the
+progress metric. **That is wrong for the architecture actually built, and
+following it would break the product.**
+
+The strangler here is two whole documents. A reader handed to `/classic.html`
+for an unmigrated route is then inside the original client, and navigating from
+there to a *migrated* address — the front page, a collection — is served by the
+original client's own view. Deleting `viewHome` the day `/` moves to React
+would leave that reader on a blank page.
+
+So the original client stays complete until it stops being reachable, which is
+when the last route moves and `/classic.html` is withdrawn. `app.js` does not
+shrink during phases 1–3; it is deleted whole at the end.
+
+The metric that replaces it is **how many routes are still in the handoff** —
+`ROUTES.length` against the eighteen views in the table above. That number is
+visible, it moves every phase, and it cannot be gamed by adding a route to
+React while leaving the old one serving.
+
+The risk the original rule was guarding against is real and still needs
+guarding: a codebase carrying two clients indefinitely. What actually prevents
+that is finishing, and the check is that the handoff list gets shorter every
+phase — not that a file gets smaller.
 
 ## Budgets and guardrails
 
 * **Bundle.** Entry + shared chunks ≤ 200KB gzip. Route chunks ≤ 50KB gzip
   each. Currently 72KB total with one route. `chunkSizeWarningLimit: 250` in
   the Vite config is the noisy backstop, not the budget.
-* **`app.js` shrinks every phase.** It is the honest progress metric — if it
-  has not gone down, nothing was actually replaced.
+* **The handoff list gets shorter every phase.** `ROUTES.length` against the
+  eighteen views in the table is the progress metric — see "The deletion rule,
+  corrected" above for why `app.js` shrinking is not.
 * **Server tests stay green throughout** (993 today). The static-serving change
   in phase 0 is the only server code this migration touches; if a phase needs
   more, that is worth noticing rather than absorbing.
@@ -255,10 +282,18 @@ is a flash and a scroll reset. It is tolerable because it is temporary and
 because it never loses work — but it is the reason the flag stays off until
 most routes are across, rather than being turned on the moment phase 1 lands.
 
-**Deleting is the hard part.** Every incentive points at porting the next route
-instead of removing the last one. If `app.js` is still 10,000 lines after phase
-2, this migration has failed quietly and should be stopped rather than
-continued.
+**Finishing is the hard part.** Both clients work, which is the whole point and
+also the danger: a half-migrated Canon is not visibly broken, so nothing forces
+the last phase. If the handoff list is not shorter after every phase, this has
+failed quietly and should be stopped rather than continued.
+
+**The API layer had never been run.** Before phase 1 the client was pointed at
+`/api` — Canon mounts its routes at the root, so every call 404'd — and every
+response type was inferred rather than read. The collection listing was assumed
+to be `{collections: [...]}` and is a bare array; collections were given
+`pageCount` and `role`, neither of which the server sends. The rule this bought:
+**curl the endpoint, then write the type.** `web/src/lib/api.test.ts` is the
+guard.
 
 **`viewPage` and `viewAsk` are a third of the client between them.** Both were
 grown, not designed. Rebuilding them faithfully preserves decisions nobody has

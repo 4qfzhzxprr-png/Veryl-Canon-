@@ -13,6 +13,12 @@ import { lazy, type ComponentType, type LazyExoticComponent } from "react";
  * navigation, and the handoff. Two of those disagreeing is how a route ends up
  * either unreachable or rendered twice by two different clients.
  *
+ * **The paths are the ORIGINAL client's paths.** They are not ours to choose:
+ * every one of them is in somebody's bookmarks and in mail Canon has already
+ * sent. The first draft of this list invented `/collections` for the front
+ * page, which the original client answers at `/` — a reader following the tab
+ * bar would have crossed over and landed somewhere else entirely.
+ *
  * A route joins this list in the same change that deletes its `view*` function
  * from `server/public/app.js`. Adding it here while leaving the old one in
  * place is how a codebase ends up carrying two clients indefinitely.
@@ -21,19 +27,51 @@ export interface RouteDef {
   /** A react-router path, matched against the hash fragment. */
   path: string;
   component: LazyExoticComponent<ComponentType>;
-  /** For the document title and the announcement made on arrival. */
+  /** The document title, and what is announced on arrival. */
   title: string;
+  /** Reachable without an actor. Only the door is. */
+  open?: boolean;
 }
 
+const route = (
+  path: string,
+  title: string,
+  load: () => Promise<{ default: ComponentType }>,
+  open = false,
+): RouteDef => ({ path, title, component: lazy(load), ...(open ? { open } : {}) });
+
 export const ROUTES: RouteDef[] = [
-  {
-    path: "/collections",
-    title: "Collections",
-    component: lazy(() =>
-      import("./Collections").then((m) => ({ default: m.Collections })),
-    ),
-  },
+  route("/identity", "Sign in", () =>
+    import("./Identity").then((m) => ({ default: m.Identity })), true),
+  route("/", "Collections", () =>
+    import("./Collections").then((m) => ({ default: m.Collections }))),
+  route("/collections/:id", "Collection", () =>
+    import("./CollectionDetail").then((m) => ({ default: m.CollectionDetail }))),
+  route("/audit", "Audit log", () =>
+    import("./Audit").then((m) => ({ default: m.Audit }))),
+  route("/gaps", "Gaps", () =>
+    import("./Gaps").then((m) => ({ default: m.Gaps }))),
+  route("/sources", "Sources", () =>
+    import("./Sources").then((m) => ({ default: m.Sources }))),
+  route("/imports", "Imports", () =>
+    import("./Imports").then((m) => ({ default: m.Imports }))),
 ];
+
+/**
+ * Addresses that are the same request under another name.
+ *
+ * `#/inbox`, `#/me` and `#/mine` were the three other things people typed when
+ * they went looking for their own work, and all three used to fall through to
+ * the front page without a word (USER-TESTING.md T2.1). They rewrite rather
+ * than being three more routes, so the address bar still says where you are —
+ * and the rewrite REPLACES the history entry, or Back lands on the alias and
+ * bounces forward again.
+ */
+export const ALIASES: Record<string, string> = {
+  "/inbox": "/queue",
+  "/me": "/queue",
+  "/mine": "/queue",
+};
 
 /**
  * Where the original client lives.
